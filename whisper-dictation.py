@@ -218,6 +218,7 @@ class Recorder:
     def stop(self):
         self.recording = False
         self._stop_hud()
+        audio_level.clear_level()
 
     def _start_hud(self):
         try:
@@ -252,6 +253,7 @@ class Recorder:
                 data = stream.read(frames_per_buffer, exception_on_overflow=False)
                 with self.audio_lock:
                     self.audio_frames.append(data)
+                audio_level.write_level(audio_level.compute_rms(data))
             except Exception as exc:
                 print(f"Audio read error: {exc}")
 
