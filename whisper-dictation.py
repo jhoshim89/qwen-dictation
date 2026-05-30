@@ -1,67 +1,319 @@
 import argparse
-import time
-import threading
-import pyaudio
-import numpy as np
-import rumps
-from pynput import keyboard
-from whisper import load_model
+import json
+import os
 import platform
+import subprocess
+import sys
+import threading
+import time
+
+os.environ.setdefault("HF_HUB_DISABLE_XET", "1")
+os.environ.setdefault("HF_HUB_ENABLE_HF_TRANSFER", "1")
+
+import numpy as np
+import pyaudio
+import rumps
+import soundfile as sf
+import torch
+from pynput import keyboard
+from qwen_asr import Qwen3ASRModel
+
+import dashboard
+import app_paths
+
+
+APP_DIR = os.path.dirname(os.path.abspath(__file__))
+DICTIONARY_PATH = app_paths.dictionary_path()
+MODE_STREAMING = "streaming"
+MODE_BATCH_PASTE = "batch_paste"
+MODE_BATCH_SUBMIT = "batch_submit"
+SUPPORTED_MODES = (MODE_STREAMING, MODE_BATCH_PASTE, MODE_BATCH_SUBMIT)
+MODEL_0_6B = os.environ.get("QWEN_ASR_0_6B_PATH", "Qwen/Qwen3-ASR-0.6B")
+MODEL_1_7B = os.environ.get("QWEN_ASR_1_7B_PATH", "Qwen/Qwen3-ASR-1.7B")
+LANGUAGE_MAP = {
+    "auto": None,
+    "ko": "Korean",
+    "kr": "Korean",
+    "korean": "Korean",
+    "en": "English",
+    "english": "English",
+    "zh": "Chinese",
+    "chinese": "Chinese",
+    "ja": "Japanese",
+    "jp": "Japanese",
+    "japanese": "Japanese",
+}
+
+
+def safe_notify(title, subtitle, message):
+    try:
+        rumps.notification(title, subtitle, message)
+    except Exception as exc:
+        print(f"Notification error (non-fatal): {exc}")
+
+
+def normalize_language(language):
+    if not language:
+        return None
+    if isinstance(language, list):
+        language = language[0] if language else None
+    language = str(language).strip()
+    if not language:
+        return None
+    return LANGUAGE_MAP.get(language.lower(), language)
+
+
+def ensure_dictionary():
+    """사용자 사전이 없으면 동봉 시드를 복사한다(최초 1회)."""
+    dest = app_paths.dictionary_path()
+    if os.path.exists(dest):
+        return
+    seed = app_paths.seed_dictionary_path()
+    try:
+        os.makedirs(app_paths.user_data_dir(), exist_ok=True)
+        if os.path.exists(seed):
+            with open(seed, "r", encoding="utf-8") as src:
+                data = src.read()
+        else:
+            data = "{}"
+        with open(dest, "w", encoding="utf-8") as out:
+            out.write(data)
+    except Exception as exc:
+        print(f"Dictionary seed error: {exc}")
+
+
+def apply_dictionary(text):
+    path = app_paths.dictionary_path()
+    if not os.path.exists(path):
+        return text
+    try:
+        with open(path, "r", encoding="utf-8") as file:
+            dictionary = json.load(file)
+        for source, replacement in dictionary.items():
+            text = text.replace(source, replacement)
+    except Exception as exc:
+        print(f"Dictionary error: {exc}")
+    return text
+
+
+def paste_text(text, submit=False):
+    subprocess.run(["pbcopy"], input=text.encode("utf-8"), check=True)
+    submit_line = "key code 36" if submit else ""
+    script = f"""
+    tell application "System Events"
+        set frontApp to first process whose frontmost is true
+        set pasted to false
+        try
+            click menu item "붙여넣기" of menu "수정" of menu bar 1 of frontApp
+            set pasted to true
+        end try
+        if pasted is false then
+            try
+                click menu item "Paste" of menu "Edit" of menu bar 1 of frontApp
+                set pasted to true
+            end try
+        end if
+        if pasted is false then
+            keystroke "v" using command down
+        end if
+        delay 0.12
+        {submit_line}
+    end tell
+    """
+    subprocess.run(["osascript", "-e", script], check=True)
+
+
+def type_diff(old_text, new_text, keyboard_controller):
+    old_text = old_text.strip()
+    new_text = new_text.strip()
+    if not new_text:
+        return old_text
+    if not old_text:
+        keyboard_controller.type(new_text)
+        return new_text
+    if new_text.startswith(old_text):
+        diff = new_text[len(old_text):]
+        if diff:
+            keyboard_controller.type(diff)
+            return new_text
+        return old_text
+
+    common_prefix = os.path.commonprefix([old_text, new_text])
+    backspaces = len(old_text) - len(common_prefix)
+    for _ in range(backspaces):
+        keyboard_controller.press(keyboard.Key.backspace)
+        keyboard_controller.release(keyboard.Key.backspace)
+        time.sleep(0.001)
+    diff = new_text[len(common_prefix):]
+    if diff:
+        keyboard_controller.type(diff)
+        return new_text
+    return old_text
+
 
 class SpeechTranscriber:
-    def __init__(self, model):
-        self.model = model
+    def __init__(self, device, dtype):
+        self.device = device
+        self.dtype = dtype
         self.pykeyboard = keyboard.Controller()
+        self.model_0_6b = None
+        self.model_1_7b = None
+        self.model_lock = threading.Lock()
 
-    def transcribe(self, audio_data, language=None):
-        result = self.model.transcribe(audio_data, language=language)
-        is_first = True
-        for element in result["text"]:
-            if is_first and element == " ":
-                is_first = False
-                continue
+    def get_model(self, model_size):
+        with self.model_lock:
+            if model_size == "1.7b":
+                if self.model_1_7b is None:
+                    safe_notify("Qwen Dictation", "Loading model", "Qwen3-ASR-1.7B 모델을 불러옵니다.")
+                    self.model_1_7b = Qwen3ASRModel.from_pretrained(
+                        MODEL_1_7B,
+                        dtype=self.dtype,
+                    )
+                    self.model_1_7b.model.to(self.device)
+                    self.model_1_7b.device = self.device
+                return self.model_1_7b
 
-            try:
-                self.pykeyboard.type(element)
-                time.sleep(0.0025)
-            except:
-                pass
+            if self.model_0_6b is None:
+                safe_notify("Qwen Dictation", "Loading model", "Qwen3-ASR-0.6B 모델을 불러옵니다.")
+                self.model_0_6b = Qwen3ASRModel.from_pretrained(
+                    MODEL_0_6B,
+                    dtype=self.dtype,
+                )
+                self.model_0_6b.model.to(self.device)
+                self.model_0_6b.device = self.device
+            return self.model_0_6b
+
+    def transcribe_file(self, audio_path, language=None, model_size="0.6b"):
+        model = self.get_model(model_size)
+        language = normalize_language(language)
+        results = model.transcribe(audio_path, language=language)
+        if not results:
+            return ""
+        return apply_dictionary(results[0].text.strip())
+
 
 class Recorder:
-    def __init__(self, transcriber):
-        self.recording = False
+    def __init__(self, transcriber, app):
         self.transcriber = transcriber
+        self.app = app
+        self.recording = False
+        self.audio_frames = []
+        self.audio_lock = threading.Lock()
+        self.record_thread = None
+        self.stream_thread = None
+        self.hud_process = None
 
     def start(self, language=None):
-        thread = threading.Thread(target=self._record_impl, args=(language,))
-        thread.start()
+        if self.recording:
+            return
+        self.audio_frames = []
+        self.recording = True
+        self._start_hud()
+        self.record_thread = threading.Thread(target=self._record_impl, args=(language,), daemon=True)
+        self.record_thread.start()
+        if self.app.mode == MODE_STREAMING:
+            self.stream_thread = threading.Thread(target=self._stream_transcribe_loop, args=(language,), daemon=True)
+            self.stream_thread.start()
 
     def stop(self):
         self.recording = False
+        self._stop_hud()
 
+    def _start_hud(self):
+        try:
+            self.hud_process = subprocess.Popen(
+                [
+                    os.path.join(APP_DIR, "venv/bin/python"),
+                    os.path.join(APP_DIR, "hud.py"),
+                    "--max_time",
+                    str(int(self.app.max_time or 30)),
+                ]
+            )
+        except Exception as exc:
+            print(f"HUD start failed: {exc}")
+
+    def _stop_hud(self):
+        try:
+            if self.hud_process:
+                self.hud_process.terminate()
+                self.hud_process = None
+        except Exception as exc:
+            print(f"HUD stop failed: {exc}")
 
     def _record_impl(self, language):
-        self.recording = True
+        safe_notify("Qwen Dictation", "Recording", "말을 마친 뒤 단축키를 다시 눌러주세요.")
         frames_per_buffer = 1024
-        p = pyaudio.PyAudio()
-        stream = p.open(format=pyaudio.paInt16,
-                        channels=1,
-                        rate=16000,
-                        frames_per_buffer=frames_per_buffer,
-                        input=True)
-        frames = []
+        pyaudio_instance = pyaudio.PyAudio()
+        stream = pyaudio_instance.open(
+            format=pyaudio.paInt16,
+            channels=1,
+            rate=16000,
+            frames_per_buffer=frames_per_buffer,
+            input=True,
+        )
 
         while self.recording:
-            data = stream.read(frames_per_buffer)
-            frames.append(data)
+            try:
+                data = stream.read(frames_per_buffer, exception_on_overflow=False)
+                with self.audio_lock:
+                    self.audio_frames.append(data)
+            except Exception as exc:
+                print(f"Audio read error: {exc}")
 
         stream.stop_stream()
         stream.close()
-        p.terminate()
+        pyaudio_instance.terminate()
 
-        audio_data = np.frombuffer(b''.join(frames), dtype=np.int16)
+        if self.app.mode != MODE_STREAMING:
+            self._run_batch_transcription(language)
+
+    def _write_current_audio(self, path):
+        with self.audio_lock:
+            frames = list(self.audio_frames)
+        if not frames:
+            return False
+        audio_data = np.frombuffer(b"".join(frames), dtype=np.int16)
         audio_data_fp32 = audio_data.astype(np.float32) / 32768.0
-        self.transcriber.transcribe(audio_data_fp32, language)
+        sf.write(path, audio_data_fp32, 16000)
+        return True
+
+    def _run_batch_transcription(self, language):
+        audio_path = "/tmp/qwen_dictation_batch.wav"
+        if not self._write_current_audio(audio_path):
+            return
+        try:
+            safe_notify("Qwen Dictation", "Transcribing", "Qwen3-ASR로 녹음 전체를 분석 중입니다.")
+            text = self.transcriber.transcribe_file(
+                audio_path,
+                language=language,
+                model_size=self.app.selected_model,
+            )
+            if not text:
+                return
+            paste_text(text, submit=(self.app.mode == MODE_BATCH_SUBMIT))
+            safe_notify("Qwen Dictation", "Done", text)
+        except Exception as exc:
+            print(f"Batch transcription error: {exc}")
+            safe_notify("Qwen Dictation", "Error", str(exc))
+
+    def _stream_transcribe_loop(self, language):
+        last_text = ""
+        time.sleep(1.0)
+        while self.recording:
+            time.sleep(self.app.stream_interval)
+            audio_path = "/tmp/qwen_dictation_stream.wav"
+            if not self._write_current_audio(audio_path):
+                continue
+            try:
+                new_text = self.transcriber.transcribe_file(
+                    audio_path,
+                    language=language,
+                    model_size=self.app.selected_model,
+                )
+                if new_text:
+                    last_text = type_diff(last_text, new_text, self.transcriber.pykeyboard)
+            except Exception as exc:
+                print(f"Streaming transcription error: {exc}")
 
 
 class GlobalKeyListener:
@@ -72,111 +324,155 @@ class GlobalKeyListener:
         self.key2_pressed = False
 
     def parse_key_combination(self, key_combination):
-        key1_name, key2_name = key_combination.split('+')
-        key1 = getattr(keyboard.Key, key1_name, keyboard.KeyCode(char=key1_name))
-        key2 = getattr(keyboard.Key, key2_name, keyboard.KeyCode(char=key2_name))
+        parts = key_combination.split("+")
+
+        def resolve(name):
+            return getattr(keyboard.Key, name, keyboard.KeyCode(char=name))
+
+        key1 = resolve(parts[0])
+        key2 = resolve(parts[1]) if len(parts) > 1 else None
         return key1, key2
 
     def on_key_press(self, key):
+        # Single-key hotkey: toggle on that one key.
+        if self.key2 is None:
+            if key == self.key1:
+                self.app.toggle()
+            return
+
         if key == self.key1:
             self.key1_pressed = True
         elif key == self.key2:
             self.key2_pressed = True
-
         if self.key1_pressed and self.key2_pressed:
             self.app.toggle()
 
     def on_key_release(self, key):
+        if self.key2 is None:
+            return
         if key == self.key1:
             self.key1_pressed = False
         elif key == self.key2:
             self.key2_pressed = False
 
+
 class DoubleCommandKeyListener:
     def __init__(self, app):
         self.app = app
         self.key = keyboard.Key.cmd_r
-        self.pressed = 0
         self.last_press_time = 0
 
     def on_key_press(self, key):
-        is_listening = self.app.started
-        if key == self.key:
-            current_time = time.time()
-            if not is_listening and current_time - self.last_press_time < 0.5:  # Double click to start listening
-                self.app.toggle()
-            elif is_listening:  # Single click to stop listening
-                self.app.toggle()
-            self.last_press_time = current_time
+        if key != self.key:
+            return
+        current_time = time.time()
+        if self.app.started:
+            self.app.toggle()
+        elif current_time - self.last_press_time < 0.5:
+            self.app.toggle()
+        self.last_press_time = current_time
 
     def on_key_release(self, key):
         pass
 
+
 class StatusBarApp(rumps.App):
-    def __init__(self, recorder, languages=None, max_time=None):
-        super().__init__("whisper", "⏯")
-        self.languages = languages
-        self.current_language = languages[0] if languages is not None else None
-
-        menu = [
-            'Start Recording',
-            'Stop Recording',
-            None,
-        ]
-
-        if languages is not None:
-            for lang in languages:
-                callback = self.change_language if lang != self.current_language else None
-                menu.append(rumps.MenuItem(lang, callback=callback))
-            menu.append(None)
-            
-        self.menu = menu
-        self.menu['Stop Recording'].set_callback(None)
-
+    def __init__(self, languages=None, max_time=None, mode=MODE_STREAMING):
+        super().__init__("Qwen Dictation", "⏯")
+        self.languages = languages or ["ko", "en"]
+        self.current_language = self.languages[0]
+        self.mode = mode
+        self.selected_model = "0.6b"
+        self.stream_interval = 1.2
+        self.k_double_cmd = False
         self.started = False
-        self.recorder = recorder
+        self.recorder = None
         self.max_time = max_time
         self.timer = None
         self.elapsed_time = 0
+        self.start_time = None
+
+        menu = [
+            "Start Recording",
+            "Stop Recording",
+            None,
+            rumps.MenuItem("Mode: Streaming", callback=self.set_streaming_mode),
+            rumps.MenuItem("Mode: Batch Paste", callback=self.set_batch_paste_mode),
+            rumps.MenuItem("Mode: Batch Paste + Enter", callback=self.set_batch_submit_mode),
+            None,
+            rumps.MenuItem("Open Settings Dashboard", callback=self.open_dashboard),
+            None,
+        ]
+        for lang in self.languages:
+            menu.append(rumps.MenuItem(f"Language: {lang}", callback=self.change_language))
+        self.menu = menu
+        self.menu["Stop Recording"].set_callback(None)
+        self.sync_menu_state()
+
+    def sync_menu_state(self):
+        self.menu["Mode: Streaming"].state = int(self.mode == MODE_STREAMING)
+        self.menu["Mode: Batch Paste"].state = int(self.mode == MODE_BATCH_PASTE)
+        self.menu["Mode: Batch Paste + Enter"].state = int(self.mode == MODE_BATCH_SUBMIT)
+        for lang in self.languages:
+            self.menu[f"Language: {lang}"].state = int(self.current_language == lang)
+
+    def open_dashboard(self, _):
+        import webbrowser
+
+        webbrowser.open("http://127.0.0.1:5001")
+
+    def set_mode(self, mode):
+        if mode not in SUPPORTED_MODES:
+            raise ValueError(f"Unsupported mode: {mode}")
+        if self.started:
+            raise RuntimeError("Cannot change mode while recording")
+        self.mode = mode
+        self.sync_menu_state()
+
+    def set_streaming_mode(self, _):
+        self.set_mode(MODE_STREAMING)
+
+    def set_batch_paste_mode(self, _):
+        self.set_mode(MODE_BATCH_PASTE)
+
+    def set_batch_submit_mode(self, _):
+        self.set_mode(MODE_BATCH_SUBMIT)
 
     def change_language(self, sender):
-        self.current_language = sender.title
-        for lang in self.languages:
-            self.menu[lang].set_callback(self.change_language if lang != self.current_language else None)
+        self.current_language = sender.title.replace("Language: ", "")
+        self.sync_menu_state()
 
-    @rumps.clicked('Start Recording')
+    @rumps.clicked("Start Recording")
     def start_app(self, _):
-        print('Listening...')
+        if self.started:
+            return
+        print("Listening...")
         self.started = True
-        self.menu['Start Recording'].set_callback(None)
-        self.menu['Stop Recording'].set_callback(self.stop_app)
+        self.menu["Start Recording"].set_callback(None)
+        self.menu["Stop Recording"].set_callback(self.stop_app)
         self.recorder.start(self.current_language)
-
         if self.max_time is not None:
             self.timer = threading.Timer(self.max_time, lambda: self.stop_app(None))
             self.timer.start()
-
         self.start_time = time.time()
         self.update_title()
 
-    @rumps.clicked('Stop Recording')
+    @rumps.clicked("Stop Recording")
     def stop_app(self, _):
         if not self.started:
             return
-        
         if self.timer is not None:
             self.timer.cancel()
-
-        print('Transcribing...')
+            self.timer = None
         self.title = "⏯"
         self.started = False
-        self.menu['Stop Recording'].set_callback(None)
-        self.menu['Start Recording'].set_callback(self.start_app)
+        self.menu["Stop Recording"].set_callback(None)
+        self.menu["Start Recording"].set_callback(self.start_app)
         self.recorder.stop()
-        print('Done.\n')
+        print("Stopped.")
 
     def update_title(self):
-        if self.started:
+        if self.started and self.start_time is not None:
             self.elapsed_time = int(time.time() - self.start_time)
             minutes, seconds = divmod(self.elapsed_time, 60)
             self.title = f"({minutes:02d}:{seconds:02d}) 🔴"
@@ -190,62 +486,55 @@ class StatusBarApp(rumps.App):
 
 
 def parse_args():
-    parser = argparse.ArgumentParser(
-        description='Dictation app using the OpenAI whisper ASR model. By default the keyboard shortcut cmd+option '
-        'starts and stops dictation')
-    parser.add_argument('-m', '--model_name', type=str,
-                        choices=['tiny', 'tiny.en', 'base', 'base.en', 'small', 'small.en', 'medium', 'medium.en', 'large'],
-                        default='base',
-                        help='Specify the whisper ASR model to use. Options: tiny, base, small, medium, or large. '
-                        'To see the  most up to date list of models along with model size, memory footprint, and estimated '
-                        'transcription speed check out this [link](https://github.com/openai/whisper#available-models-and-languages). '
-                        'Note that the models ending in .en are trained only on English speech and will perform better on English '
-                        'language. Note that the small, medium, and large models may be slow to transcribe and are only recommended '
-                        'if you find the base model to be insufficient. Default: base.')
-    parser.add_argument('-k', '--key_combination', type=str, default='cmd_l+alt' if platform.system() == 'Darwin' else 'ctrl+alt',
-                        help='Specify the key combination to toggle the app. Example: cmd_l+alt for macOS '
-                        'ctrl+alt for other platforms. Default: cmd_r+alt (macOS) or ctrl+alt (others).')
-    parser.add_argument('--k_double_cmd', action='store_true',
-                            help='If set, use double Right Command key press on macOS to toggle the app (double click to begin recording, single click to stop recording). '
-                                 'Ignores the --key_combination argument.')
-    parser.add_argument('-l', '--language', type=str, default=None,
-                        help='Specify the two-letter language code (e.g., "en" for English) to improve recognition accuracy. '
-                        'This can be especially helpful for smaller model sizes.  To see the full list of supported languages, '
-                        'check out the official list [here](https://github.com/openai/whisper/blob/main/whisper/tokenizer.py).')
-    parser.add_argument('-t', '--max_time', type=float, default=30,
-                        help='Specify the maximum recording time in seconds. The app will automatically stop recording after this duration. '
-                        'Default: 30 seconds.')
-
-    args = parser.parse_args()
-
-    if args.language is not None:
-        args.language = args.language.split(',')
-
-    if args.model_name.endswith('.en') and args.language is not None and any(lang != 'en' for lang in args.language):
-        raise ValueError('If using a model ending in .en, you cannot specify a language other than English.')
-
-    return args
+    parser = argparse.ArgumentParser(description="Local Qwen3-ASR dictation app for macOS.")
+    parser.add_argument(
+        "-k",
+        "--key_combination",
+        type=str,
+        default="cmd_l+alt" if platform.system() == "Darwin" else "ctrl+alt",
+        help="Hotkey to toggle recording, for example cmd_l+alt.",
+    )
+    parser.add_argument(
+        "--k_double_cmd",
+        action="store_true",
+        help="Use double right Command to start and single right Command to stop.",
+    )
+    parser.add_argument(
+        "-l",
+        "--language",
+        type=str,
+        default="ko,en",
+        help="Comma-separated language choices. First item is used initially.",
+    )
+    parser.add_argument("-t", "--max_time", type=float, default=30)
+    parser.add_argument("--mode", choices=SUPPORTED_MODES, default=MODE_STREAMING)
+    parser.add_argument("--model-size", choices=("0.6b", "1.7b"), default="0.6b")
+    return parser.parse_args()
 
 
-if __name__ == "__main__":
+def main():
     args = parse_args()
+    ensure_dictionary()
+    languages = [item.strip() for item in args.language.split(",") if item.strip()]
+    device = "mps" if torch.backends.mps.is_available() else "cpu"
+    dtype = torch.float16 if device == "mps" else torch.float32
+    print(f"Initializing Qwen3-ASR on {device}...")
 
-    print("Loading model...")
-    model_name = args.model_name
-    model = load_model(model_name)
-    print(f"{model_name} model loaded")
-    
-    transcriber = SpeechTranscriber(model)
-    recorder = Recorder(transcriber)
-    
-    app = StatusBarApp(recorder, args.language, args.max_time)
-    if args.k_double_cmd:
-        key_listener = DoubleCommandKeyListener(app)
-    else:
-        key_listener = GlobalKeyListener(app, args.key_combination)
+    app = StatusBarApp(languages=languages, max_time=args.max_time, mode=args.mode)
+    app.k_double_cmd = args.k_double_cmd
+    app.selected_model = args.model_size
+    transcriber = SpeechTranscriber(device, dtype)
+    recorder = Recorder(transcriber, app)
+    app.recorder = recorder
+
+    dashboard.start_server(app)
+    key_listener = DoubleCommandKeyListener(app) if args.k_double_cmd else GlobalKeyListener(app, args.key_combination)
     listener = keyboard.Listener(on_press=key_listener.on_key_press, on_release=key_listener.on_key_release)
     listener.start()
 
-    print("Running... ")
+    print("Running Qwen Dictation. Dashboard: http://127.0.0.1:5001")
     app.run()
 
+
+if __name__ == "__main__":
+    sys.exit(main())
