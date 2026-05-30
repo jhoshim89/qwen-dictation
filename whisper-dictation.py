@@ -222,12 +222,7 @@ class Recorder:
     def _start_hud(self):
         try:
             self.hud_process = subprocess.Popen(
-                [
-                    os.path.join(APP_DIR, "venv/bin/python"),
-                    os.path.join(APP_DIR, "hud.py"),
-                    "--max_time",
-                    str(int(self.app.max_time or 30)),
-                ]
+                app_paths.hud_command(max_time=self.app.max_time or 30)
             )
         except Exception as exc:
             print(f"HUD start failed: {exc}")
