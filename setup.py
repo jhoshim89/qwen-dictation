@@ -7,7 +7,13 @@
 모델 가중치(1.8GB)는 번들에 넣지 않는다. 앱은 실행 시 ~/.cache/huggingface 의
 기존 Qwen3-ASR 캐시를 그대로 참조한다.
 """
+import sys
+
 from setuptools import setup
+
+# py2app 의 modulegraph 가 torch 처럼 거대한 패키지의 AST 를 재귀로 훑을 때
+# 기본 재귀 한도(1000)를 넘어 RecursionError 가 난다. 한도를 올려준다.
+sys.setrecursionlimit(10000)
 
 APP = ["whisper-dictation.py"]
 
@@ -35,8 +41,10 @@ OPTIONS = {
         "soundfile",
         "sounddevice",
         "numpy",
+        "qwen_asr",
+        "pkg_resources",
     ],
-    "includes": ["torch", "torchaudio", "transformers", "qwen_asr"],
+    "includes": ["torch", "torchaudio", "transformers"],
     "excludes": [],
     "iconfile": None,
 }
