@@ -45,7 +45,32 @@ OPTIONS = {
         "pkg_resources",
     ],
     "includes": ["torch", "torchaudio", "transformers"],
-    "excludes": [],
+    # 아래 패키지는 앱 실행에 필요 없는데 transformers/qwen_asr 가 optional 로
+    # 끌어와서 빌드를 깨뜨린다(PyInstaller 의 GTK/Qt hook 등). 번들에서 제외한다.
+    "excludes": [
+        "PyInstaller",
+        "gradio",
+        "gradio_client",
+        "matplotlib",
+        "PyQt5",
+        "PyQt6",
+        "PySide2",
+        "PySide6",
+        "gi",
+        "numba",
+        "llvmlite",
+        "scipy",
+        "sklearn",
+        "librosa",
+        "pandas",
+        "sympy",
+        "av",
+        "soynlp",
+        "nagisa",
+        "tkinter.test",
+        "test",
+        "tests",
+    ],
     "iconfile": None,
 }
 
