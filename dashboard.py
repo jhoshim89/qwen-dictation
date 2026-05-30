@@ -4,6 +4,8 @@ import os
 import threading
 from flask import Flask, jsonify, request, render_template_string
 
+import app_paths
+
 # Suppress flask output logs to keep the console clean
 log = logging.getLogger('werkzeug')
 log.setLevel(logging.ERROR)
@@ -11,13 +13,10 @@ log.setLevel(logging.ERROR)
 flask_app = Flask(__name__)
 app_instance = None  # Global reference to StatusBarApp
 
-# Standard templates folder path
-TEMPLATES_DIR = os.path.join(os.path.dirname(__file__), 'templates')
-
 @flask_app.route('/')
 def home():
     try:
-        html_path = os.path.join(TEMPLATES_DIR, 'dashboard.html')
+        html_path = app_paths.resource_path('templates', 'dashboard.html')
         with open(html_path, 'r', encoding='utf-8') as f:
             content = f.read()
         return render_template_string(content)
@@ -28,7 +27,7 @@ def home():
 def get_config():
     if not app_instance:
         return jsonify({"error": "App instance not initialized"}), 500
-        
+
     return jsonify({
         "mode": app_instance.mode,
         "language": app_instance.current_language or "ko",
@@ -43,7 +42,7 @@ def get_config():
 def post_config():
     if not app_instance:
         return jsonify({"error": "App instance not initialized"}), 500
-        
+
     data = request.json
     if not data:
         return jsonify({"error": "Invalid request payload"}), 400
@@ -97,7 +96,7 @@ def post_dictionary():
     data = request.json
     if data is None:
         return jsonify({"error": "Invalid request payload"}), 400
-        
+
     try:
         with open(dict_path, 'w', encoding='utf-8') as f:
             json.dump(data, f, ensure_ascii=False, indent=2)
@@ -108,11 +107,11 @@ def post_dictionary():
 def start_server(app):
     global app_instance
     app_instance = app
-    
+
     # Run the flask app in a background daemon thread
     def run():
         flask_app.run(host='127.0.0.1', port=5001, debug=False, use_reloader=False)
-        
+
     thread = threading.Thread(target=run, daemon=True)
     thread.start()
     print("Settings Dashboard background server started on http://127.0.0.1:5001")

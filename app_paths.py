@@ -1,7 +1,7 @@
 # app_paths.py
 """번들(.app)과 개발(소스 실행) 양쪽에서 동작하는 경로 헬퍼.
 
-py2app 번들에서는 sys.frozen 이 설정되고 __file__ 이 .../Resources/ 아래를 가리킨다.
+py2app/PyInstaller 번들에서는 리소스가 sys._MEIPASS 아래에 놓이고,
 개발 중에는 이 파일이 있는 디렉터리가 곧 프로젝트 루트다.
 """
 import os
@@ -19,7 +19,8 @@ def is_frozen():
 def resource_path(*parts):
     """읽기전용 리소스(templates 등)의 절대경로.
 
-    PyInstaller 번들에서는 데이터가 sys._MEIPASS 아래로 풀린다.
+    PyInstaller 번들에서는 sys._MEIPASS 아래에서 찾고,
+    개발 중에는 이 모듈이 있는 디렉터리 기준으로 찾는다.
     """
     base = getattr(sys, "_MEIPASS", None) or _THIS_DIR
     return os.path.join(base, *parts)
