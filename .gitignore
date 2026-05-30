@@ -1,8 +1,9 @@
 venv/
 __pycache__/
+.pytest_cache/
 *.pyc
 .DS_Store
-.pytest_cache/
-.ruff_cache/
 build/
 dist/
+*.spec
+app_main.py

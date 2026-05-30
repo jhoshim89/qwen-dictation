@@ -17,8 +17,12 @@ def is_frozen():
 
 
 def resource_path(*parts):
-    """읽기전용 리소스(templates 등)의 절대경로."""
-    return os.path.join(_THIS_DIR, *parts)
+    """읽기전용 리소스(templates 등)의 절대경로.
+
+    PyInstaller 번들에서는 데이터가 sys._MEIPASS 아래로 풀린다.
+    """
+    base = getattr(sys, "_MEIPASS", None) or _THIS_DIR
+    return os.path.join(base, *parts)
 
 
 def user_data_dir():
