@@ -1,71 +1,99 @@
-# Multilingual Dictation App based on OpenAI Whisper
-Multilingual dictation app based on the powerful OpenAI Whisper ASR model(s) to provide accurate and efficient speech-to-text conversion in any application. The app runs in the background and is triggered through a keyboard shortcut. It is also entirely offline, so no data will be shared. It allows users to set up their own keyboard combinations and choose from different Whisper models, and languages.
+# Qwen Dictation
 
-## Prerequisites
-The PortAudio and llvm library is required for this app to work. You can install it on macOS using the following command:
+Local macOS dictation MVP powered by Qwen3-ASR. It runs from the menu bar, opens a small settings dashboard, and types into the currently focused input field.
 
-```bash
-brew install portaudio llvm
-```
+## Modes
 
-## Permissions
-The app requires accessibility permissions to register global hotkeys and permission to access your microphone for speech recognition.
+- **Streaming Dictation**: transcribes repeatedly while recording and types the visible diff.
+- **Batch Paste**: records first, transcribes once, then pastes the result.
+- **Batch Paste + Enter**: records first, transcribes once, pastes the result, then presses Return.
 
-## Installation
-Clone the repository:
+## Install
 
 ```bash
-git clone https://github.com/foges/whisper-dictation.git
-cd whisper-dictation
-```
-
-If you use poetry:
-
-```shell
-poetry install
-poetry shell
-```
-
-Or, if you don't use poetry, first create a virtual environment:
-
-```bash
+brew install portaudio
 python3 -m venv venv
 source venv/bin/activate
-```
-
-Install the required packages:
-
-```bash
 pip install -r requirements.txt
 ```
 
-## Usage
-Run the application:
+## Run
 
 ```bash
-python whisper-dictation.py
+./run.sh
 ```
 
-By default, the app uses the "base" Whisper ASR model and the key combination to toggle dictation is cmd+option on macOS and ctrl+alt on other platforms. You can change the model and the key combination using command-line arguments.  Note that models other than `tiny` and `base` can be slow to transcribe and are not recommended unless you're using a powerful computer, ideally one with a CUDA-enabled GPU. For example:
+Dashboard:
 
+```text
+http://127.0.0.1:5001
+```
+
+Useful options:
 
 ```bash
-python whisper-dictation.py -m large -k cmd_r+shift -l en
+./run.sh --mode streaming
+./run.sh --mode batch_paste
+./run.sh --mode batch_submit
+./run.sh --model-size 0.6b
+./run.sh --model-size 1.7b
+./run.sh --k_double_cmd
 ```
 
-The models are multilingual, and you can specify a two-letter language code (e.g., "no" for Norwegian) with the `-l` or `--language` option. Specifying the language can improve recognition accuracy, especially for smaller model sizes.
+Default hotkey is `cmd_l+alt` on macOS. With `--k_double_cmd`, double press the right Command key to start and press it once to stop.
 
-#### Replace macOS default dictation trigger key
-You can use this app to replace macOS built-in dictation. Trigger to begin recording with a double click of Right Command key and stop recording with a single click of Right Command key.
+## macOS Permissions
+
+The app needs three macOS permissions because it listens to a global hotkey, records audio, and types into the focused app.
+
+1. Open **System Settings > Privacy & Security > Microphone**.
+2. Enable the terminal app you use to run this project, such as Terminal, iTerm, or Codex.
+3. Open **System Settings > Privacy & Security > Accessibility**.
+4. Enable the same terminal app.
+5. Open **System Settings > Privacy & Security > Automation** if macOS prompts for it.
+6. Allow the terminal app to control **System Events**.
+
+If paste or Return does nothing, Accessibility or Automation is usually missing. If recording fails, Microphone permission is usually missing.
+
+In testing, Chrome accepted menu-based paste more reliably than synthetic `Cmd+V`, so the app tries the front app's Edit/Paste menu first and falls back to `Cmd+V`.
+
+## Personal Dictionary
+
+Edit replacements in the dashboard or in `dictionary.json`.
+
+Example:
+
+```json
+{
+  "큐엔": "Qwen",
+  "지피티": "GPT"
+}
+```
+
+## Development Checks
+
 ```bash
-python whisper-dictation.py -m large --k_double_cmd -l en
+./venv/bin/python -m py_compile whisper-dictation.py dashboard.py hud.py test_typing.py
+./venv/bin/python - <<'PY'
+import flask, numpy, pyaudio, pynput, qwen_asr, rumps, soundfile, torch
+print("imports ok", torch.backends.mps.is_available())
+PY
 ```
-To use this trigger, go to System Settings -> Keyboard, disable Dictation. If you double click Right Command key on any text field, macOS will ask whether you want to enable Dictation, so select Don't Ask Again.
 
-## Setting the App as a Startup Item
-To have the app run automatically when your computer starts, follow these steps:
+Pre-download the default model if the first run is slow:
 
- 1. Open System Preferences.
- 2. Go to Users & Groups.
- 3. Click on your username, then select the Login Items tab.
- 4. Click the + button and add the `run.sh` script from the whisper-dictation folder.
+```bash
+HF_HUB_DISABLE_XET=1 HF_HUB_ENABLE_HF_TRANSFER=1 ./venv/bin/huggingface-cli download Qwen/Qwen3-ASR-0.6B
+```
+
+If that is slow or stalls, use the resumable parallel downloader:
+
+```bash
+./venv/bin/python download_qwen_model.py
+```
+
+Check the paste/Return pipeline in a controlled prompt window:
+
+```bash
+./venv/bin/python e2e_prompt_test.py --text "Qwen paste test" --submit
+```

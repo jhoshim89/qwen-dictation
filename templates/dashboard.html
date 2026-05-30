@@ -1,0 +1,422 @@
+<!DOCTYPE html>
+<html lang="ko">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>Qwen Dictation</title>
+    <style>
+        :root {
+            --bg: #10131a;
+            --panel: #181d27;
+            --panel-2: #202736;
+            --line: #30384a;
+            --text: #eef2f8;
+            --muted: #a6afc0;
+            --blue: #5b8def;
+            --green: #39b980;
+            --red: #ef5b5b;
+        }
+        * { box-sizing: border-box; }
+        body {
+            margin: 0;
+            min-height: 100vh;
+            background: var(--bg);
+            color: var(--text);
+            font-family: -apple-system, BlinkMacSystemFont, "Segoe UI", sans-serif;
+        }
+        header {
+            height: 64px;
+            display: flex;
+            align-items: center;
+            justify-content: space-between;
+            padding: 0 28px;
+            border-bottom: 1px solid var(--line);
+            background: rgba(16, 19, 26, 0.96);
+            position: sticky;
+            top: 0;
+            z-index: 5;
+        }
+        h1 { font-size: 18px; margin: 0; letter-spacing: 0; }
+        main {
+            max-width: 1180px;
+            margin: 0 auto;
+            padding: 28px;
+            display: grid;
+            grid-template-columns: 380px 1fr;
+            gap: 20px;
+        }
+        .panel {
+            background: var(--panel);
+            border: 1px solid var(--line);
+            border-radius: 8px;
+            padding: 18px;
+        }
+        .stack { display: grid; gap: 20px; }
+        .title {
+            font-size: 14px;
+            font-weight: 700;
+            margin: 0 0 14px;
+            color: var(--text);
+        }
+        .status {
+            display: inline-flex;
+            align-items: center;
+            gap: 8px;
+            color: var(--muted);
+            font-size: 13px;
+        }
+        .dot {
+            width: 9px;
+            height: 9px;
+            border-radius: 50%;
+            background: var(--green);
+        }
+        .dot.recording {
+            background: var(--red);
+            animation: pulse 1s infinite;
+        }
+        @keyframes pulse { 50% { opacity: .4; } }
+        .mode-grid {
+            display: grid;
+            gap: 10px;
+        }
+        .mode {
+            width: 100%;
+            border: 1px solid var(--line);
+            border-radius: 8px;
+            background: var(--panel-2);
+            color: var(--text);
+            text-align: left;
+            padding: 13px;
+            cursor: pointer;
+        }
+        .mode.active {
+            border-color: var(--blue);
+            box-shadow: inset 0 0 0 1px var(--blue);
+        }
+        .mode strong {
+            display: block;
+            font-size: 14px;
+            margin-bottom: 4px;
+        }
+        .mode span {
+            display: block;
+            color: var(--muted);
+            font-size: 12px;
+            line-height: 1.4;
+        }
+        label {
+            display: block;
+            color: var(--muted);
+            font-size: 12px;
+            font-weight: 700;
+            margin: 14px 0 6px;
+        }
+        select, input {
+            width: 100%;
+            background: var(--panel-2);
+            border: 1px solid var(--line);
+            border-radius: 8px;
+            color: var(--text);
+            height: 38px;
+            padding: 0 10px;
+            font-size: 14px;
+        }
+        .row {
+            display: grid;
+            grid-template-columns: 1fr 1fr;
+            gap: 10px;
+        }
+        .dict-toolbar {
+            display: flex;
+            gap: 10px;
+            margin-bottom: 14px;
+        }
+        .dict-toolbar input { flex: 1; }
+        button.primary {
+            border: 0;
+            border-radius: 8px;
+            background: var(--blue);
+            color: white;
+            height: 38px;
+            padding: 0 14px;
+            font-weight: 700;
+            cursor: pointer;
+            white-space: nowrap;
+        }
+        table {
+            width: 100%;
+            border-collapse: collapse;
+            font-size: 14px;
+        }
+        th, td {
+            border-bottom: 1px solid var(--line);
+            padding: 10px 8px;
+            text-align: left;
+        }
+        th {
+            color: var(--muted);
+            font-size: 12px;
+        }
+        .delete {
+            border: 1px solid var(--line);
+            background: transparent;
+            color: var(--muted);
+            border-radius: 6px;
+            padding: 5px 8px;
+            cursor: pointer;
+        }
+        .empty {
+            color: var(--muted);
+            padding: 22px 0;
+            text-align: center;
+        }
+        dialog {
+            border: 1px solid var(--line);
+            border-radius: 8px;
+            background: var(--panel);
+            color: var(--text);
+            width: min(420px, calc(100vw - 32px));
+        }
+        dialog::backdrop { background: rgba(0, 0, 0, .55); }
+        .dialog-actions {
+            margin-top: 16px;
+            display: flex;
+            justify-content: flex-end;
+            gap: 8px;
+        }
+        .secondary {
+            border: 1px solid var(--line);
+            background: transparent;
+            color: var(--text);
+            border-radius: 8px;
+            height: 38px;
+            padding: 0 14px;
+            cursor: pointer;
+        }
+        @media (max-width: 840px) {
+            main { grid-template-columns: 1fr; padding: 18px; }
+            header { padding: 0 18px; }
+        }
+    </style>
+</head>
+<body>
+    <header>
+        <h1>Qwen Dictation</h1>
+        <div class="status"><span id="status-dot" class="dot"></span><span id="status-text">대기 중</span></div>
+    </header>
+    <main>
+        <div class="stack">
+            <section class="panel">
+                <h2 class="title">입력 모드</h2>
+                <div class="mode-grid">
+                    <button class="mode" id="mode-streaming" onclick="setMode('streaming')">
+                        <strong>Streaming Dictation</strong>
+                        <span>말하는 동안 현재 커서 위치에 계속 입력합니다.</span>
+                    </button>
+                    <button class="mode" id="mode-batch_paste" onclick="setMode('batch_paste')">
+                        <strong>Batch Paste</strong>
+                        <span>녹음 종료 후 전체 문장을 입력창에 붙여넣습니다.</span>
+                    </button>
+                    <button class="mode" id="mode-batch_submit" onclick="setMode('batch_submit')">
+                        <strong>Batch Paste + Enter</strong>
+                        <span>붙여넣은 뒤 Return을 눌러 바로 전송합니다.</span>
+                    </button>
+                </div>
+            </section>
+            <section class="panel">
+                <h2 class="title">엔진 설정</h2>
+                <label for="model-size">모델</label>
+                <select id="model-size" onchange="updateConfig()">
+                    <option value="0.6b">Qwen3-ASR 0.6B</option>
+                    <option value="1.7b">Qwen3-ASR 1.7B</option>
+                </select>
+                <div class="row">
+                    <div>
+                        <label for="language">언어</label>
+                        <select id="language" onchange="updateConfig()">
+                            <option value="ko">한국어</option>
+                            <option value="en">English</option>
+                            <option value="auto">Auto</option>
+                        </select>
+                    </div>
+                    <div>
+                        <label for="max-time">최대 녹음 초</label>
+                        <input id="max-time" type="number" min="1" max="600" onchange="updateConfig()">
+                    </div>
+                </div>
+                <label for="stream-interval">스트리밍 재추론 간격 초</label>
+                <input id="stream-interval" type="number" min="0.8" max="10" step="0.1" onchange="updateConfig()">
+            </section>
+        </div>
+        <section class="panel">
+            <h2 class="title">개인 치환 사전</h2>
+            <div class="dict-toolbar">
+                <input id="search" placeholder="검색" oninput="renderDictionary()">
+                <button class="primary" onclick="openDialog()">추가</button>
+            </div>
+            <div id="dict-wrap"></div>
+        </section>
+    </main>
+    <dialog id="dict-dialog">
+        <h2 class="title">치환 규칙 추가</h2>
+        <label for="spoken">인식된 말</label>
+        <input id="spoken" placeholder="예: 큐엔">
+        <label for="replacement">바꿀 텍스트</label>
+        <input id="replacement" placeholder="예: Qwen">
+        <div class="dialog-actions">
+            <button class="secondary" onclick="closeDialog()">취소</button>
+            <button class="primary" onclick="addWord()">저장</button>
+        </div>
+    </dialog>
+    <script>
+        let config = {};
+        let dictionary = {};
+
+        window.addEventListener("DOMContentLoaded", () => {
+            fetchConfig();
+            fetchDictionary();
+            fetchStatus();
+            setInterval(fetchStatus, 1200);
+        });
+
+        function fetchConfig() {
+            fetch("/api/config")
+                .then((res) => res.json())
+                .then((data) => {
+                    config = data;
+                    document.getElementById("model-size").value = data.model_size || "0.6b";
+                    document.getElementById("language").value = data.language || "ko";
+                    document.getElementById("max-time").value = data.max_time || 30;
+                    document.getElementById("stream-interval").value = data.stream_interval || 1.2;
+                    renderModes(data.mode || "streaming");
+                });
+        }
+
+        function renderModes(mode) {
+            ["streaming", "batch_paste", "batch_submit"].forEach((name) => {
+                const el = document.getElementById(`mode-${name}`);
+                el.classList.toggle("active", name === mode);
+            });
+        }
+
+        function setMode(mode) {
+            config.mode = mode;
+            renderModes(mode);
+            updateConfig();
+        }
+
+        function updateConfig() {
+            const payload = {
+                mode: config.mode || "streaming",
+                model_size: document.getElementById("model-size").value,
+                language: document.getElementById("language").value,
+                max_time: Number(document.getElementById("max-time").value),
+                stream_interval: Number(document.getElementById("stream-interval").value)
+            };
+            fetch("/api/config", {
+                method: "POST",
+                headers: { "Content-Type": "application/json" },
+                body: JSON.stringify(payload)
+            }).then(fetchConfig);
+        }
+
+        function fetchStatus() {
+            fetch("/api/status")
+                .then((res) => res.json())
+                .then((data) => {
+                    const dot = document.getElementById("status-dot");
+                    const text = document.getElementById("status-text");
+                    dot.classList.toggle("recording", Boolean(data.started));
+                    text.innerText = data.started ? `녹음 중 ${data.elapsed_time || 0}s` : "대기 중";
+                });
+        }
+
+        function fetchDictionary() {
+            fetch("/api/dictionary")
+                .then((res) => res.json())
+                .then((data) => {
+                    dictionary = data;
+                    renderDictionary();
+                });
+        }
+
+        function renderDictionary() {
+            const q = document.getElementById("search").value.toLowerCase();
+            const entries = Object.entries(dictionary).filter(([key, value]) => {
+                return key.toLowerCase().includes(q) || String(value).toLowerCase().includes(q);
+            });
+            const wrap = document.getElementById("dict-wrap");
+            if (!entries.length) {
+                wrap.innerHTML = '<div class="empty">등록된 치환 규칙이 없습니다.</div>';
+                return;
+            }
+            wrap.innerHTML = `
+                <table>
+                    <thead><tr><th>인식된 말</th><th>바꿀 텍스트</th><th></th></tr></thead>
+                    <tbody>
+                        ${entries.map(([key, value]) => `
+                            <tr>
+                                <td>${escapeHtml(key)}</td>
+                                <td>${escapeHtml(value)}</td>
+                                <td><button class="delete" onclick="deleteWord('${escapeJs(key)}')">삭제</button></td>
+                            </tr>
+                        `).join("")}
+                    </tbody>
+                </table>
+            `;
+        }
+
+        function openDialog() {
+            document.getElementById("spoken").value = "";
+            document.getElementById("replacement").value = "";
+            document.getElementById("dict-dialog").showModal();
+        }
+
+        function closeDialog() {
+            document.getElementById("dict-dialog").close();
+        }
+
+        function addWord() {
+            const spoken = document.getElementById("spoken").value.trim();
+            const replacement = document.getElementById("replacement").value.trim();
+            if (!spoken || !replacement) return;
+            dictionary[spoken] = replacement;
+            saveDictionary();
+            closeDialog();
+        }
+
+        function deleteWord(key) {
+            delete dictionary[key];
+            saveDictionary();
+        }
+
+        function saveDictionary() {
+            fetch("/api/dictionary", {
+                method: "POST",
+                headers: { "Content-Type": "application/json" },
+                body: JSON.stringify(dictionary)
+            })
+                .then((res) => res.json())
+                .then((data) => {
+                    dictionary = data;
+                    renderDictionary();
+                });
+        }
+
+        function escapeHtml(value) {
+            return String(value).replace(/[&<>"']/g, (s) => ({
+                "&": "&amp;",
+                "<": "&lt;",
+                ">": "&gt;",
+                '"': "&quot;",
+                "'": "&#39;"
+            })[s]);
+        }
+
+        function escapeJs(value) {
+            return String(value).replace(/\\/g, "\\\\").replace(/'/g, "\\'");
+        }
+    </script>
+</body>
+</html>
