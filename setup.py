@@ -32,12 +32,12 @@ OPTIONS = {
         "rumps",
         "flask",
         "pynput",
-        "qwen_asr",
         "soundfile",
+        "sounddevice",
         "numpy",
     ],
-    "includes": ["torch", "torchaudio", "transformers"],
-    "excludes": ["tkinter"],
+    "includes": ["torch", "torchaudio", "transformers", "qwen_asr"],
+    "excludes": [],
     "iconfile": None,
 }
 
