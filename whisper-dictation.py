@@ -20,6 +20,8 @@ from qwen_asr import Qwen3ASRModel
 
 import dashboard
 import app_paths
+import audio_level
+import hud_overlay
 
 
 APP_DIR = os.path.dirname(os.path.abspath(__file__))
@@ -221,20 +223,12 @@ class Recorder:
         audio_level.clear_level()
 
     def _start_hud(self):
-        try:
-            self.hud_process = subprocess.Popen(
-                app_paths.hud_command(max_time=self.app.max_time or 30)
-            )
-        except Exception as exc:
-            print(f"HUD start failed: {exc}")
+        # Overlay is now driven in-process by StatusBarApp._tick_overlay
+        pass
 
     def _stop_hud(self):
-        try:
-            if self.hud_process:
-                self.hud_process.terminate()
-                self.hud_process = None
-        except Exception as exc:
-            print(f"HUD stop failed: {exc}")
+        # Overlay is now driven in-process by StatusBarApp._tick_overlay
+        pass
 
     def _record_impl(self, language):
         safe_notify("Qwen Dictation", "Recording", "말을 마친 뒤 단축키를 다시 눌러주세요.")
@@ -405,6 +399,24 @@ class StatusBarApp(rumps.App):
         self.menu = menu
         self.menu["Stop Recording"].set_callback(None)
         self.sync_menu_state()
+
+        # Always-running main-thread timer that drives the in-process native
+        # overlay. Its callback runs on the rumps/AppKit main thread, so it is
+        # the only place allowed to create/mutate the overlay window.
+        self._overlay_timer = rumps.Timer(self._tick_overlay, 0.15)
+        self._overlay_timer.start()
+
+    def _tick_overlay(self, _):
+        try:
+            ov = hud_overlay.get_overlay()
+            if self.started and self.start_time is not None:
+                elapsed = int(time.time() - self.start_time)
+                ov.update(audio_level.read_level(), elapsed)
+                ov.show()
+            else:
+                ov.hide()
+        except Exception as exc:
+            print(f"overlay tick error: {exc}")
 
     def sync_menu_state(self):
         self.menu["Mode: Streaming"].state = int(self.mode == MODE_STREAMING)

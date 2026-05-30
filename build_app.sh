@@ -48,6 +48,11 @@ rm -rf build dist
   --collect-submodules sklearn \
   --collect-submodules scipy \
   --hidden-import rumps \
+  --hidden-import hud_overlay \
+  --collect-submodules objc \
+  --hidden-import AppKit \
+  --hidden-import Foundation \
+  --hidden-import Quartz \
   --hidden-import flask \
   --hidden-import pynput \
   --hidden-import pynput.keyboard \
