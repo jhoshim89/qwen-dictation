@@ -46,7 +46,10 @@ OPTIONS = {
     ],
     "includes": ["torch", "torchaudio", "transformers"],
     # 아래 패키지는 앱 실행에 필요 없는데 transformers/qwen_asr 가 optional 로
-    # 끌어와서 빌드를 깨뜨린다(PyInstaller 의 GTK/Qt hook 등). 번들에서 제외한다.
+    # 끌어와서 빌드를 깨뜨린다(PyInstaller 의 GTK/Qt hook, numba 의 CUDA hook 등).
+    # 번들에서 제외한다.
+    # 주의: scipy / librosa 는 qwen_asr/inference/utils.py 가 런타임에 실제로
+    #       import 하므로(librosa.load / resample, scipy.io.wavfile) 제외 금지.
     "excludes": [
         "PyInstaller",
         "gradio",
@@ -59,14 +62,6 @@ OPTIONS = {
         "gi",
         "numba",
         "llvmlite",
-        "scipy",
-        "sklearn",
-        "librosa",
-        "pandas",
-        "sympy",
-        "av",
-        "soynlp",
-        "nagisa",
         "tkinter.test",
         "test",
         "tests",
