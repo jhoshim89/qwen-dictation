@@ -20,6 +20,8 @@ from qwen_asr import Qwen3ASRModel
 
 import dashboard
 import app_paths
+import app_config
+import vet_terms
 import audio_level
 import hud_overlay
 import settings_window
@@ -83,6 +85,25 @@ def ensure_dictionary():
             out.write(data)
     except Exception as exc:
         print(f"Dictionary seed error: {exc}")
+
+
+def merge_vet_terms():
+    """사용자 사전에 수의안과 교정쌍 중 빠진 것을 더한다(기존 값 보존)."""
+    path = app_paths.dictionary_path()
+    try:
+        if os.path.exists(path):
+            with open(path, "r", encoding="utf-8") as f:
+                data = json.load(f)
+        else:
+            data = {}
+        if not isinstance(data, dict):
+            return
+        merged = vet_terms.merge_terms_into(data)
+        if merged != data:
+            with open(path, "w", encoding="utf-8") as f:
+                json.dump(merged, f, ensure_ascii=False, indent=2)
+    except Exception as exc:
+        print(f"Vet term merge error: {exc}")
 
 
 def apply_dictionary(text):
@@ -370,11 +391,15 @@ class DoubleCommandKeyListener:
 
 class StatusBarApp(rumps.App):
     def __init__(self, languages=None, max_time=None, mode=MODE_STREAMING):
-        super().__init__("Qwen Dictation", "⏯")
+        _mb = app_paths.resource_path("assets", "menubar.png")
+        if os.path.exists(_mb):
+            super().__init__("Qwen Dictation", icon=_mb, template=True)
+        else:
+            super().__init__("Qwen Dictation", "⏯")
         self.languages = languages or ["ko", "en"]
         self.current_language = self.languages[0]
         self.mode = mode
-        self.selected_model = "0.6b"
+        self.selected_model = "1.7b"
         self.stream_interval = 1.2
         self.k_double_cmd = False
         self.started = False
@@ -400,6 +425,7 @@ class StatusBarApp(rumps.App):
         self.menu = menu
         self.menu["Stop Recording"].set_callback(None)
         self.sync_menu_state()
+        self._apply_saved_config()
 
         # Always-running main-thread timer that drives the in-process native
         # overlay. Its callback runs on the rumps/AppKit main thread, so it is
@@ -419,6 +445,27 @@ class StatusBarApp(rumps.App):
         except Exception as exc:
             print(f"overlay tick error: {exc}")
 
+    def current_config(self):
+        return {
+            "mode": self.mode,
+            "language": self.current_language,
+            "model_size": self.selected_model,
+            "stream_interval": self.stream_interval,
+            "max_time": self.max_time or 0,
+        }
+
+    def save_settings(self):
+        app_config.save_config(self.current_config())
+
+    def _apply_saved_config(self):
+        cfg = app_config.load_config()
+        self.mode = cfg["mode"]
+        self.current_language = cfg["language"]
+        self.selected_model = cfg["model_size"]
+        self.stream_interval = cfg["stream_interval"]
+        self.max_time = cfg["max_time"]
+        self.sync_menu_state()
+
     def sync_menu_state(self):
         self.menu["Mode: Streaming"].state = int(self.mode == MODE_STREAMING)
         self.menu["Mode: Batch Paste"].state = int(self.mode == MODE_BATCH_PASTE)
@@ -436,6 +483,7 @@ class StatusBarApp(rumps.App):
             raise RuntimeError("Cannot change mode while recording")
         self.mode = mode
         self.sync_menu_state()
+        self.save_settings()
 
     def set_streaming_mode(self, _):
         self.set_mode(MODE_STREAMING)
@@ -449,6 +497,7 @@ class StatusBarApp(rumps.App):
     def change_language(self, sender):
         self.current_language = sender.title.replace("Language: ", "")
         self.sync_menu_state()
+        self.save_settings()
 
     @rumps.clicked("Start Recording")
     def start_app(self, _):
@@ -459,7 +508,7 @@ class StatusBarApp(rumps.App):
         self.menu["Start Recording"].set_callback(None)
         self.menu["Stop Recording"].set_callback(self.stop_app)
         self.recorder.start(self.current_language)
-        if self.max_time is not None:
+        if self.max_time and self.max_time > 0:
             self.timer = threading.Timer(self.max_time, lambda: self.stop_app(None))
             self.timer.start()
         self.start_time = time.time()
@@ -472,7 +521,7 @@ class StatusBarApp(rumps.App):
         if self.timer is not None:
             self.timer.cancel()
             self.timer = None
-        self.title = "⏯"
+        self.title = None
         self.started = False
         self.menu["Stop Recording"].set_callback(None)
         self.menu["Start Recording"].set_callback(self.start_app)
@@ -514,15 +563,16 @@ def parse_args():
         default="ko,en",
         help="Comma-separated language choices. First item is used initially.",
     )
-    parser.add_argument("-t", "--max_time", type=float, default=30)
+    parser.add_argument("-t", "--max_time", type=float, default=0)
     parser.add_argument("--mode", choices=SUPPORTED_MODES, default=MODE_STREAMING)
-    parser.add_argument("--model-size", choices=("0.6b", "1.7b"), default="0.6b")
+    parser.add_argument("--model-size", choices=("0.6b", "1.7b"), default="1.7b")
     return parser.parse_args()
 
 
 def main():
     args = parse_args()
     ensure_dictionary()
+    merge_vet_terms()
     languages = [item.strip() for item in args.language.split(",") if item.strip()]
     device = "mps" if torch.backends.mps.is_available() else "cpu"
     dtype = torch.float16 if device == "mps" else torch.float32
@@ -530,7 +580,6 @@ def main():
 
     app = StatusBarApp(languages=languages, max_time=args.max_time, mode=args.mode)
     app.k_double_cmd = args.k_double_cmd
-    app.selected_model = args.model_size
     transcriber = SpeechTranscriber(device, dtype)
     recorder = Recorder(transcriber, app)
     app.recorder = recorder
