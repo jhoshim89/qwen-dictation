@@ -329,8 +329,14 @@ class Recorder:
             )
             if not text:
                 return
-            paste_text(text, submit=(self.app.mode == MODE_BATCH_SUBMIT))
-            safe_notify("Qwen Dictation", "Done", text)
+            if self.app.mode == MODE_BATCH_SUBMIT:
+                # 메뉴/대시보드로 명시적으로 '자동 전송'을 고른 경우엔 리뷰 없이 바로 전송.
+                paste_text(text, submit=True)
+                safe_notify("Qwen Dictation", "Done", text)
+            else:
+                # 단축키(오른쪽 Cmd) 배치: 리뷰 패널로 보여주고 사용자가 결정.
+                subprocess.run(["pbcopy"], input=text.encode("utf-8"), check=True)
+                self.app.request_review(text)
         except Exception as exc:
             print(f"Batch transcription error: {exc}")
             safe_notify("Qwen Dictation", "Error", str(exc))
@@ -509,6 +515,18 @@ class StatusBarApp(rumps.App):
     def _tick_overlay(self, _):
         try:
             ov = hud_overlay.get_overlay()
+            if self.review_active:
+                # 리뷰 패널 표시 + (최초 진입시) 키 리스너 시작
+                if not getattr(self, "_review_shown", False):
+                    ov.show_review(self.pending_review_text or "")
+                    self._start_review_listener()
+                    self._review_shown = True
+                return
+            # 리뷰가 끝났으면 리스너 정리 + 패널 원복
+            if getattr(self, "_review_shown", False):
+                self._stop_review_listener()
+                self._review_shown = False
+                ov.hide()
             if self.started and self.start_time is not None:
                 elapsed = int(time.time() - self.start_time)
                 ov.update(audio_level.read_level(), elapsed)
@@ -642,6 +660,26 @@ class StatusBarApp(rumps.App):
         elif action == "insert":
             paste_text(text, submit=False)
         # 'cancel' 은 아무 것도 안 함
+
+    def _start_review_listener(self):
+        def on_press(key):
+            action = decide_review_action(key)
+            if action is None:
+                return
+            self.resolve_review(action)
+            return False  # 리스너 종료
+
+        self._review_listener = keyboard.Listener(on_press=on_press)
+        self._review_listener.start()
+
+    def _stop_review_listener(self):
+        lis = getattr(self, "_review_listener", None)
+        if lis is not None:
+            try:
+                lis.stop()
+            except Exception:
+                pass
+            self._review_listener = None
 
 
 def parse_args():
