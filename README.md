@@ -42,6 +42,16 @@ Useful options:
 
 Default hotkey is `cmd_l+alt` on macOS. With `--k_double_cmd`, double press the right Command key to start and press it once to stop.
 
+### Long dictation review (right Command)
+
+After a long (batch) dictation via right Command, the result is NOT inserted
+immediately. A review panel expands from the top of the screen showing the
+transcript. Decide with the keyboard:
+
+- **Enter** → paste into the focused field and press Return (send)
+- **any other key** → paste only (so you can edit, then send yourself)
+- **Esc** → cancel (nothing is inserted; text stays on the clipboard)
+
 ## macOS Permissions
 
 The app needs three macOS permissions because it listens to a global hotkey, records audio, and types into the focused app.
