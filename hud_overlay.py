@@ -19,6 +19,8 @@ ROBUSTNESS:
 PANEL_WIDTH = 300.0
 PANEL_HEIGHT = 46.0
 TOP_OFFSET = 50.0  # pixels down from the top of the main screen
+REVIEW_WIDTH = 460.0
+REVIEW_MIN_HEIGHT = 120.0
 
 
 # Importing AppKit at module load is safe (no window is built). Guard anyway so
@@ -68,6 +70,7 @@ if _APPKIT_OK:
             self._level = 0.0
             self._elapsed = 0
             self._blink_on = True
+            self._review_text = None  # None 이면 막대 모드, 문자열이면 리뷰 모드
             return self
 
         def setValues_(self, values):
@@ -77,13 +80,41 @@ if _APPKIT_OK:
             self._blink_on = values[2]
             self.setNeedsDisplay_(True)
 
+        def setReviewText_(self, text):
+            self._review_text = text
+            self.setNeedsDisplay_(True)
+
         def drawRect_(self, rect):
             try:
                 self._draw()
             except Exception as exc:
                 print(f"hud_overlay: drawRect error: {exc}")
 
+        def _draw_review(self):
+            bounds = self.bounds()
+            w = bounds.size.width
+            h = bounds.size.height
+            # 받아쓴 글(여러 줄, 흰색)
+            body_attrs = {
+                NSFontAttributeName: NSFont.systemFontOfSize_(13.0),
+                NSForegroundColorAttributeName: _rgb(243, 244, 246, 1.0),
+            }
+            body = NSString.stringWithString_(self._review_text)
+            body_rect = NSMakeRect(14.0, 34.0, w - 28.0, h - 44.0)
+            body.drawInRect_withAttributes_(body_rect, body_attrs)
+            # 안내문구(하단, 회색)
+            hint = "Enter: 전송   다른 키: 입력만   Esc: 취소"
+            hint_attrs = {
+                NSFontAttributeName: NSFont.boldSystemFontOfSize_(11.0),
+                NSForegroundColorAttributeName: _rgb(165, 180, 252, 1.0),
+            }
+            hint_str = NSString.stringWithString_(hint)
+            hint_str.drawAtPoint_withAttributes_(NSMakePoint(14.0, 10.0), hint_attrs)
+
         def _draw(self):
+            if self._review_text is not None:
+                self._draw_review()
+                return
             bounds = self.bounds()
             h = bounds.size.height
 
@@ -238,10 +269,38 @@ class DictationOverlay:
         except Exception as exc:
             print(f"hud_overlay: show error: {exc}")
 
+    def show_review(self, text):
+        """리뷰 패널을 화면 위쪽에 띄운다(아래로 커지며 받아쓴 글 표시)."""
+        if self._panel is None or self._view is None:
+            return
+        try:
+            self._resize_panel(REVIEW_WIDTH, REVIEW_MIN_HEIGHT)
+            self._view.setReviewText_(text)
+            self._panel.orderFrontRegardless()
+            self._visible = True
+        except Exception as exc:
+            print(f"hud_overlay: show_review error: {exc}")
+
+    def _resize_panel(self, width, height):
+        screen = NSScreen.mainScreen()
+        if screen is not None:
+            frame = screen.frame()
+            sw, sh = frame.size.width, frame.size.height
+            ox, oy = frame.origin.x, frame.origin.y
+        else:
+            sw, sh, ox, oy = 1440.0, 900.0, 0.0, 0.0
+        x = ox + (sw - width) / 2.0
+        y = oy + sh - height - TOP_OFFSET
+        self._panel.setFrame_display_(NSMakeRect(x, y, width, height), True)
+        self._view.setFrame_(NSMakeRect(0, 0, width, height))
+
     def hide(self):
         if self._panel is None:
             return
         try:
+            if self._view is not None:
+                self._view.setReviewText_(None)
+            self._resize_panel(PANEL_WIDTH, PANEL_HEIGHT)
             if self._visible:
                 self._panel.orderOut_(None)
                 self._visible = False
