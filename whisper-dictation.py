@@ -585,6 +585,17 @@ class StatusBarApp(rumps.App):
         else:
             self.start_app(None)
 
+    def begin_session(self, mode):
+        """단축키가 이번 녹음에만 모드를 적용하고 시작한다(저장하지 않음).
+
+        영속 기본 모드(app_config)는 그대로 두고, 세션 동안만 mode 를 바꾼다.
+        """
+        if self.started:
+            return
+        self.mode = mode
+        self.sync_menu_state()
+        self.start_app(None)
+
 
 def parse_args():
     parser = argparse.ArgumentParser(description="Local Qwen3-ASR dictation app for macOS.")
@@ -609,6 +620,12 @@ def parse_args():
     )
     parser.add_argument("-t", "--max_time", type=float, default=0)
     parser.add_argument("--mode", choices=SUPPORTED_MODES, default=MODE_STREAMING)
+    parser.add_argument(
+        "--hotkeys",
+        choices=("multi", "single", "double"),
+        default="multi",
+        help="multi=right Option(hold)/right Cmd(toggle) single keys (default); single=-k combo; double=double right Cmd.",
+    )
     parser.add_argument("--model-size", choices=("0.6b", "1.7b"), default="1.7b")
     return parser.parse_args()
 
@@ -629,7 +646,12 @@ def main():
     app.recorder = recorder
 
     dashboard.start_server(app)
-    key_listener = DoubleCommandKeyListener(app) if args.k_double_cmd else GlobalKeyListener(app, args.key_combination)
+    if args.k_double_cmd or args.hotkeys == "double":
+        key_listener = DoubleCommandKeyListener(app)
+    elif args.hotkeys == "single":
+        key_listener = GlobalKeyListener(app, args.key_combination)
+    else:
+        key_listener = MultiHotkeyListener(app)
     listener = keyboard.Listener(on_press=key_listener.on_key_press, on_release=key_listener.on_key_release)
     listener.start()
 
