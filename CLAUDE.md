@@ -70,7 +70,7 @@ The three modes are the core control flow:
 
 **Two ways text reaches the focused app, and they differ:** streaming uses `pynput` synthetic keystrokes (`type_diff`); batch uses `paste_text`, which `pbcopy`s then runs **AppleScript that clicks the front app's Paste menu** — Korean `붙여넣기`/`수정` first, then English `Paste`/`Edit`, and only falls back to synthetic `Cmd+V`. Menu-paste was chosen because Chrome accepted it more reliably. When touching paste/Return logic, validate with `e2e_prompt_test.py`, not just imports.
 
-**Config persistence gotcha:** dashboard `POST /api/config` only mutates the in-memory `StatusBarApp` fields — mode/language/model/interval/max_time are **not** persisted across restarts. The **only** thing written to disk is `dictionary.json` (`POST /api/dictionary`). CLI flags are the durable way to set defaults.
+**Config persistence:** settings (mode/language/model/interval/max_time) are now persisted to `~/.qwen-dictation/config.json` via `app_config.py` (saved on change, loaded at startup). The user dictionary lives at `~/.qwen-dictation/dictionary.json`. The default model is **1.7b**. CLI flags still override on launch.
 
 **Personal dictionary**: `dictionary.json` maps spoken→written replacements (e.g. `"큐엔": "Qwen"`), applied by `apply_dictionary` as plain `str.replace` over every transcript. Treat it as user-owned data — edit structure if needed but do not wipe the user's entries.
 

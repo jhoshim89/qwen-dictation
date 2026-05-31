@@ -13,8 +13,6 @@
 # 때문에 디스크에 nagisa/ 디렉터리를 만들지만 순수 파이썬 .py 는 PYZ 안에만 넣어
 # 디스크에는 없다. 그래서 아래에서 nagisa 소스 .py 들을 디스크 디렉터리로 함께
 # 복사(--add-data)해 패키지를 완성한다. site-packages 는 건드리지 않는다.
---icon assets/AppIcon.icns
---add-data "assets/menubar.png:assets"
 #
 # 메뉴바 전용 앱(LSUIElement)과 마이크/AppleEvents 권한 문자열은 빌드 후
 # fix_plist.py 로 Info.plist 에 주입한다(PyInstaller 가 직접 못 넣음).
@@ -29,6 +27,8 @@ NAGISA_DIR="$(./venv/bin/python -c 'import os, nagisa; print(os.path.dirname(nag
 rm -rf build dist
 ./venv/bin/pyinstaller --noconfirm --windowed --name "Qwen Dictation" \
   --osx-bundle-identifier com.shimjaeho.qwendictation \
+  --icon assets/AppIcon.icns \
+  --add-data "assets/menubar.png:assets" \
   --add-data "templates/dashboard.html:templates" \
   --add-data "dictionary.json:." \
   --add-data "hud.py:." \

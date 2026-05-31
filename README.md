@@ -70,6 +70,14 @@ Example:
 }
 ```
 
+## Settings persistence
+
+Settings (mode, language, model size, stream interval, max recording time) are
+saved to `~/.qwen-dictation/config.json` and restored on next launch. The user
+dictionary lives at `~/.qwen-dictation/dictionary.json`. Recording has no time
+limit by default (`max_time = 0`); set a positive value to auto-stop.
+The default model is **1.7b** (more accurate; ~0.2s slower than 0.6b once loaded).
+
 ## Development Checks
 
 ```bash
