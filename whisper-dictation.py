@@ -473,6 +473,9 @@ class StatusBarApp(rumps.App):
         self.stream_interval = 1.2
         self.k_double_cmd = False
         self.started = False
+        self.pending_review_text = None
+        self.review_active = False
+        self._review_shown = False
         self.recorder = None
         self.max_time = max_time
         self.timer = None
@@ -621,6 +624,24 @@ class StatusBarApp(rumps.App):
         self.mode = mode
         self.sync_menu_state()
         self.start_app(None)
+
+    def request_review(self, text):
+        """배치 받아쓰기 결과를 리뷰 대기 상태로 보관한다(아직 붙여넣지 않음)."""
+        self.pending_review_text = text
+        self.review_active = True
+
+    def resolve_review(self, action):
+        """리뷰 결정 실행. action: 'send' | 'insert' | 'cancel'."""
+        if not self.review_active:
+            return
+        text = self.pending_review_text or ""
+        self.review_active = False
+        self.pending_review_text = None
+        if action == "send":
+            paste_text(text, submit=True)
+        elif action == "insert":
+            paste_text(text, submit=False)
+        # 'cancel' 은 아무 것도 안 함
 
 
 def parse_args():
