@@ -49,10 +49,12 @@ rm -rf build dist
   --collect-submodules scipy \
   --hidden-import rumps \
   --hidden-import hud_overlay \
+  --hidden-import settings_window \
   --collect-submodules objc \
   --hidden-import AppKit \
   --hidden-import Foundation \
   --hidden-import Quartz \
+  --hidden-import WebKit \
   --hidden-import flask \
   --hidden-import pynput \
   --hidden-import pynput.keyboard \

@@ -22,6 +22,7 @@ import dashboard
 import app_paths
 import audio_level
 import hud_overlay
+import settings_window
 
 
 APP_DIR = os.path.dirname(os.path.abspath(__file__))
@@ -426,9 +427,7 @@ class StatusBarApp(rumps.App):
             self.menu[f"Language: {lang}"].state = int(self.current_language == lang)
 
     def open_dashboard(self, _):
-        import webbrowser
-
-        webbrowser.open("http://127.0.0.1:5001")
+        settings_window.open_settings("http://127.0.0.1:5001")
 
     def set_mode(self, mode):
         if mode not in SUPPORTED_MODES:
