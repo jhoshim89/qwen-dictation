@@ -120,6 +120,32 @@ def apply_dictionary(text):
     return text
 
 
+# 리뷰 패널에서 누른 키 → 행동 결정.
+_REVIEW_IGNORED_KEYS = {
+    keyboard.Key.shift, keyboard.Key.shift_r,
+    keyboard.Key.cmd, keyboard.Key.cmd_r,
+    keyboard.Key.alt, keyboard.Key.alt_r,
+    keyboard.Key.ctrl, keyboard.Key.ctrl_r,
+    keyboard.Key.caps_lock, keyboard.Key.cmd_l, keyboard.Key.alt_l,
+    getattr(keyboard.Key, "fn", None),
+}
+
+
+def decide_review_action(key):
+    """리뷰 중 눌린 키로 행동을 정한다.
+
+    Enter → "send"(붙여넣고 전송), Esc → "cancel"(아무것도 안 함),
+    그 외 일반 키 → "insert"(붙여넣기만). 수정키 단독은 무시(None).
+    """
+    if key == keyboard.Key.enter:
+        return "send"
+    if key == keyboard.Key.esc:
+        return "cancel"
+    if key in _REVIEW_IGNORED_KEYS:
+        return None
+    return "insert"
+
+
 def paste_text(text, submit=False):
     subprocess.run(["pbcopy"], input=text.encode("utf-8"), check=True)
     submit_line = "key code 36" if submit else ""
