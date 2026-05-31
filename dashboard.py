@@ -65,8 +65,10 @@ def post_config():
         app_instance.stream_interval = max(0.8, float(data['stream_interval']))
 
     if 'max_time' in data:
-        app_instance.max_time = max(1, float(data['max_time']))
+        app_instance.max_time = max(0, float(data['max_time']))
 
+    if hasattr(app_instance, "save_settings"):
+        app_instance.save_settings()
     return jsonify({"status": "success", "config": get_config().json})
 
 @flask_app.route('/api/status', methods=['GET'])
