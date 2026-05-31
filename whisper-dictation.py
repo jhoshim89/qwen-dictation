@@ -389,6 +389,50 @@ class DoubleCommandKeyListener:
         pass
 
 
+class MultiHotkeyListener:
+    """오른쪽 단일 수정키 2개로 두 받아쓰기 모드를 구동한다.
+
+    - 오른쪽 Option(alt_r): 홀드 — 누르는 동안만 녹음, 떼면 정지 → streaming(짧은 말)
+    - 오른쪽 Cmd(cmd_r): 토글 — 눌러 시작, 다시 눌러 정지 → batch_paste(긴 말, 붙여넣고 멈춤)
+
+    동시에 하나의 트리거만 활성(active_trigger). 녹음 중 다른 트리거 키는 무시한다.
+    자동 전송(batch_submit)은 단축키에 배정하지 않는다 — 사용자가 결과를 보고 직접 처리.
+    """
+
+    def __init__(self, app):
+        self.app = app
+        self.hold_key = keyboard.Key.alt_r
+        self.toggle_key = keyboard.Key.cmd_r
+        self.active_trigger = None  # None | "hold" | "toggle"
+
+    def _begin(self, trigger, mode):
+        if self.app.started:
+            return
+        self.app.begin_session(mode)
+        self.active_trigger = trigger
+
+    def _end(self, trigger):
+        if self.active_trigger != trigger:
+            return
+        if self.app.started:
+            self.app.stop_app(None)
+        self.active_trigger = None
+
+    def on_key_press(self, key):
+        if key == self.hold_key:
+            if not self.app.started:
+                self._begin("hold", MODE_STREAMING)
+        elif key == self.toggle_key:
+            if self.active_trigger == "toggle":
+                self._end("toggle")
+            elif not self.app.started:
+                self._begin("toggle", MODE_BATCH_PASTE)
+
+    def on_key_release(self, key):
+        if key == self.hold_key:
+            self._end("hold")
+
+
 class StatusBarApp(rumps.App):
     def __init__(self, languages=None, max_time=None, mode=MODE_STREAMING):
         _mb = app_paths.resource_path("assets", "menubar.png")
