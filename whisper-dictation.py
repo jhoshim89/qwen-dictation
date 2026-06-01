@@ -75,6 +75,22 @@ def audio_peak(audio_path):
         return float("inf")
 
 
+def trailing_silence(audio_bytes, rate, peak_threshold, secs):
+    """오디오 끝쪽 `secs`초가 사실상 무음(peak < threshold)인지. 길이가 모자라면 False."""
+    need = int(rate * secs) * 2  # int16 → 바이트 2배
+    if len(audio_bytes) < need or need <= 0:
+        return False
+    tail = np.frombuffer(audio_bytes[-need:], dtype=np.int16)
+    if tail.size == 0:
+        return False
+    return float(np.max(np.abs(tail.astype(np.int32)))) < peak_threshold
+
+
+def should_commit(window_secs, paused, max_secs):
+    """현재 창을 확정할지: 쉬었거나(paused) 창이 너무 길면(max 초과) 확정."""
+    return bool(paused or window_secs >= max_secs)
+
+
 def looks_like_vocab_echo(text, vocab):
     """결과가 등록 단어들로만(2개 이상) 이뤄졌으면 context 환각(echo)으로 본다.
 
