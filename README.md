@@ -2,11 +2,9 @@
 
 Local macOS dictation MVP powered by Qwen3-ASR. It runs from the menu bar, opens a small settings dashboard, and types into the currently focused input field.
 
-## Modes
+## 받아쓰기 방식 (실시간 스트리밍)
 
-- **Streaming Dictation**: transcribes repeatedly while recording and types the visible diff.
-- **Batch Paste**: records first, transcribes once, then pastes the result.
-- **Batch Paste + Enter**: records first, transcribes once, pastes the result, then presses Return.
+실시간 스트리밍 단축키 2개 — 오른쪽 Cmd 홀드(누르는 동안) / 오른쪽 Option 토글(눌러 시작, 다시 눌러 정지). 말하는 대로 포커스된 입력창에 ~0.8초 간격으로 바로 타이핑되고, 문맥이 바뀌면 앞부분을 고쳐 쓰며, 쉬는 지점에서 확정한다. 리뷰 패널·배치·자동전송은 제거됨.
 
 ## Install
 
@@ -29,28 +27,22 @@ Dashboard:
 http://127.0.0.1:5001
 ```
 
+기본 단축키는 두 개입니다.
+
+- **오른쪽 Cmd 홀드**: 키를 누르고 있는 동안 받아쓰기, 떼면 정지.
+- **오른쪽 Option 토글**: 한 번 눌러 시작, 다시 눌러 정지.
+
+둘 다 똑같은 실시간 스트리밍으로 동작합니다. 말하는 대로 ~0.8초마다 포커스된
+입력창에 바로 타이핑되고, 문맥이 바뀌면 앞부분을 backspace로 고쳐 쓰며, 잠깐
+쉬는 지점에서 그 구간을 확정합니다.
+
 Useful options:
 
 ```bash
-./run.sh --mode streaming
-./run.sh --mode batch_paste
-./run.sh --mode batch_submit
 ./run.sh --k_double_cmd
 ```
 
-Default hotkey is `cmd_l+alt` on macOS. With `--k_double_cmd`, double press the right Command key to start and press it once to stop.
-
-### Long dictation review (right Command)
-
-After a long (batch) dictation via right Command, the result is NOT inserted
-immediately. A review panel expands from the top of the screen showing the
-transcript. Decide with the keyboard:
-
-- **Right Command again (the toggle key) or Enter** → paste into the focused field and press Return (send)
-- **Tab** → paste only (so you can edit in place, then send yourself)
-- **Esc** → cancel (nothing is inserted; text stays on the clipboard)
-
-The decision keys (toggle/Enter, Tab, Esc) are swallowed during review, so Tab does not move focus out of the target field.
+With `--k_double_cmd`, double press the right Command key to start and press it once to stop.
 
 ## macOS Permissions
 
@@ -89,9 +81,10 @@ Example `vocabulary.json`:
 The dashboard lets you choose the hotkey mode and keys; changes save and apply
 immediately (no restart):
 
-- **multi** (default): a hold key (short dictation, streaming) + a toggle key (long
-  dictation, batch → review panel). Pick each from the right-side modifiers
-  (right Option / Cmd / Ctrl / Shift); the two must differ.
+- **multi** (default): a hold key (hold to dictate) + a toggle key (press to
+  start, press again to stop). Both run the same real-time streaming dictation.
+  Pick each from the right-side modifiers (right Option / Cmd / Ctrl / Shift);
+  the two must differ. Default: hold = right Cmd, toggle = right Option.
 - **single**: a two-key combo (set with `-k` at launch).
 - **double**: double-press right Command.
 
@@ -99,7 +92,7 @@ CLI `--hotkeys` still overrides for a single run; omit it to use saved settings.
 
 ## Settings persistence
 
-Settings (mode, language, model, stream interval, max recording time, hotkey
+Settings (language, model, stream interval, max recording time, hotkey
 mode/keys) are saved to `~/.qwen-dictation/config.json` and restored on next
 launch. The word list lives at `~/.qwen-dictation/vocabulary.json`. Recording has
 no time limit by default (`max_time = 0`); set a positive value to auto-stop.

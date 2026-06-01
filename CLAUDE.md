@@ -13,15 +13,12 @@ The entry point is still named `whisper-dictation.py` — this project is a fork
 Always use the project virtualenv. `run.sh` activates `./venv` and forwards all args to the app:
 
 ```bash
-./run.sh                       # default mode + model
-./run.sh --mode streaming      # transcribe-while-recording, type the diff
-./run.sh --mode batch_paste    # record, transcribe once, paste
-./run.sh --mode batch_submit   # record, transcribe once, paste, press Return
+./run.sh                       # live streaming dictation (default)
 ./run.sh --hotkeys double      # double-press right Cmd (overrides saved hotkey mode for this run)
 ./run.sh --k_double_cmd        # double-press right Cmd to start, single press to stop
 ```
 
-Default hotkey is `cmd_l+alt` (override with `-k/--key_combination`). Other flags: `-l/--language` (comma list, default `ko,en`), `-t/--max_time` (auto-stop seconds, default 30). Direct invocation without the wrapper: `./venv/bin/python whisper-dictation.py <args>`.
+Both hotkeys always drive **live streaming dictation** — there is no batch path anymore (the `--mode {streaming,batch_paste,batch_submit}` arg and the menu "Mode: …" items are leftover dead code; the hotkey listeners begin every session as `MODE_STREAMING`). The default multi-hotkey config is hold = right Cmd, toggle = right Option. Other flags: `-l/--language` (comma list, default `ko,en`), `-t/--max_time` (auto-stop seconds, default 30). Direct invocation without the wrapper: `./venv/bin/python whisper-dictation.py <args>`.
 
 ## Verify changes (run before claiming the app works)
 
@@ -58,25 +55,23 @@ Never commit model weights, `venv/`, caches, or `__pycache__/`.
 `whisper-dictation.py` is a single long-running process (`main()`) that wires together the pieces below. `StatusBarApp` (a `rumps.App`) is the central state object — `mode`, `current_language`, `selected_model`, `stream_interval`, `max_time`, `started` all live on it. Both the hotkey listeners and the dashboard mutate this one object, so it's the source of truth.
 
 - **`StatusBarApp`** — menu-bar UI + run loop. Holds runtime config and the `Recorder`. `toggle()` / `start_app` / `stop_app` drive recording; `update_title()` shows the elapsed timer.
-- **Hotkey listeners** (`pynput`) — `GlobalKeyListener` watches a two-key combo (`cmd_l+alt` default, parsed by splitting on `+`); `DoubleCommandKeyListener` is the `--k_double_cmd` variant (double-tap right Cmd to start, single to stop). Exactly one is chosen in `main()`.
-- **`Recorder`** — owns the audio thread. `_record_impl` captures 16 kHz mono int16 via `pyaudio` into `audio_frames`; `_write_current_audio` flushes them to a `/tmp/*.wav` via `numpy`+`soundfile`. In `streaming` mode it also spawns `_stream_transcribe_loop`.
+- **Hotkey listeners** (`pynput`) — `MultiHotkeyListener` (the default) watches two keys: **hold = right Cmd (`cmd_r`)**, **toggle = right Option (`alt_r`)**. Hold dictates while held; toggle starts/stops. **Both call `_begin(..., MODE_STREAMING)`** — there is only one streaming path. `GlobalKeyListener` (single two-key combo) and `DoubleCommandKeyListener` (`--k_double_cmd`) are the alternative listeners; exactly one is chosen via `hotkey_mode` in `build_key_listener()`.
+- **`Recorder`** — owns the audio thread. `_record_impl` captures 16 kHz mono int16 via `pyaudio` into `audio_frames`; `_write_current_audio` flushes them to a `/tmp/*.wav` via `numpy`+`soundfile`. It always spawns the live streaming loop `_stream_loop`/`_stream_tick` (see below).
 - **`SpeechTranscriber`** — wraps `qwen_asr.Qwen3ASRModel`. **Only the 1.7B model is used** (lazy-loaded once and cached as `model_1_7b` behind a lock; `get_model` ignores size and returns it); device is **MPS if available else CPU**, dtype `float16` on MPS else `float32`. `transcribe_file` passes the user's word list as `context=` to bias recognition. Model ID comes from `QWEN_ASR_1_7B_PATH` env var (default HF `Qwen/Qwen3-ASR-1.7B`). 0.6B was removed.
 - **Dashboard** (`dashboard.py`) — Flask daemon thread on **127.0.0.1:5001**, started by `start_server(app)` with a global ref to the `StatusBarApp`. Routes: `/` (renders `templates/dashboard.html`), `/api/config` GET/POST (incl. hotkey_mode/hold_key/toggle_key; POST applies hotkeys at runtime), `/api/status` GET, `/api/vocabulary` GET/POST (word list).
 - **HUD** (`hud.py`) — a Tkinter floating overlay launched as a **separate subprocess** (`venv/bin/python hud.py`) by `Recorder._start_hud`, terminated on stop. It self-exits at `--max_time`.
 
-The three modes are the core control flow:
-- `streaming` re-transcribes the **whole growing buffer** every `stream_interval` and types only the diff via `type_diff` (backspace to the common prefix, then type the rest). Because it re-runs on the full buffer, latency grows with utterance length.
-- `batch_paste` / `batch_submit` record to completion, transcribe once in `_run_batch_transcription`, then `paste_text` (submit also sends Return = AppleScript `key code 36`).
+**The single control flow is live streaming.** Both triggers (Cmd hold, Option toggle) run the same path: `Recorder._stream_loop` wakes every `STREAM_INTERVAL` (0.8s) and calls `_stream_tick`, which transcribes the current audio **window** and types only the diff via `type_diff` (backspace to the common prefix, then type the rest). On a pause it confirms (commits) the spoken span and trims the window so latency doesn't grow without bound. The pure helpers and constants live near the top of `whisper-dictation.py`: `STREAM_INTERVAL` (0.8s tick), `PAUSE_SILENCE_SEC` (0.8s of trailing quiet = a pause), `MAX_WINDOW_SEC` (12s hard cap that forces a commit); `trailing_silence(...)` measures end-of-window quiet and `should_commit(...)` decides when to confirm+trim.
 
-**Long-dictation review:** 단축키 배치(오른쪽 Cmd)는 결과를 곧장 붙여넣지 않고 화면 위쪽 리뷰 패널(`hud_overlay.show_review`)로 보여주며 키보드로 결정한다 — 토글키(오른쪽 Cmd) 다시 또는 Enter=보내기, Tab=수정(입력만), Esc=취소. 결정 로직은 순수 함수 `decide_review_action(key, toggle_key)`, 상태는 `StatusBarApp.request_review`/`resolve_review`, 패널 표시는 메인스레드 `_tick_overlay`. 키 입력은 **항상 켜진 메인 pynput 리스너**가 `app.review_active` 일 때 가로채 처리하며(별도 리뷰 리스너 없음), `darwin_intercept`(`suppress_review_key`)로 결정 키가 포커스된 앱에 새지 않게 폐기한다 — 그래서 Tab 이 포커스를 옮기지 않는다. `batch_submit` 모드(메뉴/대시보드 선택)는 여전히 리뷰 없이 바로 전송한다.
+**Batch / review path is removed.** `_run_batch_transcription` was deleted; nothing triggers the review panel anymore. The `MODE_BATCH_PASTE`/`MODE_BATCH_SUBMIT` constants, the "Mode: Batch …" menu items, and the review machinery (`decide_review_action`, `StatusBarApp.request_review`/`resolve_review`, `paste_text`) **remain as dead code but are never reached at runtime**. Don't document them as live behavior.
 
-**Two ways text reaches the focused app, and they differ:** streaming uses `pynput` synthetic keystrokes (`type_diff`); batch uses `paste_text`, which `pbcopy`s then runs **AppleScript that clicks the front app's Paste menu** — Korean `붙여넣기`/`수정` first, then English `Paste`/`Edit`, and only falls back to synthetic `Cmd+V`. Menu-paste was chosen because Chrome accepted it more reliably. When touching paste/Return logic, validate with `e2e_prompt_test.py`, not just imports.
+**Text reaches the focused app one way:** live streaming types `pynput` synthetic keystrokes via `type_diff`. (`paste_text` — `pbcopy` + AppleScript Paste-menu click with `Cmd+V` fallback — still exists in the file but is only called by the now-unreachable review path.)
 
 **Config persistence:** settings (mode/language/model/interval/max_time + hotkey_mode/hold_key/toggle_key) are persisted to `~/.qwen-dictation/config.json` via `app_config.py` (saved on change, loaded at startup; stale `0.6b` is coerced to `1.7b`). The word list lives at `~/.qwen-dictation/vocabulary.json`. The only model is **1.7b**. CLI flags still override on launch; `--hotkeys` defaults to None (omit = use saved).
 
 **Word registration (vocabulary)**: `vocabulary.py` holds a user word list (`vocabulary.json`, a JSON array). `transcribe_file` joins it and passes it as `context=` to `model.transcribe`, biasing recognition toward those terms (medical terms, names) — this **improves** recognition but is not a guaranteed substitution. `ensure_vocabulary()` seeds it once from any existing `dictionary.json` values + `vet_terms.VET_TERMS` values. The old find-replace `apply_dictionary`/`ensure_dictionary`/`merge_vet_terms` were removed. Treat the word list as user-owned data.
 
-**Configurable hotkeys**: `StatusBarApp.build_key_listener()` picks the listener from `hotkey_mode` (multi/single/double); `apply_hotkey_config()` stops the running global pynput listener and starts a fresh one (with the review wrapper + `darwin_intercept`), so dashboard changes apply without restart. `key_from_name`/`validate_hotkey_config` are pure helpers; allowed keys are right-side modifiers (`alt_r`/`cmd_r`/`ctrl_r`/`shift_r`), and multi requires hold≠toggle.
+**Configurable hotkeys**: `StatusBarApp.build_key_listener()` picks the listener from `hotkey_mode` (multi/single/double); the multi default is **hold = `cmd_r`, toggle = `alt_r`**, both starting `MODE_STREAMING`. `apply_hotkey_config()` stops the running global pynput listener and starts a fresh one, so dashboard changes apply without restart. `key_from_name`/`validate_hotkey_config` are pure helpers; allowed keys are right-side modifiers (`alt_r`/`cmd_r`/`ctrl_r`/`shift_r`), and multi requires hold≠toggle.
 
 **Language handling**: `--language` is a comma list (default `ko,en`); the active one is mapped through `LANGUAGE_MAP` by `normalize_language` to a full name (`"ko"`→`"Korean"`) before being passed to the model. `auto` → `None`.
 
