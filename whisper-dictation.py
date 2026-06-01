@@ -822,6 +822,17 @@ def main():
     recorder = Recorder(transcriber, app)
     app.recorder = recorder
 
+    # 모델을 백그라운드에서 미리 올려둔다(앱 켤 때 ~6~7초 cold load 를 첫 받아쓰기
+    # 시점이 아니라 시작 시점에 숨긴다 → 첫 받아쓰기도 바로 빠르게).
+    def _warmup_model():
+        try:
+            transcriber.get_model("1.7b")
+            print("Model preloaded (1.7b).")
+        except Exception as exc:
+            print(f"Model preload error: {exc}")
+
+    threading.Thread(target=_warmup_model, daemon=True).start()
+
     dashboard.start_server(app)
     # CLI 플래그가 있으면 이번 실행에 한해 단축키 설정을 덮어쓴다(없으면 저장된 설정 사용).
     if args.k_double_cmd or args.hotkeys == "double":
