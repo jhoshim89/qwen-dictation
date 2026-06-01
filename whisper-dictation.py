@@ -62,6 +62,9 @@ LANGUAGE_MAP = {
 # 받아쓰기를 건너뛴다. 무음/작은 잡음(peak 수백 이하) vs 실제 말(peak 1만 이상)
 # 사이 마진이 커서 보수적으로 1000 을 쓴다.
 SILENCE_PEAK_THRESHOLD = 1000.0
+STREAM_INTERVAL = 0.8        # 초: 스트리밍 갱신 주기
+PAUSE_SILENCE_SEC = 0.8      # 초: 끝이 이만큼 조용하면 쉼 → 확정
+MAX_WINDOW_SEC = 12.0        # 초: 창이 이보다 길면 강제 확정(느려짐 방지)
 
 
 def audio_peak(audio_path):
@@ -288,6 +291,10 @@ class Recorder:
         self.hud_process = None
         self.session_mode = MODE_STREAMING
         self.capture_process = None
+        self.stream_thread = None
+        self.window_start = 0
+        self.committed_text = ""
+        self.last_typed = ""
 
     def start(self, language=None):
         if self.recording:
@@ -369,6 +376,49 @@ class Recorder:
         audio_data_fp32 = audio_data.astype(np.float32) / 32768.0
         sf.write(path, audio_data_fp32, 16000)
         return True
+
+    def _type(self, old, new):
+        return type_diff(old, new, self.transcriber.pykeyboard)
+
+    def _transcribe_window(self, window_bytes, language):
+        path = "/tmp/qwen_dictation_stream.wav"
+        audio = np.frombuffer(window_bytes, dtype=np.int16).astype(np.float32) / 32768.0
+        sf.write(path, audio, 16000)
+        return self.transcriber.transcribe_file(
+            path, language=language, model_size=self.app.selected_model
+        )
+
+    def _stream_tick(self, language):
+        with self.audio_lock:
+            window = b"".join(self.audio_frames[self.window_start:])
+            frame_count = len(self.audio_frames)
+        if not window:
+            return
+        hypo = self._transcribe_window(window, language)
+        target = self.committed_text + hypo
+        self.last_typed = self._type(self.last_typed, target)
+        window_secs = len(window) / 2.0 / 16000.0
+        paused = trailing_silence(window, 16000, SILENCE_PEAK_THRESHOLD, PAUSE_SILENCE_SEC)
+        if hypo and should_commit(window_secs, paused, MAX_WINDOW_SEC):
+            self.committed_text = target
+            with self.audio_lock:
+                self.window_start = frame_count
+
+    def _stream_loop(self, language):
+        self.window_start = 0
+        self.committed_text = ""
+        self.last_typed = ""
+        while self.recording:
+            time.sleep(STREAM_INTERVAL)
+            try:
+                self._stream_tick(language)
+            except Exception as exc:
+                print(f"Streaming tick error: {exc}")
+        # 정지 후 마지막 한 번 더(남은 창 반영)
+        try:
+            self._stream_tick(language)
+        except Exception as exc:
+            print(f"Streaming final tick error: {exc}")
 
     def _run_batch_transcription(self, language, session_mode):
         audio_path = "/tmp/qwen_dictation_batch.wav"
