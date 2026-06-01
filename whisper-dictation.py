@@ -121,29 +121,22 @@ def apply_dictionary(text):
 
 
 # 리뷰 패널에서 누른 키 → 행동 결정.
-_REVIEW_IGNORED_KEYS = {
-    keyboard.Key.shift, keyboard.Key.shift_r,
-    keyboard.Key.cmd, keyboard.Key.cmd_r,
-    keyboard.Key.alt, keyboard.Key.alt_r,
-    keyboard.Key.ctrl, keyboard.Key.ctrl_r,
-    keyboard.Key.caps_lock, keyboard.Key.cmd_l, keyboard.Key.alt_l,
-    getattr(keyboard.Key, "fn", None),
-}
-
-
-def decide_review_action(key):
+def decide_review_action(key, toggle_key=None):
     """리뷰 중 눌린 키로 행동을 정한다.
 
-    Enter → "send"(붙여넣고 전송), Esc → "cancel"(아무것도 안 함),
-    그 외 일반 키 → "insert"(붙여넣기만). 수정키 단독은 무시(None).
+    Enter 또는 토글키(녹음 시작/정지에 쓰던 그 키)를 다시 누름 → "send"(붙여넣고 전송),
+    Tab → "insert"(붙여넣기만, 사용자가 직접 고친 뒤 전송),
+    Esc → "cancel"(아무것도 안 함). 그 외 키는 무시(None) — 결정은 이 키들로만 한다.
     """
     if key == keyboard.Key.enter:
         return "send"
+    if toggle_key is not None and key == toggle_key:
+        return "send"
+    if key == keyboard.Key.tab:
+        return "insert"
     if key == keyboard.Key.esc:
         return "cancel"
-    if key in _REVIEW_IGNORED_KEYS:
-        return None
-    return "insert"
+    return None
 
 
 def paste_text(text, submit=False):
@@ -482,6 +475,7 @@ class StatusBarApp(rumps.App):
         self.pending_review_text = None
         self.review_active = False
         self._review_shown = False
+        self._review_suppress = False
         self.recorder = None
         self.max_time = max_time
         self.timer = None
@@ -516,15 +510,13 @@ class StatusBarApp(rumps.App):
         try:
             ov = hud_overlay.get_overlay()
             if self.review_active:
-                # 리뷰 패널 표시 + (최초 진입시) 키 리스너 시작
+                # 리뷰 패널 표시(키 입력은 항상 켜진 메인 리스너가 처리)
                 if not getattr(self, "_review_shown", False):
                     ov.show_review(self.pending_review_text or "")
-                    self._start_review_listener()
                     self._review_shown = True
                 return
-            # 리뷰가 끝났으면 리스너 정리 + 패널 원복
+            # 리뷰가 끝났으면 패널 원복
             if getattr(self, "_review_shown", False):
-                self._stop_review_listener()
                 self._review_shown = False
                 ov.hide()
             if self.started and self.start_time is not None:
@@ -661,26 +653,6 @@ class StatusBarApp(rumps.App):
             paste_text(text, submit=False)
         # 'cancel' 은 아무 것도 안 함
 
-    def _start_review_listener(self):
-        def on_press(key):
-            action = decide_review_action(key)
-            if action is None:
-                return
-            self.resolve_review(action)
-            return False  # 리스너 종료
-
-        self._review_listener = keyboard.Listener(on_press=on_press)
-        self._review_listener.start()
-
-    def _stop_review_listener(self):
-        lis = getattr(self, "_review_listener", None)
-        if lis is not None:
-            try:
-                lis.stop()
-            except Exception:
-                pass
-            self._review_listener = None
-
 
 def parse_args():
     parser = argparse.ArgumentParser(description="Local Qwen3-ASR dictation app for macOS.")
@@ -737,7 +709,32 @@ def main():
         key_listener = GlobalKeyListener(app, args.key_combination)
     else:
         key_listener = MultiHotkeyListener(app)
-    listener = keyboard.Listener(on_press=key_listener.on_key_press, on_release=key_listener.on_key_release)
+    def on_review_or_hotkey(key):
+        # 리뷰 중이면 키를 결정(보내기/수정/취소)으로 가로채고, 아니면 평소 단축키 처리.
+        if app.review_active:
+            toggle_key = getattr(key_listener, "toggle_key", None)
+            action = decide_review_action(key, toggle_key=toggle_key)
+            if action is not None:
+                # 이 키가 포커스된 앱으로 새지 않게 표시(아래 intercept 에서 폐기).
+                app._review_suppress = True
+                app.resolve_review(action)
+            return
+        key_listener.on_key_press(key)
+
+    def suppress_review_key(event_type, event):
+        # 직전 on_press 가 리뷰 결정 키를 처리했으면 그 키 이벤트를 폐기(앱 전달 차단).
+        # pynput(darwin)은 on_press 콜백을 먼저 부른 뒤 이 intercept 를 호출하므로
+        # 같은 키 이벤트에 대해 결정 처리 → 폐기가 한 번에 일어난다.
+        if getattr(app, "_review_suppress", False):
+            app._review_suppress = False
+            return None
+        return event
+
+    listener = keyboard.Listener(
+        on_press=on_review_or_hotkey,
+        on_release=key_listener.on_key_release,
+        darwin_intercept=suppress_review_key,
+    )
     listener.start()
 
     print("Running Qwen Dictation. Dashboard: http://127.0.0.1:5001")

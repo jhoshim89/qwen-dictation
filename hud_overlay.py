@@ -103,7 +103,7 @@ if _APPKIT_OK:
             body_rect = NSMakeRect(14.0, 34.0, w - 28.0, h - 44.0)
             body.drawInRect_withAttributes_(body_rect, body_attrs)
             # 안내문구(하단, 회색)
-            hint = "Enter: 전송   다른 키: 입력만   Esc: 취소"
+            hint = "⌘ 다시·Enter: 보내기   Tab: 수정   Esc: 취소"
             hint_attrs = {
                 NSFontAttributeName: NSFont.boldSystemFontOfSize_(11.0),
                 NSForegroundColorAttributeName: _rgb(165, 180, 252, 1.0),
