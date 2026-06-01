@@ -50,8 +50,8 @@ def test_multi_listener_accepts_custom_keys():
 def test_multi_listener_defaults():
     wd = _load()
     lis = wd.MultiHotkeyListener(object())
-    assert lis.hold_key == keyboard.Key.alt_r
-    assert lis.toggle_key == keyboard.Key.cmd_r
+    assert lis.hold_key == keyboard.Key.cmd_r
+    assert lis.toggle_key == keyboard.Key.alt_r
 
 
 def test_app_config_has_hotkey_defaults(tmp_path, monkeypatch):
@@ -60,8 +60,8 @@ def test_app_config_has_hotkey_defaults(tmp_path, monkeypatch):
     monkeypatch.setattr(app_config, "config_path", lambda: str(cfg_file))
     cfg = app_config.load_config()
     assert cfg["hotkey_mode"] == "multi"
-    assert cfg["hold_key"] == "alt_r"
-    assert cfg["toggle_key"] == "cmd_r"
+    assert cfg["hold_key"] == "cmd_r"
+    assert cfg["toggle_key"] == "alt_r"
 
 
 def test_build_key_listener_selects_type():
@@ -124,3 +124,30 @@ def test_api_config_sets_and_applies_hotkeys(monkeypatch):
     r2 = client.post("/api/config", json={"hotkey_mode": "multi", "hold_key": "cmd_r", "toggle_key": "cmd_r"})
     assert r2.status_code == 400
     assert fake.applied == before
+
+
+def test_default_keys_are_cmd_hold_option_toggle():
+    import app_config
+    cfg = dict(app_config.DEFAULTS)
+    assert cfg["hold_key"] == "cmd_r"      # 홀드 = 오른쪽 Cmd
+    assert cfg["toggle_key"] == "alt_r"    # 토글 = 오른쪽 Option
+
+
+def test_multi_listener_both_triggers_use_streaming():
+    wd = _load()
+    starts = []
+
+    class App:
+        started = False
+        def begin_session(self, mode): starts.append(mode); self.started = True
+        def stop_app(self, _): self.started = False
+    app = App()
+    lis = wd.MultiHotkeyListener(app, hold_key=wd.keyboard.Key.cmd_r, toggle_key=wd.keyboard.Key.alt_r)
+    # 홀드(누름) → streaming 시작
+    lis.on_key_press(wd.keyboard.Key.cmd_r)
+    # 토글(누름) → 이미 시작 중이면 무시되므로, 새 인스턴스로 토글 확인
+    app2 = App()
+    lis2 = wd.MultiHotkeyListener(app2, hold_key=wd.keyboard.Key.cmd_r, toggle_key=wd.keyboard.Key.alt_r)
+    lis2.on_key_press(wd.keyboard.Key.alt_r)
+    assert starts[0] == wd.MODE_STREAMING            # 홀드가 streaming
+    assert app2.started and starts[-1] == wd.MODE_STREAMING  # 토글도 streaming

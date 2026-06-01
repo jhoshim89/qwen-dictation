@@ -464,16 +464,15 @@ class DoubleCommandKeyListener:
 
 
 class MultiHotkeyListener:
-    """오른쪽 단일 수정키 2개로 두 받아쓰기 모드를 구동한다.
+    """오른쪽 단일 수정키 2개로 실시간 스트리밍 받아쓰기를 구동한다.
 
-    - 오른쪽 Option(alt_r): 홀드 — 누르는 동안만 녹음, 떼면 정지 → streaming(짧은 말)
-    - 오른쪽 Cmd(cmd_r): 토글 — 눌러 시작, 다시 눌러 정지 → batch_paste(긴 말, 붙여넣고 멈춤)
-
-    동시에 하나의 트리거만 활성(active_trigger). 녹음 중 다른 트리거 키는 무시한다.
-    자동 전송(batch_submit)은 단축키에 배정하지 않는다 — 사용자가 결과를 보고 직접 처리.
+    - 오른쪽 Cmd(cmd_r): 홀드 — 누르는 동안 녹음, 떼면 정지.
+    - 오른쪽 Option(alt_r): 토글 — 눌러 시작, 다시 눌러 정지.
+    둘 다 streaming: 말하는 대로 입력창에 실시간 타이핑(문맥 보정 포함).
+    동시에 하나의 트리거만 활성(active_trigger).
     """
 
-    def __init__(self, app, hold_key=keyboard.Key.alt_r, toggle_key=keyboard.Key.cmd_r):
+    def __init__(self, app, hold_key=keyboard.Key.cmd_r, toggle_key=keyboard.Key.alt_r):
         self.app = app
         self.hold_key = hold_key
         self.toggle_key = toggle_key
@@ -499,7 +498,7 @@ class MultiHotkeyListener:
             if self.active_trigger == "toggle":
                 self._end("toggle")
             elif not self.app.started:
-                self._begin("toggle", MODE_BATCH_PASTE)
+                self._begin("toggle", MODE_STREAMING)
 
     def on_key_release(self, key):
         if key == self.hold_key:

@@ -26,14 +26,14 @@ class FakeApp:
         self.log.append(("stop",))
 
 
-def test_hold_option_starts_streaming_and_release_stops():
+def test_hold_cmd_starts_streaming_and_release_stops():
     wd = _load()
     app = FakeApp()
     lis = wd.MultiHotkeyListener(app)
-    lis.on_key_press(keyboard.Key.alt_r)
+    lis.on_key_press(keyboard.Key.cmd_r)
     assert app.started is True
     assert app.mode == wd.MODE_STREAMING
-    lis.on_key_release(keyboard.Key.alt_r)
+    lis.on_key_release(keyboard.Key.cmd_r)
     assert app.started is False
     assert app.log == [("begin", wd.MODE_STREAMING), ("stop",)]
 
@@ -42,40 +42,40 @@ def test_hold_autorepeat_does_not_restart():
     wd = _load()
     app = FakeApp()
     lis = wd.MultiHotkeyListener(app)
-    lis.on_key_press(keyboard.Key.alt_r)
-    lis.on_key_press(keyboard.Key.alt_r)
+    lis.on_key_press(keyboard.Key.cmd_r)
+    lis.on_key_press(keyboard.Key.cmd_r)
     assert app.log == [("begin", wd.MODE_STREAMING)]
 
 
-def test_toggle_cmd_starts_batch_paste_and_repress_stops():
+def test_toggle_alt_starts_streaming_and_repress_stops():
     wd = _load()
     app = FakeApp()
     lis = wd.MultiHotkeyListener(app)
-    lis.on_key_press(keyboard.Key.cmd_r)
-    assert app.started is True and app.mode == wd.MODE_BATCH_PASTE
-    lis.on_key_release(keyboard.Key.cmd_r)
-    assert app.started is True
-    lis.on_key_press(keyboard.Key.cmd_r)
+    lis.on_key_press(keyboard.Key.alt_r)
+    assert app.started is True and app.mode == wd.MODE_STREAMING
+    lis.on_key_release(keyboard.Key.alt_r)
+    assert app.started is True  # 토글은 release로 멈추지 않음
+    lis.on_key_press(keyboard.Key.alt_r)
     assert app.started is False
-    assert app.log == [("begin", wd.MODE_BATCH_PASTE), ("stop",)]
+    assert app.log == [("begin", wd.MODE_STREAMING), ("stop",)]
 
 
 def test_other_key_ignored_while_recording():
     wd = _load()
     app = FakeApp()
     lis = wd.MultiHotkeyListener(app)
-    lis.on_key_press(keyboard.Key.cmd_r)
     lis.on_key_press(keyboard.Key.alt_r)
-    assert app.mode == wd.MODE_BATCH_PASTE
-    assert app.log == [("begin", wd.MODE_BATCH_PASTE)]
+    lis.on_key_press(keyboard.Key.cmd_r)
+    assert app.mode == wd.MODE_STREAMING
+    assert app.log == [("begin", wd.MODE_STREAMING)]
 
 
 def test_release_of_non_owning_key_does_nothing():
     wd = _load()
     app = FakeApp()
     lis = wd.MultiHotkeyListener(app)
-    lis.on_key_press(keyboard.Key.cmd_r)
-    lis.on_key_release(keyboard.Key.alt_r)
+    lis.on_key_press(keyboard.Key.alt_r)
+    lis.on_key_release(keyboard.Key.cmd_r)
     assert app.started is True
 
 
