@@ -22,6 +22,7 @@ import dashboard
 import app_paths
 import app_config
 import vet_terms
+import vocabulary
 import audio_level
 import hud_overlay
 import settings_window
@@ -68,57 +69,6 @@ def normalize_language(language):
     return LANGUAGE_MAP.get(language.lower(), language)
 
 
-def ensure_dictionary():
-    """사용자 사전이 없으면 동봉 시드를 복사한다(최초 1회)."""
-    dest = app_paths.dictionary_path()
-    if os.path.exists(dest):
-        return
-    seed = app_paths.seed_dictionary_path()
-    try:
-        os.makedirs(app_paths.user_data_dir(), exist_ok=True)
-        if os.path.exists(seed):
-            with open(seed, "r", encoding="utf-8") as src:
-                data = src.read()
-        else:
-            data = "{}"
-        with open(dest, "w", encoding="utf-8") as out:
-            out.write(data)
-    except Exception as exc:
-        print(f"Dictionary seed error: {exc}")
-
-
-def merge_vet_terms():
-    """사용자 사전에 수의안과 교정쌍 중 빠진 것을 더한다(기존 값 보존)."""
-    path = app_paths.dictionary_path()
-    try:
-        if os.path.exists(path):
-            with open(path, "r", encoding="utf-8") as f:
-                data = json.load(f)
-        else:
-            data = {}
-        if not isinstance(data, dict):
-            return
-        merged = vet_terms.merge_terms_into(data)
-        if merged != data:
-            with open(path, "w", encoding="utf-8") as f:
-                json.dump(merged, f, ensure_ascii=False, indent=2)
-    except Exception as exc:
-        print(f"Vet term merge error: {exc}")
-
-
-def apply_dictionary(text):
-    path = app_paths.dictionary_path()
-    if not os.path.exists(path):
-        return text
-    try:
-        with open(path, "r", encoding="utf-8") as file:
-            dictionary = json.load(file)
-        for source, replacement in dictionary.items():
-            text = text.replace(source, replacement)
-    except Exception as exc:
-        print(f"Dictionary error: {exc}")
-    return text
-
 
 # 리뷰 패널에서 누른 키 → 행동 결정.
 def decide_review_action(key, toggle_key=None):
@@ -137,6 +87,29 @@ def decide_review_action(key, toggle_key=None):
     if key == keyboard.Key.esc:
         return "cancel"
     return None
+
+
+HOTKEY_KEY_NAMES = {
+    "alt_r": keyboard.Key.alt_r,
+    "cmd_r": keyboard.Key.cmd_r,
+    "ctrl_r": keyboard.Key.ctrl_r,
+    "shift_r": keyboard.Key.shift_r,
+}
+HOTKEY_MODES = ("multi", "single", "double")
+
+
+def key_from_name(name):
+    """단축키 키이름 → pynput Key. 모르는 이름은 오른쪽 Option 으로."""
+    return HOTKEY_KEY_NAMES.get(name, keyboard.Key.alt_r)
+
+
+def validate_hotkey_config(mode, hold_key, toggle_key):
+    """(ok, error). multi 에서 hold==toggle 이면 거부, 모르는 mode 거부."""
+    if mode not in HOTKEY_MODES:
+        return False, f"unknown hotkey mode: {mode}"
+    if mode == "multi" and hold_key == toggle_key:
+        return False, "hold and toggle keys must differ"
+    return True, ""
 
 
 def paste_text(text, submit=False):
@@ -216,23 +189,17 @@ class SpeechTranscriber:
                     self.model_1_7b.device = self.device
                 return self.model_1_7b
 
-            if self.model_0_6b is None:
-                safe_notify("Qwen Dictation", "Loading model", "Qwen3-ASR-0.6B 모델을 불러옵니다.")
-                self.model_0_6b = Qwen3ASRModel.from_pretrained(
-                    MODEL_0_6B,
-                    dtype=self.dtype,
-                )
-                self.model_0_6b.model.to(self.device)
-                self.model_0_6b.device = self.device
-            return self.model_0_6b
+            # 0.6b 는 제거됨 — 항상 1.7b 사용.
+            return self.model_1_7b
 
-    def transcribe_file(self, audio_path, language=None, model_size="0.6b"):
+    def transcribe_file(self, audio_path, language=None, model_size="1.7b"):
         model = self.get_model(model_size)
         language = normalize_language(language)
-        results = model.transcribe(audio_path, language=language)
+        context = vocabulary.build_context(vocabulary.load_vocabulary())
+        results = model.transcribe(audio_path, context=context, language=language)
         if not results:
             return ""
-        return apply_dictionary(results[0].text.strip())
+        return results[0].text.strip()
 
 
 class Recorder:
@@ -424,10 +391,10 @@ class MultiHotkeyListener:
     자동 전송(batch_submit)은 단축키에 배정하지 않는다 — 사용자가 결과를 보고 직접 처리.
     """
 
-    def __init__(self, app):
+    def __init__(self, app, hold_key=keyboard.Key.alt_r, toggle_key=keyboard.Key.cmd_r):
         self.app = app
-        self.hold_key = keyboard.Key.alt_r
-        self.toggle_key = keyboard.Key.cmd_r
+        self.hold_key = hold_key
+        self.toggle_key = toggle_key
         self.active_trigger = None  # None | "hold" | "toggle"
 
     def _begin(self, trigger, mode):
@@ -476,6 +443,8 @@ class StatusBarApp(rumps.App):
         self.review_active = False
         self._review_shown = False
         self._review_suppress = False
+        self.key_combination = "cmd_l+alt"
+        self._global_listener = None
         self.recorder = None
         self.max_time = max_time
         self.timer = None
@@ -535,6 +504,9 @@ class StatusBarApp(rumps.App):
             "model_size": self.selected_model,
             "stream_interval": self.stream_interval,
             "max_time": self.max_time or 0,
+            "hotkey_mode": getattr(self, "hotkey_mode", "multi"),
+            "hold_key": getattr(self, "hold_key", "alt_r"),
+            "toggle_key": getattr(self, "toggle_key", "cmd_r"),
         }
 
     def save_settings(self):
@@ -547,6 +519,9 @@ class StatusBarApp(rumps.App):
         self.selected_model = cfg["model_size"]
         self.stream_interval = cfg["stream_interval"]
         self.max_time = cfg["max_time"]
+        self.hotkey_mode = cfg["hotkey_mode"]
+        self.hold_key = cfg["hold_key"]
+        self.toggle_key = cfg["toggle_key"]
         self.sync_menu_state()
 
     def sync_menu_state(self):
@@ -653,6 +628,53 @@ class StatusBarApp(rumps.App):
             paste_text(text, submit=False)
         # 'cancel' 은 아무 것도 안 함
 
+    def build_key_listener(self):
+        """현재 설정(hotkey_mode/hold_key/toggle_key)으로 키 리스너 객체를 만든다."""
+        mode = getattr(self, "hotkey_mode", "multi")
+        if mode == "double":
+            return DoubleCommandKeyListener(self)
+        if mode == "single":
+            return GlobalKeyListener(self, getattr(self, "key_combination", "cmd_l+alt"))
+        return MultiHotkeyListener(
+            self,
+            hold_key=key_from_name(getattr(self, "hold_key", "alt_r")),
+            toggle_key=key_from_name(getattr(self, "toggle_key", "cmd_r")),
+        )
+
+    def apply_hotkey_config(self):
+        """현재 설정으로 전역 단축키 리스너를 (재)구성한다. 즉시 적용."""
+        old = getattr(self, "_global_listener", None)
+        if old is not None:
+            try:
+                old.stop()
+            except Exception:
+                pass
+        key_listener = self.build_key_listener()
+        self._key_listener = key_listener
+
+        def on_review_or_hotkey(key):
+            if self.review_active:
+                toggle_key = getattr(key_listener, "toggle_key", None)
+                action = decide_review_action(key, toggle_key=toggle_key)
+                if action is not None:
+                    self._review_suppress = True
+                    self.resolve_review(action)
+                return
+            key_listener.on_key_press(key)
+
+        def suppress_review_key(event_type, event):
+            if getattr(self, "_review_suppress", False):
+                self._review_suppress = False
+                return None
+            return event
+
+        self._global_listener = keyboard.Listener(
+            on_press=on_review_or_hotkey,
+            on_release=key_listener.on_key_release,
+            darwin_intercept=suppress_review_key,
+        )
+        self._global_listener.start()
+
 
 def parse_args():
     parser = argparse.ArgumentParser(description="Local Qwen3-ASR dictation app for macOS.")
@@ -680,17 +702,16 @@ def parse_args():
     parser.add_argument(
         "--hotkeys",
         choices=("multi", "single", "double"),
-        default="multi",
-        help="multi=right Option(hold)/right Cmd(toggle) single keys (default); single=-k combo; double=double right Cmd.",
+        default=None,
+        help="Override saved hotkey mode for this run. multi=right Option(hold)/right Cmd(toggle); single=-k combo; double=double right Cmd. Omit to use saved settings.",
     )
-    parser.add_argument("--model-size", choices=("0.6b", "1.7b"), default="1.7b")
+    parser.add_argument("--model-size", choices=("1.7b",), default="1.7b")
     return parser.parse_args()
 
 
 def main():
     args = parse_args()
-    ensure_dictionary()
-    merge_vet_terms()
+    vocabulary.ensure_vocabulary()
     languages = [item.strip() for item in args.language.split(",") if item.strip()]
     device = "mps" if torch.backends.mps.is_available() else "cpu"
     dtype = torch.float16 if device == "mps" else torch.float32
@@ -703,39 +724,15 @@ def main():
     app.recorder = recorder
 
     dashboard.start_server(app)
+    # CLI 플래그가 있으면 이번 실행에 한해 단축키 설정을 덮어쓴다(없으면 저장된 설정 사용).
     if args.k_double_cmd or args.hotkeys == "double":
-        key_listener = DoubleCommandKeyListener(app)
+        app.hotkey_mode = "double"
     elif args.hotkeys == "single":
-        key_listener = GlobalKeyListener(app, args.key_combination)
-    else:
-        key_listener = MultiHotkeyListener(app)
-    def on_review_or_hotkey(key):
-        # 리뷰 중이면 키를 결정(보내기/수정/취소)으로 가로채고, 아니면 평소 단축키 처리.
-        if app.review_active:
-            toggle_key = getattr(key_listener, "toggle_key", None)
-            action = decide_review_action(key, toggle_key=toggle_key)
-            if action is not None:
-                # 이 키가 포커스된 앱으로 새지 않게 표시(아래 intercept 에서 폐기).
-                app._review_suppress = True
-                app.resolve_review(action)
-            return
-        key_listener.on_key_press(key)
-
-    def suppress_review_key(event_type, event):
-        # 직전 on_press 가 리뷰 결정 키를 처리했으면 그 키 이벤트를 폐기(앱 전달 차단).
-        # pynput(darwin)은 on_press 콜백을 먼저 부른 뒤 이 intercept 를 호출하므로
-        # 같은 키 이벤트에 대해 결정 처리 → 폐기가 한 번에 일어난다.
-        if getattr(app, "_review_suppress", False):
-            app._review_suppress = False
-            return None
-        return event
-
-    listener = keyboard.Listener(
-        on_press=on_review_or_hotkey,
-        on_release=key_listener.on_key_release,
-        darwin_intercept=suppress_review_key,
-    )
-    listener.start()
+        app.hotkey_mode = "single"
+        app.key_combination = args.key_combination
+    elif args.hotkeys == "multi":
+        app.hotkey_mode = "multi"
+    app.apply_hotkey_config()
 
     print("Running Qwen Dictation. Dashboard: http://127.0.0.1:5001")
     app.run()
