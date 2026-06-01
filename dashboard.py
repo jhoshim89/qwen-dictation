@@ -101,6 +101,43 @@ def get_status():
         "elapsed_time": getattr(app_instance, 'elapsed_time', 0)
     })
 
+@flask_app.route('/api/selftest', methods=['POST'])
+def selftest():
+    """엔진 자가검증: 마이크로 N초 녹음 → Qwen 변환 → 텍스트 반환.
+    앱 프로세스(마이크 권한 보유)에서 도니, 원격(SSH)에서 스피커로 소리를 내며
+    이 엔드포인트를 호출하면 단축키/타이핑 없이 '스피커→마이크→변환' 전 구간을 검증할 수 있다.
+    localhost(127.0.0.1) 전용. peak/rms 로 실제 소리가 잡혔는지도 함께 확인한다."""
+    if not app_instance or not getattr(app_instance, 'recorder', None):
+        return jsonify({"ok": False, "error": "app/recorder not ready"}), 503
+    try:
+        import tempfile
+        import numpy as np
+        import pyaudio
+        import soundfile as sf
+        seconds = float((request.json or {}).get("seconds", 5)) if request.is_json else 5.0
+        seconds = max(1.0, min(15.0, seconds))
+        pa = pyaudio.PyAudio()
+        dev = pa.get_default_input_device_info().get("name")
+        st = pa.open(format=pyaudio.paInt16, channels=1, rate=16000, input=True, frames_per_buffer=1024)
+        frames = []
+        for _ in range(int(16000 / 1024 * seconds)):
+            frames.append(st.read(1024, exception_on_overflow=False))
+        st.stop_stream(); st.close(); pa.terminate()
+        raw = b"".join(frames)
+        a = np.frombuffer(raw, dtype=np.int16)
+        peak = int(np.max(np.abs(a.astype(np.int32)))) if a.size else 0
+        rms = int(np.sqrt(np.mean(a.astype(np.float64) ** 2))) if a.size else 0
+        path = tempfile.gettempdir() + "/qwen_selftest.wav"
+        sf.write(path, a.astype(np.float32) / 32768.0, 16000)
+        text = app_instance.recorder.transcriber.transcribe_file(
+            path, language=app_instance.current_language, model_size=app_instance.selected_model)
+        return jsonify({"ok": True, "device": dev, "seconds": seconds,
+                        "peak": peak, "rms": rms, "text": text,
+                        "language": app_instance.current_language,
+                        "model": app_instance.selected_model})
+    except Exception as e:
+        return jsonify({"ok": False, "error": repr(e)}), 500
+
 @flask_app.route('/api/vocabulary', methods=['GET'])
 def get_vocabulary():
     return jsonify(vocabulary.load_vocabulary())

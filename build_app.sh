@@ -75,7 +75,28 @@ rm -rf build dist
 # Info.plist 를 수정한 뒤 반드시 재서명한다. 안 하면 서명이 Info.plist 를
 # 감싸지 못해(Info.plist=not bound) 서명이 무효가 되고, macOS 가 마이크 권한
 # 팝업을 안 띄우고 조용히 거부(무음 0) 한다.
-codesign --force --deep -s - "dist/Qwen Dictation.app"
+#
+# 서명 신원: 고정 자가서명 인증서가 있으면 그걸로 서명한다. ad-hoc(-s -)은 빌드마다
+# cdhash 가 바뀌어 macOS 권한(마이크/손쉬운 사용)이 재빌드 때마다 풀린다. 고정 신원으로
+# 서명하면 designated requirement 가 인증서 기반으로 안정돼 한 번 켠 권한이 유지된다.
+# 인증서 준비: ./setup_signing.sh (헤드리스) + 바탕화면 Qwen서명신뢰.command 1회 승인.
+SIGN_DIR="$HOME/.qwen-dictation/signing"
+SIGN_KC="$SIGN_DIR/qwen-signing.keychain-db"
+SIGN_CN="Qwen Dictation Local Signing"
+SIGN_HASH=""
+if [ -f "$SIGN_KC" ] && [ -f "$SIGN_DIR/keychain.pw" ]; then
+  security unlock-keychain -p "$(cat "$SIGN_DIR/keychain.pw")" "$SIGN_KC" 2>/dev/null || true
+  CUR=$(security list-keychains -d user | sed 's/[" ]//g')
+  echo "$CUR" | grep -q "qwen-signing" || security list-keychains -d user -s $CUR "$SIGN_KC" 2>/dev/null || true
+  SIGN_HASH=$(security find-identity -v -p codesigning "$SIGN_KC" 2>/dev/null | awk -v cn="$SIGN_CN" '$0 ~ cn {print $2; exit}')
+fi
+if [ -n "$SIGN_HASH" ]; then
+  echo "Signing with stable identity: $SIGN_CN ($SIGN_HASH)"
+  codesign --force --deep -s "$SIGN_HASH" "dist/Qwen Dictation.app"
+else
+  echo "WARNING: stable signing identity 없음 → ad-hoc 서명(재빌드 시 권한 재설정 필요)"
+  codesign --force --deep -s - "dist/Qwen Dictation.app"
+fi
 codesign --verify --verbose "dist/Qwen Dictation.app" || echo "WARNING: codesign verify failed"
 
 echo "BUILD OK -> dist/Qwen Dictation.app"
