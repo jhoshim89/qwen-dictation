@@ -51,44 +51,45 @@ def post_config():
     if not data:
         return jsonify({"error": "Invalid request payload"}), 400
 
-    if 'mode' in data:
-        try:
-            app_instance.set_mode(data['mode'])
-        except Exception as e:
-            return jsonify({"error": str(e)}), 400
-
-    if 'language' in data:
-        app_instance.current_language = data['language']
-        app_instance.sync_menu_state()
-
-    if 'model_size' in data:
-        app_instance.selected_model = data['model_size']
-        print(f"Model size updated to: {app_instance.selected_model}")
-
-    if 'stream_interval' in data:
-        app_instance.stream_interval = max(0.8, float(data['stream_interval']))
-
-    if 'max_time' in data:
-        app_instance.max_time = max(0, float(data['max_time']))
-
     hotkey_changed = any(k in data for k in ("hotkey_mode", "hold_key", "toggle_key"))
-    if hotkey_changed:
-        mode = data.get("hotkey_mode", getattr(app_instance, "hotkey_mode", "multi"))
-        hold = data.get("hold_key", getattr(app_instance, "hold_key", "alt_r"))
-        toggle = data.get("toggle_key", getattr(app_instance, "toggle_key", "cmd_r"))
-        valid_keys = ("alt_r", "cmd_r", "ctrl_r", "shift_r")
-        if mode not in ("multi", "single", "double"):
-            return jsonify({"error": "unknown hotkey mode"}), 400
-        if mode == "multi" and (hold == toggle or hold not in valid_keys or toggle not in valid_keys):
-            return jsonify({"error": "hold/toggle keys must differ and be valid"}), 400
-        app_instance.hotkey_mode = mode
-        app_instance.hold_key = hold
-        app_instance.toggle_key = toggle
 
-    if hasattr(app_instance, "save_settings"):
-        app_instance.save_settings()
-    if hotkey_changed and hasattr(app_instance, "apply_hotkey_config"):
-        app_instance.apply_hotkey_config()
+    def apply():
+        if 'mode' in data:
+            app_instance.set_mode(data['mode'])
+        if 'language' in data:
+            app_instance.current_language = data['language']
+            app_instance.sync_menu_state()
+        if 'model_size' in data:
+            app_instance.selected_model = data['model_size']
+            print(f"Model size updated to: {app_instance.selected_model}")
+        if 'stream_interval' in data:
+            app_instance.stream_interval = max(0.8, float(data['stream_interval']))
+        if 'max_time' in data:
+            app_instance.max_time = max(0, float(data['max_time']))
+        if hotkey_changed:
+            mode = data.get("hotkey_mode", getattr(app_instance, "hotkey_mode", "multi"))
+            hold = data.get("hold_key", getattr(app_instance, "hold_key", "alt_r"))
+            toggle = data.get("toggle_key", getattr(app_instance, "toggle_key", "cmd_r"))
+            valid_keys = ("alt_r", "cmd_r", "ctrl_r", "shift_r")
+            if mode not in ("multi", "single", "double"):
+                raise ValueError("unknown hotkey mode")
+            if mode == "multi" and (hold == toggle or hold not in valid_keys or toggle not in valid_keys):
+                raise ValueError("hold/toggle keys must differ and be valid")
+            app_instance.hotkey_mode = mode
+            app_instance.hold_key = hold
+            app_instance.toggle_key = toggle
+        if hasattr(app_instance, "save_settings"):
+            app_instance.save_settings()
+        if hotkey_changed and hasattr(app_instance, "apply_hotkey_config"):
+            app_instance.apply_hotkey_config()
+
+    try:
+        if hasattr(app_instance, "dispatch_to_main"):
+            app_instance.dispatch_to_main(apply, wait=True)
+        else:
+            apply()
+    except Exception as e:
+        return jsonify({"error": str(e)}), 400
     return jsonify({"status": "success", "config": get_config().json})
 
 @flask_app.route('/api/status', methods=['GET'])

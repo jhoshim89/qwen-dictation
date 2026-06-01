@@ -70,6 +70,7 @@ if _APPKIT_OK:
             self._level = 0.0
             self._elapsed = 0
             self._blink_on = True
+            self._label_text = "로컬 받아쓰기 중"
             self._review_text = None  # None 이면 막대 모드, 문자열이면 리뷰 모드
             return self
 
@@ -82,6 +83,10 @@ if _APPKIT_OK:
 
         def setReviewText_(self, text):
             self._review_text = text
+            self.setNeedsDisplay_(True)
+
+        def setLabelText_(self, text):
+            self._label_text = text
             self.setNeedsDisplay_(True)
 
         def drawRect_(self, rect):
@@ -129,8 +134,8 @@ if _APPKIT_OK:
             dot_rect = NSMakeRect(dot_cx - dot_r, dot_cy - dot_r, dot_r * 2, dot_r * 2)
             NSBezierPath.bezierPathWithOvalInRect_(dot_rect).fill()
 
-            # Label text "로컬 받아쓰기 중".
-            label = "로컬 받아쓰기 중"
+            # Label text for recording or transcription progress.
+            label = self._label_text
             label_font = NSFont.boldSystemFontOfSize_(12.0)
             label_attrs = {
                 NSFontAttributeName: label_font,
@@ -204,6 +209,7 @@ class DictationOverlay:
         self._view = None
         self._blink_on = True
         self._visible = False
+        self._review_mode = False
         if not _APPKIT_OK:
             return
         try:
@@ -269,6 +275,15 @@ class DictationOverlay:
         except Exception as exc:
             print(f"hud_overlay: show error: {exc}")
 
+    def show_status(self, label):
+        if self._view is None:
+            return
+        try:
+            self._view.setLabelText_(label)
+            self.show()
+        except Exception as exc:
+            print(f"hud_overlay: show_status error: {exc}")
+
     def show_review(self, text):
         """리뷰 패널을 화면 위쪽에 띄운다(아래로 커지며 받아쓴 글 표시)."""
         if self._panel is None or self._view is None:
@@ -278,6 +293,7 @@ class DictationOverlay:
             self._view.setReviewText_(text)
             self._panel.orderFrontRegardless()
             self._visible = True
+            self._review_mode = True
         except Exception as exc:
             print(f"hud_overlay: show_review error: {exc}")
 
@@ -298,9 +314,13 @@ class DictationOverlay:
         if self._panel is None:
             return
         try:
+            if not self._visible and not self._review_mode:
+                return
             if self._view is not None:
                 self._view.setReviewText_(None)
-            self._resize_panel(PANEL_WIDTH, PANEL_HEIGHT)
+            if self._review_mode:
+                self._resize_panel(PANEL_WIDTH, PANEL_HEIGHT)
+                self._review_mode = False
             if self._visible:
                 self._panel.orderOut_(None)
                 self._visible = False

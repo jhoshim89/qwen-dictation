@@ -2,6 +2,7 @@ import argparse
 import json
 import os
 import platform
+import shutil
 import subprocess
 import sys
 import threading
@@ -11,7 +12,6 @@ os.environ.setdefault("HF_HUB_DISABLE_XET", "1")
 os.environ.setdefault("HF_HUB_ENABLE_HF_TRANSFER", "1")
 
 import numpy as np
-import pyaudio
 import rumps
 import soundfile as sf
 import torch
@@ -27,6 +27,12 @@ import audio_level
 import hud_overlay
 import settings_window
 
+try:
+    from Foundation import NSOperationQueue, NSThread
+except Exception:
+    NSOperationQueue = None
+    NSThread = None
+
 
 APP_DIR = os.path.dirname(os.path.abspath(__file__))
 DICTIONARY_PATH = app_paths.dictionary_path()
@@ -36,6 +42,7 @@ MODE_BATCH_SUBMIT = "batch_submit"
 SUPPORTED_MODES = (MODE_STREAMING, MODE_BATCH_PASTE, MODE_BATCH_SUBMIT)
 MODEL_0_6B = os.environ.get("QWEN_ASR_0_6B_PATH", "Qwen/Qwen3-ASR-0.6B")
 MODEL_1_7B = os.environ.get("QWEN_ASR_1_7B_PATH", "Qwen/Qwen3-ASR-1.7B")
+FFMPEG_PATH = os.environ.get("QWEN_FFMPEG_PATH") or shutil.which("ffmpeg") or "/opt/homebrew/bin/ffmpeg"
 LANGUAGE_MAP = {
     "auto": None,
     "ko": "Korean",
@@ -83,6 +90,13 @@ def normalize_language(language):
     if not language:
         return None
     return LANGUAGE_MAP.get(language.lower(), language)
+
+
+def dispatch_app(app, callback, *args):
+    dispatch = getattr(app, "dispatch_to_main", None)
+    if dispatch is None:
+        return callback(*args)
+    return dispatch(callback, *args)
 
 
 
@@ -231,23 +245,25 @@ class Recorder:
         self.audio_frames = []
         self.audio_lock = threading.Lock()
         self.record_thread = None
-        self.stream_thread = None
         self.hud_process = None
+        self.session_mode = MODE_STREAMING
+        self.capture_process = None
 
     def start(self, language=None):
         if self.recording:
             return
         self.audio_frames = []
         self.recording = True
+        self.session_mode = self.app.mode
         self._start_hud()
         self.record_thread = threading.Thread(target=self._record_impl, args=(language,), daemon=True)
         self.record_thread.start()
-        if self.app.mode == MODE_STREAMING:
-            self.stream_thread = threading.Thread(target=self._stream_transcribe_loop, args=(language,), daemon=True)
-            self.stream_thread.start()
 
     def stop(self):
         self.recording = False
+        process = self.capture_process
+        if process is not None and process.poll() is None:
+            process.terminate()
         self._stop_hud()
         audio_level.clear_level()
 
@@ -262,30 +278,61 @@ class Recorder:
     def _record_impl(self, language):
         safe_notify("Qwen Dictation", "Recording", "말을 마친 뒤 단축키를 다시 눌러주세요.")
         frames_per_buffer = 1024
-        pyaudio_instance = pyaudio.PyAudio()
-        stream = pyaudio_instance.open(
-            format=pyaudio.paInt16,
-            channels=1,
-            rate=16000,
-            frames_per_buffer=frames_per_buffer,
-            input=True,
-        )
+        try:
+            if not os.path.exists(FFMPEG_PATH):
+                raise RuntimeError(f"ffmpeg not found: {FFMPEG_PATH}")
+            process = subprocess.Popen(
+                [
+                    FFMPEG_PATH,
+                    "-hide_banner",
+                    "-loglevel", "error",
+                    "-f", "avfoundation",
+                    "-i", ":default",
+                    "-ac", "1",
+                    "-ar", "16000",
+                    "-f", "s16le",
+                    "pipe:1",
+                ],
+                stdout=subprocess.PIPE,
+                stderr=subprocess.PIPE,
+            )
+            self.capture_process = process
+        except Exception as exc:
+            self.recording = False
+            audio_level.clear_level()
+            self.app.dispatch_to_main(self.app.handle_recording_error, str(exc))
+            return
 
         while self.recording:
             try:
-                data = stream.read(frames_per_buffer, exception_on_overflow=False)
+                data = process.stdout.read(frames_per_buffer * 2)
+                if not data:
+                    if not self.recording:
+                        break
+                    if process.poll() is not None:
+                        message = process.stderr.read().decode("utf-8", errors="replace").strip()
+                        raise RuntimeError(message or "ffmpeg audio capture stopped unexpectedly")
+                    continue
                 with self.audio_lock:
                     self.audio_frames.append(data)
                 audio_level.write_level(audio_level.compute_rms(data))
             except Exception as exc:
                 print(f"Audio read error: {exc}")
+                self.recording = False
+                self.app.dispatch_to_main(self.app.handle_recording_error, str(exc))
+                break
 
-        stream.stop_stream()
-        stream.close()
-        pyaudio_instance.terminate()
+        if process.poll() is None:
+            process.terminate()
+        try:
+            process.wait(timeout=2.0)
+        except subprocess.TimeoutExpired:
+            process.kill()
+            process.wait(timeout=2.0)
+        self.capture_process = None
+        audio_level.clear_level()
 
-        if self.app.mode != MODE_STREAMING:
-            self._run_batch_transcription(language)
+        self._run_batch_transcription(language, self.session_mode)
 
     def _write_current_audio(self, path):
         with self.audio_lock:
@@ -297,10 +344,11 @@ class Recorder:
         sf.write(path, audio_data_fp32, 16000)
         return True
 
-    def _run_batch_transcription(self, language):
+    def _run_batch_transcription(self, language, session_mode):
         audio_path = "/tmp/qwen_dictation_batch.wav"
         if not self._write_current_audio(audio_path):
             return
+        self.app.dispatch_to_main(self.app.set_processing, True)
         try:
             safe_notify("Qwen Dictation", "Transcribing", "Qwen3-ASR로 녹음 전체를 분석 중입니다.")
             text = self.transcriber.transcribe_file(
@@ -310,37 +358,24 @@ class Recorder:
             )
             if not text:
                 return
-            if self.app.mode == MODE_BATCH_SUBMIT:
+            if session_mode == MODE_BATCH_SUBMIT:
                 # 메뉴/대시보드로 명시적으로 '자동 전송'을 고른 경우엔 리뷰 없이 바로 전송.
                 paste_text(text, submit=True)
                 safe_notify("Qwen Dictation", "Done", text)
-            else:
+            elif session_mode == MODE_BATCH_PASTE:
                 # 단축키(오른쪽 Cmd) 배치: 리뷰 패널로 보여주고 사용자가 결정.
                 subprocess.run(["pbcopy"], input=text.encode("utf-8"), check=True)
-                self.app.request_review(text)
+                self.app.dispatch_to_main(self.app.request_review, text)
+            else:
+                # 짧은 받아쓰기는 녹음 중 누적 오디오를 반복 추론하지 않는다.
+                # 키를 놓은 뒤 한 번만 변환해 현재 커서에 붙여넣는다.
+                paste_text(text, submit=False)
+                safe_notify("Qwen Dictation", "Done", text)
         except Exception as exc:
             print(f"Batch transcription error: {exc}")
             safe_notify("Qwen Dictation", "Error", str(exc))
-
-    def _stream_transcribe_loop(self, language):
-        last_text = ""
-        time.sleep(1.0)
-        while self.recording:
-            time.sleep(self.app.stream_interval)
-            audio_path = "/tmp/qwen_dictation_stream.wav"
-            if not self._write_current_audio(audio_path):
-                continue
-            try:
-                new_text = self.transcriber.transcribe_file(
-                    audio_path,
-                    language=language,
-                    model_size=self.app.selected_model,
-                )
-                if new_text:
-                    last_text = type_diff(last_text, new_text, self.transcriber.pykeyboard)
-            except Exception as exc:
-                print(f"Streaming transcription error: {exc}")
-
+        finally:
+            self.app.dispatch_to_main(self.app.set_processing, False)
 
 class GlobalKeyListener:
     def __init__(self, app, key_combination):
@@ -363,7 +398,7 @@ class GlobalKeyListener:
         # Single-key hotkey: toggle on that one key.
         if self.key2 is None:
             if key == self.key1:
-                self.app.toggle()
+                dispatch_app(self.app, self.app.toggle)
             return
 
         if key == self.key1:
@@ -371,7 +406,7 @@ class GlobalKeyListener:
         elif key == self.key2:
             self.key2_pressed = True
         if self.key1_pressed and self.key2_pressed:
-            self.app.toggle()
+            dispatch_app(self.app, self.app.toggle)
 
     def on_key_release(self, key):
         if self.key2 is None:
@@ -393,9 +428,9 @@ class DoubleCommandKeyListener:
             return
         current_time = time.time()
         if self.app.started:
-            self.app.toggle()
+            dispatch_app(self.app, self.app.toggle)
         elif current_time - self.last_press_time < 0.5:
-            self.app.toggle()
+            dispatch_app(self.app, self.app.toggle)
         self.last_press_time = current_time
 
     def on_key_release(self, key):
@@ -421,14 +456,13 @@ class MultiHotkeyListener:
     def _begin(self, trigger, mode):
         if self.app.started:
             return
-        self.app.begin_session(mode)
         self.active_trigger = trigger
+        dispatch_app(self.app, self.app.begin_session, mode)
 
     def _end(self, trigger):
         if self.active_trigger != trigger:
             return
-        if self.app.started:
-            self.app.stop_app(None)
+        dispatch_app(self.app, self.app.stop_app, None)
         self.active_trigger = None
 
     def on_key_press(self, key):
@@ -460,6 +494,7 @@ class StatusBarApp(rumps.App):
         self.stream_interval = 1.2
         self.k_double_cmd = False
         self.started = False
+        self.processing_active = False
         self.pending_review_text = None
         self.review_active = False
         self._review_shown = False
@@ -511,8 +546,14 @@ class StatusBarApp(rumps.App):
                 ov.hide()
             if self.started and self.start_time is not None:
                 elapsed = int(time.time() - self.start_time)
+                self.elapsed_time = elapsed
+                minutes, seconds = divmod(elapsed, 60)
+                self.title = f"({minutes:02d}:{seconds:02d}) 🔴"
                 ov.update(audio_level.read_level(), elapsed)
-                ov.show()
+                ov.show_status("로컬 받아쓰기 중")
+            elif self.processing_active:
+                ov.update(0.0, 0)
+                ov.show_status("받아쓰기 변환 중")
             else:
                 ov.hide()
         except Exception as exc:
@@ -529,6 +570,30 @@ class StatusBarApp(rumps.App):
             "hold_key": getattr(self, "hold_key", "alt_r"),
             "toggle_key": getattr(self, "toggle_key", "cmd_r"),
         }
+
+    def dispatch_to_main(self, callback, *args, wait=False):
+        """Run AppKit/rumps mutations on the main queue."""
+        if NSThread is None or NSOperationQueue is None or NSThread.isMainThread():
+            return callback(*args)
+
+        done = threading.Event()
+        result = {}
+
+        def run():
+            try:
+                result["value"] = callback(*args)
+            except Exception as exc:
+                result["error"] = exc
+            finally:
+                done.set()
+
+        NSOperationQueue.mainQueue().addOperationWithBlock_(run)
+        if not wait:
+            return None
+        done.wait(timeout=5.0)
+        if "error" in result:
+            raise result["error"]
+        return result.get("value")
 
     def save_settings(self):
         app_config.save_config(self.current_config())
@@ -558,7 +623,7 @@ class StatusBarApp(rumps.App):
     def set_mode(self, mode):
         if mode not in SUPPORTED_MODES:
             raise ValueError(f"Unsupported mode: {mode}")
-        if self.started:
+        if self.started or self.processing_active:
             raise RuntimeError("Cannot change mode while recording")
         self.mode = mode
         self.sync_menu_state()
@@ -580,7 +645,7 @@ class StatusBarApp(rumps.App):
 
     @rumps.clicked("Start Recording")
     def start_app(self, _):
-        if self.started:
+        if self.started or self.processing_active:
             return
         print("Listening...")
         self.started = True
@@ -588,7 +653,10 @@ class StatusBarApp(rumps.App):
         self.menu["Stop Recording"].set_callback(self.stop_app)
         self.recorder.start(self.current_language)
         if self.max_time and self.max_time > 0:
-            self.timer = threading.Timer(self.max_time, lambda: self.stop_app(None))
+            self.timer = threading.Timer(
+                self.max_time,
+                lambda: self.dispatch_to_main(self.stop_app, None),
+            )
             self.timer.start()
         self.start_time = time.time()
         self.update_title()
@@ -607,12 +675,22 @@ class StatusBarApp(rumps.App):
         self.recorder.stop()
         print("Stopped.")
 
+    def handle_recording_error(self, message):
+        self.started = False
+        self.processing_active = False
+        self.title = None
+        self.menu["Stop Recording"].set_callback(None)
+        self.menu["Start Recording"].set_callback(self.start_app)
+        safe_notify("Qwen Dictation", "Microphone error", message)
+
+    def set_processing(self, active):
+        self.processing_active = bool(active)
+
     def update_title(self):
         if self.started and self.start_time is not None:
             self.elapsed_time = int(time.time() - self.start_time)
             minutes, seconds = divmod(self.elapsed_time, 60)
             self.title = f"({minutes:02d}:{seconds:02d}) 🔴"
-            threading.Timer(1, self.update_title).start()
 
     def toggle(self):
         if self.started:
