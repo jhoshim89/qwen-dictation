@@ -592,8 +592,8 @@ class StatusBarApp(rumps.App):
             "stream_interval": self.stream_interval,
             "max_time": self.max_time or 0,
             "hotkey_mode": getattr(self, "hotkey_mode", "multi"),
-            "hold_key": getattr(self, "hold_key", "alt_r"),
-            "toggle_key": getattr(self, "toggle_key", "cmd_r"),
+            "hold_key": getattr(self, "hold_key", "cmd_r"),
+            "toggle_key": getattr(self, "toggle_key", "alt_r"),
         }
 
     def dispatch_to_main(self, callback, *args, wait=False):
@@ -761,8 +761,8 @@ class StatusBarApp(rumps.App):
             return GlobalKeyListener(self, getattr(self, "key_combination", "cmd_l+alt"))
         return MultiHotkeyListener(
             self,
-            hold_key=key_from_name(getattr(self, "hold_key", "alt_r")),
-            toggle_key=key_from_name(getattr(self, "toggle_key", "cmd_r")),
+            hold_key=key_from_name(getattr(self, "hold_key", "cmd_r")),
+            toggle_key=key_from_name(getattr(self, "toggle_key", "alt_r")),
         )
 
     def apply_hotkey_config(self):
@@ -827,7 +827,7 @@ def parse_args():
         "--hotkeys",
         choices=("multi", "single", "double"),
         default=None,
-        help="Override saved hotkey mode for this run. multi=right Option(hold)/right Cmd(toggle); single=-k combo; double=double right Cmd. Omit to use saved settings.",
+        help="Override saved hotkey mode for this run. multi=right Cmd(hold)/right Option(toggle); single=-k combo; double=double right Cmd. Omit to use saved settings.",
     )
     parser.add_argument("--model-size", choices=("1.7b",), default="1.7b")
     return parser.parse_args()
