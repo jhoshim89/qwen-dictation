@@ -43,6 +43,11 @@ def seed_dictionary_path():
     return resource_path("dictionary.json")
 
 
+def vocabulary_path():
+    """사용자 단어 목록 파일 경로(쓰기 가능 위치)."""
+    return os.path.join(user_data_dir(), "vocabulary.json")
+
+
 def hud_command(max_time=30):
     """HUD 오버레이를 띄우는 subprocess 커맨드 리스트.
 
