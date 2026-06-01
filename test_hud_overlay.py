@@ -32,7 +32,7 @@ def _overlay(visible=False, review_mode=False):
     overlay._visible = visible
     overlay._review_mode = review_mode
     overlay._resizes = []
-    overlay._resize_panel = lambda width, height: overlay._resizes.append((width, height))
+    overlay._resize_panel = lambda width, height, radius: overlay._resizes.append((width, height, radius))
     return overlay
 
 
@@ -47,7 +47,7 @@ def test_hide_idle_overlay_does_not_mutate_window_frame():
 def test_hide_review_overlay_restores_recording_size_once():
     overlay = _overlay(visible=True, review_mode=True)
     overlay.hide()
-    assert overlay._resizes == [(hud_overlay.PANEL_WIDTH, hud_overlay.PANEL_HEIGHT)]
+    assert overlay._resizes == [(hud_overlay.PANEL_WIDTH, hud_overlay.PANEL_HEIGHT, hud_overlay.BAR_CORNER_RADIUS)]
     assert overlay._view.review_texts == [None]
     assert overlay._panel.hidden == 1
 
