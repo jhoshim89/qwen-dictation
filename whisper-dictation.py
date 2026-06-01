@@ -12,6 +12,7 @@ os.environ.setdefault("HF_HUB_DISABLE_XET", "1")
 os.environ.setdefault("HF_HUB_ENABLE_HF_TRANSFER", "1")
 
 import numpy as np
+import pyaudio
 import rumps
 import soundfile as sf
 import torch
@@ -283,10 +284,8 @@ class Recorder:
         self.record_thread.start()
 
     def stop(self):
+        # 녹음 루프(_record_impl)가 self.recording=False 를 보고 스스로 종료/정리한다.
         self.recording = False
-        process = self.capture_process
-        if process is not None and process.poll() is None:
-            process.terminate()
         self._stop_hud()
         audio_level.clear_level()
 
@@ -299,61 +298,49 @@ class Recorder:
         pass
 
     def _record_impl(self, language):
+        # pyaudio 로 시스템 기본 입력 장치에서 직접 캡처한다. (ffmpeg avfoundation
+        # ':default' 는 이 장비에서 'Input/output error' 로 실패해 0프레임이 됐다.)
         safe_notify("Qwen Dictation", "Recording", "말을 마친 뒤 단축키를 다시 눌러주세요.")
         frames_per_buffer = 1024
+        pa = None
+        stream = None
         try:
-            if not os.path.exists(FFMPEG_PATH):
-                raise RuntimeError(f"ffmpeg not found: {FFMPEG_PATH}")
-            process = subprocess.Popen(
-                [
-                    FFMPEG_PATH,
-                    "-hide_banner",
-                    "-loglevel", "error",
-                    "-f", "avfoundation",
-                    "-i", ":default",
-                    "-ac", "1",
-                    "-ar", "16000",
-                    "-f", "s16le",
-                    "pipe:1",
-                ],
-                stdout=subprocess.PIPE,
-                stderr=subprocess.PIPE,
+            pa = pyaudio.PyAudio()
+            stream = pa.open(
+                format=pyaudio.paInt16,
+                channels=1,
+                rate=16000,
+                input=True,
+                frames_per_buffer=frames_per_buffer,
             )
-            self.capture_process = process
         except Exception as exc:
             self.recording = False
             audio_level.clear_level()
+            if pa is not None:
+                pa.terminate()
             self.app.dispatch_to_main(self.app.handle_recording_error, str(exc))
             return
 
-        while self.recording:
-            try:
-                data = process.stdout.read(frames_per_buffer * 2)
-                if not data:
-                    if not self.recording:
-                        break
-                    if process.poll() is not None:
-                        message = process.stderr.read().decode("utf-8", errors="replace").strip()
-                        raise RuntimeError(message or "ffmpeg audio capture stopped unexpectedly")
-                    continue
+        try:
+            while self.recording:
+                try:
+                    data = stream.read(frames_per_buffer, exception_on_overflow=False)
+                except Exception as exc:
+                    print(f"Audio read error: {exc}")
+                    self.recording = False
+                    self.app.dispatch_to_main(self.app.handle_recording_error, str(exc))
+                    break
                 with self.audio_lock:
                     self.audio_frames.append(data)
                 audio_level.write_level(audio_level.compute_rms(data))
-            except Exception as exc:
-                print(f"Audio read error: {exc}")
-                self.recording = False
-                self.app.dispatch_to_main(self.app.handle_recording_error, str(exc))
-                break
-
-        if process.poll() is None:
-            process.terminate()
-        try:
-            process.wait(timeout=2.0)
-        except subprocess.TimeoutExpired:
-            process.kill()
-            process.wait(timeout=2.0)
-        self.capture_process = None
-        audio_level.clear_level()
+        finally:
+            try:
+                stream.stop_stream()
+                stream.close()
+            except Exception:
+                pass
+            pa.terminate()
+            audio_level.clear_level()
 
         self._run_batch_transcription(language, self.session_mode)
 
