@@ -305,6 +305,8 @@ class Recorder:
         self._start_hud()
         self.record_thread = threading.Thread(target=self._record_impl, args=(language,), daemon=True)
         self.record_thread.start()
+        self.stream_thread = threading.Thread(target=self._stream_loop, args=(language,), daemon=True)
+        self.stream_thread.start()
 
     def stop(self):
         # 녹음 루프(_record_impl)가 self.recording=False 를 보고 스스로 종료/정리한다.
@@ -365,8 +367,6 @@ class Recorder:
             pa.terminate()
             audio_level.clear_level()
 
-        self._run_batch_transcription(language, self.session_mode)
-
     def _write_current_audio(self, path):
         with self.audio_lock:
             frames = list(self.audio_frames)
@@ -419,39 +419,6 @@ class Recorder:
             self._stream_tick(language)
         except Exception as exc:
             print(f"Streaming final tick error: {exc}")
-
-    def _run_batch_transcription(self, language, session_mode):
-        audio_path = "/tmp/qwen_dictation_batch.wav"
-        if not self._write_current_audio(audio_path):
-            return
-        self.app.dispatch_to_main(self.app.set_processing, True)
-        try:
-            safe_notify("Qwen Dictation", "Transcribing", "Qwen3-ASR로 녹음 전체를 분석 중입니다.")
-            text = self.transcriber.transcribe_file(
-                audio_path,
-                language=language,
-                model_size=self.app.selected_model,
-            )
-            if not text:
-                return
-            if session_mode == MODE_BATCH_SUBMIT:
-                # 메뉴/대시보드로 명시적으로 '자동 전송'을 고른 경우엔 리뷰 없이 바로 전송.
-                paste_text(text, submit=True)
-                safe_notify("Qwen Dictation", "Done", text)
-            elif session_mode == MODE_BATCH_PASTE:
-                # 단축키(오른쪽 Cmd) 배치: 리뷰 패널로 보여주고 사용자가 결정.
-                subprocess.run(["pbcopy"], input=text.encode("utf-8"), check=True)
-                self.app.dispatch_to_main(self.app.request_review, text)
-            else:
-                # 짧은 받아쓰기는 녹음 중 누적 오디오를 반복 추론하지 않는다.
-                # 키를 놓은 뒤 한 번만 변환해 현재 커서에 붙여넣는다.
-                paste_text(text, submit=False)
-                safe_notify("Qwen Dictation", "Done", text)
-        except Exception as exc:
-            print(f"Batch transcription error: {exc}")
-            safe_notify("Qwen Dictation", "Error", str(exc))
-        finally:
-            self.app.dispatch_to_main(self.app.set_processing, False)
 
 class GlobalKeyListener:
     def __init__(self, app, key_combination):
