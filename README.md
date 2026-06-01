@@ -35,8 +35,6 @@ Useful options:
 ./run.sh --mode streaming
 ./run.sh --mode batch_paste
 ./run.sh --mode batch_submit
-./run.sh --model-size 0.6b
-./run.sh --model-size 1.7b
 ./run.sh --k_double_cmd
 ```
 
@@ -69,26 +67,44 @@ If paste or Return does nothing, Accessibility or Automation is usually missing.
 
 In testing, Chrome accepted menu-based paste more reliably than synthetic `Cmd+V`, so the app tries the front app's Edit/Paste menu first and falls back to `Cmd+V`.
 
-## Personal Dictionary
+## Word registration (vocabulary)
 
-Edit replacements in the dashboard or in `dictionary.json`.
+Instead of find-replace, you register words you say often (medical terms, names) in
+the dashboard. These are passed to Qwen as recognition context so they are
+transcribed correctly in the first place. The list lives at `vocabulary.json`
+(one word per entry). On first run it is seeded from any existing `dictionary.json`
+values plus the built-in veterinary terms.
 
-Example:
+Note: this biases recognition toward those words — it improves accuracy but is not a
+guaranteed substitution like the old find-replace.
+
+Example `vocabulary.json`:
 
 ```json
-{
-  "큐엔": "Qwen",
-  "지피티": "GPT"
-}
+["Qwen", "각막", "궤양", "염색"]
 ```
+
+## Hotkeys (configurable in the dashboard)
+
+The dashboard lets you choose the hotkey mode and keys; changes save and apply
+immediately (no restart):
+
+- **multi** (default): a hold key (short dictation, streaming) + a toggle key (long
+  dictation, batch → review panel). Pick each from the right-side modifiers
+  (right Option / Cmd / Ctrl / Shift); the two must differ.
+- **single**: a two-key combo (set with `-k` at launch).
+- **double**: double-press right Command.
+
+CLI `--hotkeys` still overrides for a single run; omit it to use saved settings.
 
 ## Settings persistence
 
-Settings (mode, language, model size, stream interval, max recording time) are
-saved to `~/.qwen-dictation/config.json` and restored on next launch. The user
-dictionary lives at `~/.qwen-dictation/dictionary.json`. Recording has no time
-limit by default (`max_time = 0`); set a positive value to auto-stop.
-The default model is **1.7b** (more accurate; ~0.2s slower than 0.6b once loaded).
+Settings (mode, language, model, stream interval, max recording time, hotkey
+mode/keys) are saved to `~/.qwen-dictation/config.json` and restored on next
+launch. The word list lives at `~/.qwen-dictation/vocabulary.json`. Recording has
+no time limit by default (`max_time = 0`); set a positive value to auto-stop.
+The only model is **Qwen3-ASR 1.7B** (loads once on first dictation, then ~0.5s
+per utterance).
 
 ## Development Checks
 
