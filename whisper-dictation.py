@@ -289,7 +289,6 @@ class Recorder:
         self.audio_lock = threading.Lock()
         self.record_thread = None
         self.hud_process = None
-        self.session_mode = MODE_STREAMING
         self.capture_process = None
         self.stream_thread = None
         self.window_start = 0
@@ -301,7 +300,6 @@ class Recorder:
             return
         self.audio_frames = []
         self.recording = True
-        self.session_mode = self.app.mode
         self._start_hud()
         self.record_thread = threading.Thread(target=self._record_impl, args=(language,), daemon=True)
         self.record_thread.start()
