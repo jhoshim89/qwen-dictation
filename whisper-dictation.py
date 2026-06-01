@@ -22,6 +22,7 @@ import dashboard
 import app_paths
 import app_config
 import vet_terms
+import vocabulary
 import audio_level
 import hud_overlay
 import settings_window
@@ -67,57 +68,6 @@ def normalize_language(language):
         return None
     return LANGUAGE_MAP.get(language.lower(), language)
 
-
-def ensure_dictionary():
-    """사용자 사전이 없으면 동봉 시드를 복사한다(최초 1회)."""
-    dest = app_paths.dictionary_path()
-    if os.path.exists(dest):
-        return
-    seed = app_paths.seed_dictionary_path()
-    try:
-        os.makedirs(app_paths.user_data_dir(), exist_ok=True)
-        if os.path.exists(seed):
-            with open(seed, "r", encoding="utf-8") as src:
-                data = src.read()
-        else:
-            data = "{}"
-        with open(dest, "w", encoding="utf-8") as out:
-            out.write(data)
-    except Exception as exc:
-        print(f"Dictionary seed error: {exc}")
-
-
-def merge_vet_terms():
-    """사용자 사전에 수의안과 교정쌍 중 빠진 것을 더한다(기존 값 보존)."""
-    path = app_paths.dictionary_path()
-    try:
-        if os.path.exists(path):
-            with open(path, "r", encoding="utf-8") as f:
-                data = json.load(f)
-        else:
-            data = {}
-        if not isinstance(data, dict):
-            return
-        merged = vet_terms.merge_terms_into(data)
-        if merged != data:
-            with open(path, "w", encoding="utf-8") as f:
-                json.dump(merged, f, ensure_ascii=False, indent=2)
-    except Exception as exc:
-        print(f"Vet term merge error: {exc}")
-
-
-def apply_dictionary(text):
-    path = app_paths.dictionary_path()
-    if not os.path.exists(path):
-        return text
-    try:
-        with open(path, "r", encoding="utf-8") as file:
-            dictionary = json.load(file)
-        for source, replacement in dictionary.items():
-            text = text.replace(source, replacement)
-    except Exception as exc:
-        print(f"Dictionary error: {exc}")
-    return text
 
 
 # 리뷰 패널에서 누른 키 → 행동 결정.
@@ -216,23 +166,17 @@ class SpeechTranscriber:
                     self.model_1_7b.device = self.device
                 return self.model_1_7b
 
-            if self.model_0_6b is None:
-                safe_notify("Qwen Dictation", "Loading model", "Qwen3-ASR-0.6B 모델을 불러옵니다.")
-                self.model_0_6b = Qwen3ASRModel.from_pretrained(
-                    MODEL_0_6B,
-                    dtype=self.dtype,
-                )
-                self.model_0_6b.model.to(self.device)
-                self.model_0_6b.device = self.device
-            return self.model_0_6b
+            # 0.6b 는 제거됨 — 항상 1.7b 사용.
+            return self.model_1_7b
 
-    def transcribe_file(self, audio_path, language=None, model_size="0.6b"):
+    def transcribe_file(self, audio_path, language=None, model_size="1.7b"):
         model = self.get_model(model_size)
         language = normalize_language(language)
-        results = model.transcribe(audio_path, language=language)
+        context = vocabulary.build_context(vocabulary.load_vocabulary())
+        results = model.transcribe(audio_path, context=context, language=language)
         if not results:
             return ""
-        return apply_dictionary(results[0].text.strip())
+        return results[0].text.strip()
 
 
 class Recorder:
@@ -683,14 +627,13 @@ def parse_args():
         default="multi",
         help="multi=right Option(hold)/right Cmd(toggle) single keys (default); single=-k combo; double=double right Cmd.",
     )
-    parser.add_argument("--model-size", choices=("0.6b", "1.7b"), default="1.7b")
+    parser.add_argument("--model-size", choices=("1.7b",), default="1.7b")
     return parser.parse_args()
 
 
 def main():
     args = parse_args()
-    ensure_dictionary()
-    merge_vet_terms()
+    vocabulary.ensure_vocabulary()
     languages = [item.strip() for item in args.language.split(",") if item.strip()]
     device = "mps" if torch.backends.mps.is_available() else "cpu"
     dtype = torch.float16 if device == "mps" else torch.float32

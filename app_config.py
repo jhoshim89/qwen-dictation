@@ -37,6 +37,8 @@ def load_config():
                         cfg[k] = saved[k]
     except Exception as exc:
         print(f"Config load error: {exc}")
+    if cfg.get("model_size") != "1.7b":
+        cfg["model_size"] = "1.7b"
     return cfg
 
 

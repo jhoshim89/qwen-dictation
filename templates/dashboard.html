@@ -228,7 +228,6 @@
                 <h2 class="title">엔진 설정</h2>
                 <label for="model-size">모델</label>
                 <select id="model-size" onchange="updateConfig()">
-                    <option value="0.6b">Qwen3-ASR 0.6B</option>
                     <option value="1.7b">Qwen3-ASR 1.7B</option>
                 </select>
                 <div class="row">
@@ -250,32 +249,20 @@
             </section>
         </div>
         <section class="panel">
-            <h2 class="title">개인 치환 사전</h2>
-            <div class="dict-toolbar">
-                <input id="search" placeholder="검색" oninput="renderDictionary()">
-                <button class="primary" onclick="openDialog()">추가</button>
+            <h2 class="title">단어 등록</h2>
+            <p class="empty">자주 쓰는 말(전문용어·이름)을 한 줄에 하나씩. 미리 알려주면 더 잘 알아듣습니다.</p>
+            <textarea id="vocab-list" rows="10" style="width:100%"></textarea>
+            <div class="dialog-actions">
+                <button class="primary" onclick="saveVocabulary()">단어 저장</button>
             </div>
-            <div id="dict-wrap"></div>
         </section>
     </main>
-    <dialog id="dict-dialog">
-        <h2 class="title">치환 규칙 추가</h2>
-        <label for="spoken">인식된 말</label>
-        <input id="spoken" placeholder="예: 큐엔">
-        <label for="replacement">바꿀 텍스트</label>
-        <input id="replacement" placeholder="예: Qwen">
-        <div class="dialog-actions">
-            <button class="secondary" onclick="closeDialog()">취소</button>
-            <button class="primary" onclick="addWord()">저장</button>
-        </div>
-    </dialog>
     <script>
         let config = {};
-        let dictionary = {};
 
         window.addEventListener("DOMContentLoaded", () => {
             fetchConfig();
-            fetchDictionary();
+            loadVocabulary();
             fetchStatus();
             setInterval(fetchStatus, 1200);
         });
@@ -285,7 +272,7 @@
                 .then((res) => res.json())
                 .then((data) => {
                     config = data;
-                    document.getElementById("model-size").value = data.model_size || "0.6b";
+                    document.getElementById("model-size").value = data.model_size || "1.7b";
                     document.getElementById("language").value = data.language || "ko";
                     document.getElementById("max-time").value = data.max_time || 30;
                     document.getElementById("stream-interval").value = data.stream_interval || 1.2;
@@ -332,90 +319,26 @@
                 });
         }
 
-        function fetchDictionary() {
-            fetch("/api/dictionary")
+        function loadVocabulary() {
+            fetch("/api/vocabulary")
                 .then((res) => res.json())
-                .then((data) => {
-                    dictionary = data;
-                    renderDictionary();
+                .then((words) => {
+                    document.getElementById("vocab-list").value = (words || []).join("\n");
                 });
         }
 
-        function renderDictionary() {
-            const q = document.getElementById("search").value.toLowerCase();
-            const entries = Object.entries(dictionary).filter(([key, value]) => {
-                return key.toLowerCase().includes(q) || String(value).toLowerCase().includes(q);
-            });
-            const wrap = document.getElementById("dict-wrap");
-            if (!entries.length) {
-                wrap.innerHTML = '<div class="empty">등록된 치환 규칙이 없습니다.</div>';
-                return;
-            }
-            wrap.innerHTML = `
-                <table>
-                    <thead><tr><th>인식된 말</th><th>바꿀 텍스트</th><th></th></tr></thead>
-                    <tbody>
-                        ${entries.map(([key, value]) => `
-                            <tr>
-                                <td>${escapeHtml(key)}</td>
-                                <td>${escapeHtml(value)}</td>
-                                <td><button class="delete" onclick="deleteWord('${escapeJs(key)}')">삭제</button></td>
-                            </tr>
-                        `).join("")}
-                    </tbody>
-                </table>
-            `;
-        }
-
-        function openDialog() {
-            document.getElementById("spoken").value = "";
-            document.getElementById("replacement").value = "";
-            document.getElementById("dict-dialog").showModal();
-        }
-
-        function closeDialog() {
-            document.getElementById("dict-dialog").close();
-        }
-
-        function addWord() {
-            const spoken = document.getElementById("spoken").value.trim();
-            const replacement = document.getElementById("replacement").value.trim();
-            if (!spoken || !replacement) return;
-            dictionary[spoken] = replacement;
-            saveDictionary();
-            closeDialog();
-        }
-
-        function deleteWord(key) {
-            delete dictionary[key];
-            saveDictionary();
-        }
-
-        function saveDictionary() {
-            fetch("/api/dictionary", {
+        function saveVocabulary() {
+            const words = document.getElementById("vocab-list").value
+                .split("\n").map((s) => s.trim()).filter(Boolean);
+            fetch("/api/vocabulary", {
                 method: "POST",
                 headers: { "Content-Type": "application/json" },
-                body: JSON.stringify(dictionary)
+                body: JSON.stringify(words)
             })
                 .then((res) => res.json())
-                .then((data) => {
-                    dictionary = data;
-                    renderDictionary();
+                .then((saved) => {
+                    document.getElementById("vocab-list").value = (saved || []).join("\n");
                 });
-        }
-
-        function escapeHtml(value) {
-            return String(value).replace(/[&<>"']/g, (s) => ({
-                "&": "&amp;",
-                "<": "&lt;",
-                ">": "&gt;",
-                '"': "&quot;",
-                "'": "&#39;"
-            })[s]);
-        }
-
-        function escapeJs(value) {
-            return String(value).replace(/\\/g, "\\\\").replace(/'/g, "\\'");
         }
     </script>
 </body>

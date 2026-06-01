@@ -5,6 +5,7 @@ import threading
 from flask import Flask, jsonify, request, render_template_string
 
 import app_paths
+import vocabulary
 
 # Suppress flask output logs to keep the console clean
 log = logging.getLogger('werkzeug')
@@ -33,7 +34,7 @@ def get_config():
         "language": app_instance.current_language or "ko",
         "languages": app_instance.languages,
         "k_double_cmd": getattr(app_instance, 'k_double_cmd', False),
-        "model_size": getattr(app_instance, 'selected_model', '0.6b'),
+        "model_size": getattr(app_instance, 'selected_model', '1.7b'),
         "stream_interval": getattr(app_instance, 'stream_interval', 1.2),
         "max_time": getattr(app_instance, 'max_time', 30),
     })
@@ -80,31 +81,17 @@ def get_status():
         "elapsed_time": getattr(app_instance, 'elapsed_time', 0)
     })
 
-@flask_app.route('/api/dictionary', methods=['GET'])
-def get_dictionary():
-    dict_path = app_paths.dictionary_path()
-    if not os.path.exists(dict_path):
-        return jsonify({})
-    try:
-        with open(dict_path, 'r', encoding='utf-8') as f:
-            dictionary = json.load(f)
-        return jsonify(dictionary)
-    except Exception as e:
-        return jsonify({"error": str(e)}), 500
+@flask_app.route('/api/vocabulary', methods=['GET'])
+def get_vocabulary():
+    return jsonify(vocabulary.load_vocabulary())
 
-@flask_app.route('/api/dictionary', methods=['POST'])
-def post_dictionary():
-    dict_path = app_paths.dictionary_path()
+@flask_app.route('/api/vocabulary', methods=['POST'])
+def post_vocabulary():
     data = request.json
-    if data is None:
-        return jsonify({"error": "Invalid request payload"}), 400
-
-    try:
-        with open(dict_path, 'w', encoding='utf-8') as f:
-            json.dump(data, f, ensure_ascii=False, indent=2)
-        return jsonify(data)
-    except Exception as e:
-        return jsonify({"error": str(e)}), 500
+    if not isinstance(data, list):
+        return jsonify({"error": "expected a list of words"}), 400
+    cleaned = vocabulary.save_vocabulary(data)
+    return jsonify(cleaned)
 
 def start_server(app):
     global app_instance
