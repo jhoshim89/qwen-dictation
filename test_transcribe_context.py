@@ -69,6 +69,47 @@ def test_transcribe_skips_silent_audio(tmp_path, monkeypatch):
     assert called == []        # 모델 호출 안 됨
 
 
+def test_looks_like_vocab_echo():
+    wd = _load()
+    vocab = ["궤양", "각막", "염색", "Qwen"]
+    # 등록 단어들로만 → echo
+    assert wd.looks_like_vocab_echo("궤양, 각막, 염색.", vocab) is True
+    assert wd.looks_like_vocab_echo("각막 염색", vocab) is True
+    # 실제 발화(등록 안 된 말 포함) → echo 아님
+    assert wd.looks_like_vocab_echo("각막궤양 관찰 결과입니다.", vocab) is False
+    # 단어 1개 → 실제 발화일 수 있어 건드리지 않음
+    assert wd.looks_like_vocab_echo("각막", vocab) is False
+    # vocab 없으면 항상 False
+    assert wd.looks_like_vocab_echo("각막 염색", []) is False
+
+
+def test_echo_result_retranscribes_without_context(tmp_path, monkeypatch):
+    import numpy as np
+    wd = _load()
+    vp = tmp_path / "vocabulary.json"
+    monkeypatch.setattr(app_paths, "vocabulary_path", lambda: str(vp))
+    vocabulary.save_vocabulary(["궤양", "각막", "염색"])
+    wav = tmp_path / "speech.wav"
+    _write_wav(wav, (np.random.RandomState(2).randn(16000) * 5000))
+
+    class EchoThenRealModel:
+        def __init__(self):
+            self.calls = []
+
+        def transcribe(self, audio, context="", language=None, **kw):
+            self.calls.append(context)
+            # context 있으면 echo, 없으면 진짜
+            text = "궤양, 각막, 염색." if context else "각막궤양 관찰 결과입니다."
+            return [_FakeResult(text)]
+
+    tr = wd.SpeechTranscriber("cpu", None)
+    fake = EchoThenRealModel()
+    monkeypatch.setattr(tr, "get_model", lambda s: fake)
+    out = tr.transcribe_file(str(wav), language="Korean")
+    assert out == "각막궤양 관찰 결과입니다."   # echo 감지 후 context 없이 재전사 결과
+    assert fake.calls[0] != "" and fake.calls[1] == ""  # 1차 context, 2차 무context
+
+
 def test_no_apply_dictionary_symbol():
     wd = _load()
     assert not hasattr(wd, "apply_dictionary")

@@ -74,6 +74,23 @@ def audio_peak(audio_path):
         return float("inf")
 
 
+def looks_like_vocab_echo(text, vocab):
+    """결과가 등록 단어들로만(2개 이상) 이뤄졌으면 context 환각(echo)으로 본다.
+
+    Qwen 은 음향 증거가 약하면 시스템 프롬프트의 등록 단어를 그대로 뱉는다.
+    실제 발화는 등록 안 된 말(조사·서술어 등)을 포함하므로, 토큰이 모두 등록
+    단어이고 2개 이상이면 echo 로 판정한다(단어 1개는 실제 발화일 수 있어 제외).
+    """
+    if not vocab:
+        return False
+    cleaned = text.replace(",", " ").replace(".", " ").replace("·", " ")
+    tokens = [t for t in cleaned.split() if t]
+    if len(tokens) < 2:
+        return False
+    vset = set(vocab)
+    return all(t in vset for t in tokens)
+
+
 def safe_notify(title, subtitle, message):
     try:
         rumps.notification(title, subtitle, message)
@@ -230,11 +247,17 @@ class SpeechTranscriber:
             return ""
         model = self.get_model(model_size)
         language = normalize_language(language)
-        context = vocabulary.build_context(vocabulary.load_vocabulary())
+        vocab = vocabulary.load_vocabulary()
+        context = vocabulary.build_context(vocab)
         results = model.transcribe(audio_path, context=context, language=language)
         if not results:
             return ""
-        return results[0].text.strip()
+        text = results[0].text.strip()
+        # context 환각(등록 단어만 나옴) 의심 시 → context 없이 다시 받아써 실제 들린 것 우선.
+        if looks_like_vocab_echo(text, vocab):
+            plain = model.transcribe(audio_path, context="", language=language)
+            text = plain[0].text.strip() if plain else ""
+        return text
 
 
 class Recorder:
