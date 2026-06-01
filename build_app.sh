@@ -72,4 +72,10 @@ rm -rf build dist
 
 ./venv/bin/python fix_plist.py "dist/Qwen Dictation.app/Contents/Info.plist"
 
+# Info.plist 를 수정한 뒤 반드시 재서명한다. 안 하면 서명이 Info.plist 를
+# 감싸지 못해(Info.plist=not bound) 서명이 무효가 되고, macOS 가 마이크 권한
+# 팝업을 안 띄우고 조용히 거부(무음 0) 한다.
+codesign --force --deep -s - "dist/Qwen Dictation.app"
+codesign --verify --verbose "dist/Qwen Dictation.app" || echo "WARNING: codesign verify failed"
+
 echo "BUILD OK -> dist/Qwen Dictation.app"
