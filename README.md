@@ -48,9 +48,11 @@ After a long (batch) dictation via right Command, the result is NOT inserted
 immediately. A review panel expands from the top of the screen showing the
 transcript. Decide with the keyboard:
 
-- **Enter** → paste into the focused field and press Return (send)
-- **any other key** → paste only (so you can edit, then send yourself)
+- **Right Command again (the toggle key) or Enter** → paste into the focused field and press Return (send)
+- **Tab** → paste only (so you can edit in place, then send yourself)
 - **Esc** → cancel (nothing is inserted; text stays on the clipboard)
+
+The decision keys (toggle/Enter, Tab, Esc) are swallowed during review, so Tab does not move focus out of the target field.
 
 ## macOS Permissions
 
