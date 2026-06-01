@@ -50,6 +50,22 @@ LANGUAGE_MAP = {
     "japanese": "Japanese",
 }
 
+# int16 진폭(최대 32767). 이 값보다 peak 가 작으면 말소리가 없는 버퍼로 보고
+# 받아쓰기를 건너뛴다. 무음/작은 잡음(peak 수백 이하) vs 실제 말(peak 1만 이상)
+# 사이 마진이 커서 보수적으로 1000 을 쓴다.
+SILENCE_PEAK_THRESHOLD = 1000.0
+
+
+def audio_peak(audio_path):
+    """오디오의 최대 절대 진폭(int16 스케일). 못 읽으면 inf(게이트 안 함)."""
+    try:
+        data, _ = sf.read(audio_path, dtype="int16")
+        if len(data) == 0:
+            return 0.0
+        return float(np.max(np.abs(np.asarray(data, dtype=np.int32))))
+    except Exception:
+        return float("inf")
+
 
 def safe_notify(title, subtitle, message):
     try:
@@ -193,6 +209,11 @@ class SpeechTranscriber:
             return self.model_1_7b
 
     def transcribe_file(self, audio_path, language=None, model_size="1.7b"):
+        # 무음/잡음만 있는 버퍼는 건너뛴다. context(등록 단어)를 주면 모델이
+        # 음향 증거가 없을 때 그 단어들을 그대로 환각으로 뱉으므로(echo), 말소리가
+        # 없을 땐 아예 받아쓰지 않는다. peak 진폭 기준(짧은 단어도 peak 는 큼).
+        if audio_peak(audio_path) < SILENCE_PEAK_THRESHOLD:
+            return ""
         model = self.get_model(model_size)
         language = normalize_language(language)
         context = vocabulary.build_context(vocabulary.load_vocabulary())
