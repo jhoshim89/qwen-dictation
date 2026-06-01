@@ -247,6 +247,41 @@
                 <label for="stream-interval">스트리밍 재추론 간격 초</label>
                 <input id="stream-interval" type="number" min="0.8" max="10" step="0.1" onchange="updateConfig()">
             </section>
+            <section class="panel">
+                <h2 class="title">단축키</h2>
+                <label for="hotkey-mode">방식</label>
+                <select id="hotkey-mode" onchange="onHotkeyModeChange()">
+                    <option value="multi">오른쪽 Option 꾹 + 오른쪽 Cmd 토글</option>
+                    <option value="single">조합키(실행 옵션)</option>
+                    <option value="double">오른쪽 Cmd 더블탭</option>
+                </select>
+                <div id="multi-keys">
+                    <div class="row">
+                        <div>
+                            <label for="hold-key">짧은 말(꾹누르기) 키</label>
+                            <select id="hold-key">
+                                <option value="alt_r">오른쪽 Option</option>
+                                <option value="cmd_r">오른쪽 Cmd</option>
+                                <option value="ctrl_r">오른쪽 Ctrl</option>
+                                <option value="shift_r">오른쪽 Shift</option>
+                            </select>
+                        </div>
+                        <div>
+                            <label for="toggle-key">긴 말(토글) 키</label>
+                            <select id="toggle-key">
+                                <option value="alt_r">오른쪽 Option</option>
+                                <option value="cmd_r">오른쪽 Cmd</option>
+                                <option value="ctrl_r">오른쪽 Ctrl</option>
+                                <option value="shift_r">오른쪽 Shift</option>
+                            </select>
+                        </div>
+                    </div>
+                </div>
+                <div class="dialog-actions">
+                    <button class="primary" onclick="saveHotkeys()">단축키 저장</button>
+                </div>
+                <p id="hotkey-msg" class="empty"></p>
+            </section>
         </div>
         <section class="panel">
             <h2 class="title">단어 등록</h2>
@@ -276,8 +311,35 @@
                     document.getElementById("language").value = data.language || "ko";
                     document.getElementById("max-time").value = data.max_time || 30;
                     document.getElementById("stream-interval").value = data.stream_interval || 1.2;
+                    document.getElementById("hotkey-mode").value = data.hotkey_mode || "multi";
+                    document.getElementById("hold-key").value = data.hold_key || "alt_r";
+                    document.getElementById("toggle-key").value = data.toggle_key || "cmd_r";
+                    onHotkeyModeChange();
                     renderModes(data.mode || "streaming");
                 });
+        }
+
+        function onHotkeyModeChange() {
+            const mode = document.getElementById("hotkey-mode").value;
+            document.getElementById("multi-keys").style.display = (mode === "multi") ? "" : "none";
+        }
+
+        function saveHotkeys() {
+            const mode = document.getElementById("hotkey-mode").value;
+            const hold = document.getElementById("hold-key").value;
+            const toggle = document.getElementById("toggle-key").value;
+            const msg = document.getElementById("hotkey-msg");
+            if (mode === "multi" && hold === toggle) {
+                msg.textContent = "꾹누르기 키와 토글 키는 서로 달라야 합니다.";
+                return;
+            }
+            fetch("/api/config", {
+                method: "POST",
+                headers: { "Content-Type": "application/json" },
+                body: JSON.stringify({ hotkey_mode: mode, hold_key: hold, toggle_key: toggle })
+            })
+                .then((res) => res.json().then((j) => ({ ok: res.ok, j })))
+                .then(({ ok, j }) => { msg.textContent = ok ? "저장됨 — 바로 적용됩니다." : ("오류: " + (j.error || "")); });
         }
 
         function renderModes(mode) {

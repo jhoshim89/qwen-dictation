@@ -16,6 +16,9 @@ DEFAULTS = {
     "model_size": "1.7b",
     "stream_interval": 1.2,
     "max_time": 0,
+    "hotkey_mode": "multi",
+    "hold_key": "alt_r",
+    "toggle_key": "cmd_r",
 }
 
 
