@@ -1,7 +1,9 @@
 import argparse
 import json
+import multiprocessing
 import os
 import platform
+import re
 import shutil
 import subprocess
 import sys
@@ -111,6 +113,17 @@ def looks_like_vocab_echo(text, vocab):
     return all(t in vset for t in tokens)
 
 
+def looks_like_repetition_hallucination(text):
+    """Reject short repeated filler that Qwen can emit when there is no speech."""
+    compact = re.sub(r"[\s,.;!?·]+", "", text or "")
+    if not compact:
+        return False
+    if len(compact) >= 3 and len(set(compact)) == 1:
+        return True
+    tokens = [t for t in re.split(r"[\s,.;!?·]+", (text or "").strip()) if t]
+    return len(tokens) >= 3 and len(set(tokens)) == 1
+
+
 def safe_notify(title, subtitle, message):
     try:
         rumps.notification(title, subtitle, message)
@@ -206,10 +219,15 @@ def paste_text(text, submit=False):
     subprocess.run(["osascript", "-e", script], check=True)
 
 
-def type_diff(old_text, new_text, keyboard_controller):
+def type_diff(old_text, new_text, keyboard_controller, allow_empty=False):
     old_text = old_text.strip()
     new_text = new_text.strip()
     if not new_text:
+        if allow_empty:
+            for _ in range(len(old_text)):
+                keyboard_controller.press(keyboard.Key.backspace)
+                keyboard_controller.release(keyboard.Key.backspace)
+            return ""
         return old_text
     if not old_text:
         keyboard_controller.type(new_text)
@@ -294,11 +312,13 @@ class Recorder:
         self.window_start = 0
         self.committed_text = ""
         self.last_typed = ""
+        self.finalize_on_stop = True
 
     def start(self, language=None):
         if self.recording:
             return
         self.audio_frames = []
+        self.finalize_on_stop = True
         self.recording = True
         self._start_hud()
         self.record_thread = threading.Thread(target=self._record_impl, args=(language,), daemon=True)
@@ -306,8 +326,9 @@ class Recorder:
         self.stream_thread = threading.Thread(target=self._stream_loop, args=(language,), daemon=True)
         self.stream_thread.start()
 
-    def stop(self):
+    def stop(self, finalize=True):
         # 녹음 루프(_record_impl)가 self.recording=False 를 보고 스스로 종료/정리한다.
+        self.finalize_on_stop = bool(finalize)
         self.recording = False
         self._stop_hud()
         audio_level.clear_level()
@@ -376,7 +397,7 @@ class Recorder:
         return True
 
     def _type(self, old, new):
-        return type_diff(old, new, self.transcriber.pykeyboard)
+        return type_diff(old, new, self.transcriber.pykeyboard, allow_empty=True)
 
     def _transcribe_window(self, window_bytes, language):
         path = "/tmp/qwen_dictation_stream.wav"
@@ -386,13 +407,17 @@ class Recorder:
             path, language=language, model_size=self.app.selected_model
         )
 
-    def _stream_tick(self, language):
+    def _stream_tick(self, language, allow_stopped=False):
         with self.audio_lock:
             window = b"".join(self.audio_frames[self.window_start:])
             frame_count = len(self.audio_frames)
         if not window:
             return
         hypo = self._transcribe_window(window, language)
+        if not self.recording and not allow_stopped:
+            return
+        if looks_like_repetition_hallucination(hypo):
+            hypo = ""
         target = self.committed_text + hypo
         self.last_typed = self._type(self.last_typed, target)
         window_secs = len(window) / 2.0 / 16000.0
@@ -412,11 +437,13 @@ class Recorder:
                 self._stream_tick(language)
             except Exception as exc:
                 print(f"Streaming tick error: {exc}")
-        # 정지 후 마지막 한 번 더(남은 창 반영)
-        try:
-            self._stream_tick(language)
-        except Exception as exc:
-            print(f"Streaming final tick error: {exc}")
+        # 일반 정지는 남은 말을 한 번 반영한다. Enter 전송으로 멈춘 경우에는
+        # 전송 뒤 새 입력창에 늦은 글자가 들어가지 않도록 마지막 틱을 생략한다.
+        if self.finalize_on_stop:
+            try:
+                self._stream_tick(language, allow_stopped=True)
+            except Exception as exc:
+                print(f"Streaming final tick error: {exc}")
 
 class GlobalKeyListener:
     def __init__(self, app, key_combination):
@@ -499,10 +526,10 @@ class MultiHotkeyListener:
         self.active_trigger = trigger
         dispatch_app(self.app, self.app.begin_session, mode)
 
-    def _end(self, trigger):
+    def _end(self, trigger, finalize=True):
         if self.active_trigger != trigger:
             return
-        dispatch_app(self.app, self.app.stop_app, None)
+        dispatch_app(self.app, self.app.stop_app, None, finalize)
         self.active_trigger = None
 
     def on_key_press(self, key):
@@ -514,6 +541,9 @@ class MultiHotkeyListener:
                 self._end("toggle")
             elif not self.app.started:
                 self._begin("toggle", MODE_STREAMING)
+        elif key == keyboard.Key.enter and self.active_trigger == "toggle":
+            # Let Enter keep flowing to the focused app so it sends normally.
+            self._end("toggle", finalize=False)
 
     def on_key_release(self, key):
         if key == self.hold_key:
@@ -702,7 +732,7 @@ class StatusBarApp(rumps.App):
         self.update_title()
 
     @rumps.clicked("Stop Recording")
-    def stop_app(self, _):
+    def stop_app(self, _, finalize=True):
         if not self.started:
             return
         if self.timer is not None:
@@ -712,7 +742,7 @@ class StatusBarApp(rumps.App):
         self.started = False
         self.menu["Stop Recording"].set_callback(None)
         self.menu["Start Recording"].set_callback(self.start_app)
-        self.recorder.stop()
+        self.recorder.stop(finalize=finalize)
         print("Stopped.")
 
     def handle_recording_error(self, message):
@@ -889,4 +919,7 @@ def main():
 
 
 if __name__ == "__main__":
+    # PyInstaller's runtime hook uses this to divert resource-tracker and
+    # worker subprocesses before they enter the app CLI parser.
+    multiprocessing.freeze_support()
     sys.exit(main())

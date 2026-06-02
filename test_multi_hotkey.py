@@ -21,9 +21,9 @@ class FakeApp:
         self.started = True
         self.log.append(("begin", mode))
 
-    def stop_app(self, _):
+    def stop_app(self, _, finalize=True):
         self.started = False
-        self.log.append(("stop",))
+        self.log.append(("stop", finalize))
 
 
 def test_hold_cmd_starts_streaming_and_release_stops():
@@ -35,7 +35,7 @@ def test_hold_cmd_starts_streaming_and_release_stops():
     assert app.mode == wd.MODE_STREAMING
     lis.on_key_release(keyboard.Key.cmd_r)
     assert app.started is False
-    assert app.log == [("begin", wd.MODE_STREAMING), ("stop",)]
+    assert app.log == [("begin", wd.MODE_STREAMING), ("stop", True)]
 
 
 def test_hold_autorepeat_does_not_restart():
@@ -57,7 +57,17 @@ def test_toggle_alt_starts_streaming_and_repress_stops():
     assert app.started is True  # 토글은 release로 멈추지 않음
     lis.on_key_press(keyboard.Key.alt_r)
     assert app.started is False
-    assert app.log == [("begin", wd.MODE_STREAMING), ("stop",)]
+    assert app.log == [("begin", wd.MODE_STREAMING), ("stop", True)]
+
+
+def test_toggle_enter_stops_without_final_tick_and_enter_keeps_flowing():
+    wd = _load()
+    app = FakeApp()
+    lis = wd.MultiHotkeyListener(app)
+    lis.on_key_press(keyboard.Key.alt_r)
+    lis.on_key_press(keyboard.Key.enter)
+    assert app.started is False
+    assert app.log == [("begin", wd.MODE_STREAMING), ("stop", False)]
 
 
 def test_other_key_ignored_while_recording():

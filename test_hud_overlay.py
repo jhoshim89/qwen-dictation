@@ -1,4 +1,5 @@
 import hud_overlay
+from types import SimpleNamespace
 
 
 class _FakePanel:
@@ -33,6 +34,7 @@ def _overlay(visible=False, review_mode=False):
     overlay._review_mode = review_mode
     overlay._resizes = []
     overlay._resize_panel = lambda width, height, radius: overlay._resizes.append((width, height, radius))
+    overlay._reposition_for_pointer_screen = lambda: None
     return overlay
 
 
@@ -58,3 +60,16 @@ def test_show_status_updates_label_without_resizing_panel():
     assert overlay._view.labels == ["받아쓰기 변환 중"]
     assert overlay._resizes == []
     assert overlay._visible is True
+
+
+def test_contains_point_selects_monitor_bounds():
+    frame = SimpleNamespace(
+        origin=SimpleNamespace(x=1440, y=0),
+        size=SimpleNamespace(width=1920, height=1080),
+    )
+    assert hud_overlay.DictationOverlay._contains_point(
+        frame, SimpleNamespace(x=2000, y=500)
+    ) is True
+    assert hud_overlay.DictationOverlay._contains_point(
+        frame, SimpleNamespace(x=1200, y=500)
+    ) is False

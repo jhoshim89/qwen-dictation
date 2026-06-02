@@ -138,6 +138,30 @@ def selftest():
     except Exception as e:
         return jsonify({"ok": False, "error": repr(e)}), 500
 
+@flask_app.route('/api/dictate_test', methods=['POST'])
+def dictate_test():
+    """단축키와 동일한 받아쓰기 한 사이클을 localhost 에서 트리거한다(물리 키 없이).
+    start_app → N초 녹음·스트리밍 타이핑(포커스된 앱에 type_diff) → stop_app.
+    원격(SSH)에서 스피커로 소리를 내며 호출하면, 마이크→변환→실제 타이핑까지 전 구간을
+    포커스된 입력창(예: 크롬 textarea)에서 검증할 수 있다. localhost 전용."""
+    if not app_instance or not getattr(app_instance, 'recorder', None):
+        return jsonify({"ok": False, "error": "app/recorder not ready"}), 503
+    try:
+        import time
+        seconds = float((request.json or {}).get("seconds", 6)) if request.is_json else 6.0
+        seconds = max(2.0, min(15.0, seconds))
+        app_instance.dispatch_to_main(app_instance.start_app, None, wait=True)
+        time.sleep(seconds)
+        app_instance.dispatch_to_main(app_instance.stop_app, None, wait=True)
+        time.sleep(1.2)  # 정지 후 마지막 스트리밍 tick 이 타이핑을 끝내도록
+        rec = app_instance.recorder
+        typed = (getattr(rec, 'committed_text', '') or '') + (getattr(rec, 'last_typed', '') or '')
+        return jsonify({"ok": True, "seconds": seconds,
+                        "committed": getattr(rec, 'committed_text', ''),
+                        "last_typed": getattr(rec, 'last_typed', '')})
+    except Exception as e:
+        return jsonify({"ok": False, "error": repr(e)}), 500
+
 @flask_app.route('/api/vocabulary', methods=['GET'])
 def get_vocabulary():
     return jsonify(vocabulary.load_vocabulary())

@@ -63,6 +63,7 @@ def _make_recorder(wd, monkeypatch, hypo_by_call):
     rec.window_start = 0
     rec.committed_text = ""
     rec.last_typed = ""
+    rec.recording = True
     rec.typed_log = []
     # type 함수 주입: (old,new)->new, 로그 기록
     rec._type = lambda old, new: (rec.typed_log.append(new) or new)
@@ -98,3 +99,46 @@ def test_stream_tick_commits_on_pause_and_advances_window():
     assert rec.last_typed == "안녕하세요"
     assert rec.committed_text == "안녕하세요"   # 쉬었으니 확정
     assert rec.window_start == 2               # 창 시작이 현재 프레임 끝으로 전진
+
+
+def test_repetition_hallucination_is_removed_from_live_typing():
+    wd = _load()
+    rec = _make_recorder(wd, None, ["내 내 내"])
+    rec.last_typed = "내 내"
+    loud = (np.random.RandomState(0).randn(16000) * 6000).astype(np.int16).tobytes()
+    with rec.audio_lock:
+        rec.audio_frames = [loud]
+    wd.Recorder._stream_tick(rec, language="Korean")
+    assert rec.last_typed == ""
+    assert rec.typed_log == [""]
+
+
+def test_repetition_hallucination_filter_keeps_normal_sentence():
+    wd = _load()
+    assert wd.looks_like_repetition_hallucination("내 내 내") is True
+    assert wd.looks_like_repetition_hallucination("내가 말한 내용") is False
+
+
+def test_stream_loop_skips_final_tick_after_enter_send():
+    wd = _load()
+    rec = wd.Recorder.__new__(wd.Recorder)
+    rec.recording = False
+    rec.finalize_on_stop = False
+    rec.window_start = 99
+    rec.committed_text = "old"
+    rec.last_typed = "old"
+    rec.ticks = []
+    rec._stream_tick = lambda language, allow_stopped=False: rec.ticks.append(allow_stopped)
+    wd.Recorder._stream_loop(rec, language="Korean")
+    assert rec.ticks == []
+
+
+def test_stream_loop_keeps_final_tick_for_regular_stop():
+    wd = _load()
+    rec = wd.Recorder.__new__(wd.Recorder)
+    rec.recording = False
+    rec.finalize_on_stop = True
+    rec.ticks = []
+    rec._stream_tick = lambda language, allow_stopped=False: rec.ticks.append(allow_stopped)
+    wd.Recorder._stream_loop(rec, language="Korean")
+    assert rec.ticks == [True]

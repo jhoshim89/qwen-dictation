@@ -41,6 +41,7 @@ try:
         NSView,
         NSBezierPath,
         NSFont,
+        NSEvent,
         NSScreen,
         NSMakeRect,
         NSMakePoint,
@@ -243,6 +244,7 @@ class DictationOverlay:
         self._blink_on = True
         self._visible = False
         self._review_mode = False
+        self._screen_key = None
         if not _APPKIT_OK:
             return
         try:
@@ -254,15 +256,43 @@ class DictationOverlay:
 
     def _screen_box(self):
         # visibleFrame excludes the Dock and menu bar, so anchoring to its bottom
-        # keeps the overlay just ABOVE the Dock instead of behind it.
-        screen = NSScreen.mainScreen()
+        # keeps the overlay just ABOVE the Dock instead of behind it. Use the
+        # screen containing the pointer: the user normally clicks the text field
+        # before dictating, so this follows the monitor where typing is happening.
+        screens = list(NSScreen.screens() or [])
+        pointer = NSEvent.mouseLocation()
+        screen = next((s for s in screens if self._contains_point(s.frame(), pointer)), None)
+        if screen is None:
+            screen = NSScreen.mainScreen()
         if screen is not None:
             f = screen.visibleFrame()
             return f.size.width, f.size.height, f.origin.x, f.origin.y
         return 1440.0, 860.0, 0.0, 0.0
 
+    @staticmethod
+    def _contains_point(frame, point):
+        return (
+            frame.origin.x <= point.x < frame.origin.x + frame.size.width
+            and frame.origin.y <= point.y < frame.origin.y + frame.size.height
+        )
+
+    def _current_screen_key(self):
+        sw, sh, ox, oy = self._screen_box()
+        return sw, sh, ox, oy
+
+    def _reposition_for_pointer_screen(self):
+        if self._panel is None:
+            return
+        screen_key = self._current_screen_key()
+        if screen_key == self._screen_key:
+            return
+        frame = self._panel.frame()
+        self._screen_key = screen_key
+        self._resize_panel(frame.size.width, frame.size.height, self._view._corner_radius)
+
     def _build(self):
         sw, sh, ox, oy = self._screen_box()
+        self._screen_key = (sw, sh, ox, oy)
         x = ox + (sw - PANEL_WIDTH) / 2.0
         # AppKit y origin is bottom-left; sit BOTTOM_OFFSET up from the bottom.
         y = oy + BOTTOM_OFFSET
@@ -301,6 +331,7 @@ class DictationOverlay:
         if self._panel is None:
             return
         try:
+            self._reposition_for_pointer_screen()
             if not self._visible:
                 self._panel.orderFrontRegardless()
                 self._visible = True
@@ -331,6 +362,7 @@ class DictationOverlay:
 
     def _resize_panel(self, width, height, radius):
         sw, sh, ox, oy = self._screen_box()
+        self._screen_key = (sw, sh, ox, oy)
         x = ox + (sw - width) / 2.0
         # Bottom edge stays fixed at BOTTOM_OFFSET; taller panels grow upward.
         y = oy + BOTTOM_OFFSET

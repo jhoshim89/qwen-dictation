@@ -140,7 +140,7 @@ def test_multi_listener_both_triggers_use_streaming():
     class App:
         started = False
         def begin_session(self, mode): starts.append(mode); self.started = True
-        def stop_app(self, _): self.started = False
+        def stop_app(self, _, finalize=True): self.started = False
     app = App()
     lis = wd.MultiHotkeyListener(app, hold_key=wd.keyboard.Key.cmd_r, toggle_key=wd.keyboard.Key.alt_r)
     # 홀드(누름) → streaming 시작
