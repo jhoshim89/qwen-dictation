@@ -1,11 +1,7 @@
 import argparse
-import json
 import multiprocessing
 import os
-import platform
 import re
-import shutil
-import subprocess
 import sys
 import threading
 import time
@@ -24,10 +20,11 @@ from qwen_asr import Qwen3ASRModel
 import dashboard
 import app_paths
 import app_config
-import vet_terms
 import vocabulary
+import dictation_history
 import audio_level
 import hud_overlay
+import hotkeys
 import settings_window
 
 try:
@@ -36,16 +33,19 @@ except Exception:
     NSOperationQueue = None
     NSThread = None
 
+try:
+    from Quartz import (
+        CGEventGetFlags,
+        kCGEventFlagMaskSecondaryFn,
+        kCGEventFlagsChanged,
+    )
+except Exception:
+    CGEventGetFlags = None
+    kCGEventFlagMaskSecondaryFn = 1 << 23
+    kCGEventFlagsChanged = 12
 
-APP_DIR = os.path.dirname(os.path.abspath(__file__))
-DICTIONARY_PATH = app_paths.dictionary_path()
-MODE_STREAMING = "streaming"
-MODE_BATCH_PASTE = "batch_paste"
-MODE_BATCH_SUBMIT = "batch_submit"
-SUPPORTED_MODES = (MODE_STREAMING, MODE_BATCH_PASTE, MODE_BATCH_SUBMIT)
-MODEL_0_6B = os.environ.get("QWEN_ASR_0_6B_PATH", "Qwen/Qwen3-ASR-0.6B")
+
 MODEL_1_7B = os.environ.get("QWEN_ASR_1_7B_PATH", "Qwen/Qwen3-ASR-1.7B")
-FFMPEG_PATH = os.environ.get("QWEN_FFMPEG_PATH") or shutil.which("ffmpeg") or "/opt/homebrew/bin/ffmpeg"
 LANGUAGE_MAP = {
     "auto": None,
     "ko": "Korean",
@@ -64,9 +64,12 @@ LANGUAGE_MAP = {
 # 받아쓰기를 건너뛴다. 무음/작은 잡음(peak 수백 이하) vs 실제 말(peak 1만 이상)
 # 사이 마진이 커서 보수적으로 1000 을 쓴다.
 SILENCE_PEAK_THRESHOLD = 1000.0
+SPEECH_START_PEAK_THRESHOLD = 3500.0
+DEFAULT_MIN_VOLUME = 35
 STREAM_INTERVAL = 0.8        # 초: 스트리밍 갱신 주기
 PAUSE_SILENCE_SEC = 0.8      # 초: 끝이 이만큼 조용하면 쉼 → 확정
 MAX_WINDOW_SEC = 12.0        # 초: 창이 이보다 길면 강제 확정(느려짐 방지)
+NOISE_FILLER_TEXTS = {"어", "응", "음", "네", "예"}
 
 
 def audio_peak(audio_path):
@@ -78,6 +81,42 @@ def audio_peak(audio_path):
         return float(np.max(np.abs(np.asarray(data, dtype=np.int32))))
     except Exception:
         return float("inf")
+
+
+def pcm_peak(audio_bytes):
+    """int16 PCM 바이트의 최대 절대 진폭. 비어 있으면 0."""
+    if not audio_bytes:
+        return 0.0
+    samples = np.frombuffer(audio_bytes, dtype=np.int16)
+    if samples.size == 0:
+        return 0.0
+    return float(np.max(np.abs(samples.astype(np.int32))))
+
+
+def normalize_min_volume(value):
+    """User-facing 1..100 sensitivity threshold. Lower catches quieter speech."""
+    try:
+        value = int(round(float(value)))
+    except (TypeError, ValueError):
+        value = DEFAULT_MIN_VOLUME
+    return max(1, min(100, value))
+
+
+def volume_peak_thresholds(min_volume):
+    """Return (silence_peak, speech_start_peak) scaled from the legacy defaults."""
+    scale = normalize_min_volume(min_volume) / float(DEFAULT_MIN_VOLUME)
+    return SILENCE_PEAK_THRESHOLD * scale, SPEECH_START_PEAK_THRESHOLD * scale
+
+
+def find_input_device_index(pa, preferred_name):
+    """Resolve a saved input device name. Empty/missing names use system default."""
+    if not preferred_name:
+        return None
+    for index in range(pa.get_device_count()):
+        info = pa.get_device_info_by_index(index)
+        if info.get("name") == preferred_name and int(info.get("maxInputChannels", 0)) > 0:
+            return index
+    return None
 
 
 def trailing_silence(audio_bytes, rate, peak_threshold, secs):
@@ -124,6 +163,18 @@ def looks_like_repetition_hallucination(text):
     return len(tokens) >= 3 and len(set(tokens)) == 1
 
 
+def looks_like_pause_noise_filler(text):
+    """쉼 끝에서 주변 잡음 때문에 자주 생기는 짧은 단독 응답인지."""
+    compact = re.sub(r"[\s,.;!?·]+", "", text or "")
+    return compact in NOISE_FILLER_TEXTS
+
+
+def looks_like_punctuation_only(text):
+    """내용 없이 구두점만 생성된 환각인지. 실제 문장에 붙은 구두점은 유지한다."""
+    compact = re.sub(r"[\s,.;!?·]+", "", text or "")
+    return bool(text and not compact)
+
+
 def safe_notify(title, subtitle, message):
     try:
         rumps.notification(title, subtitle, message)
@@ -150,73 +201,57 @@ def dispatch_app(app, callback, *args):
 
 
 
-# 리뷰 패널에서 누른 키 → 행동 결정.
-def decide_review_action(key, toggle_key=None):
-    """리뷰 중 눌린 키로 행동을 정한다.
-
-    Enter 또는 토글키(녹음 시작/정지에 쓰던 그 키)를 다시 누름 → "send"(붙여넣고 전송),
-    Tab → "insert"(붙여넣기만, 사용자가 직접 고친 뒤 전송),
-    Esc → "cancel"(아무것도 안 함). 그 외 키는 무시(None) — 결정은 이 키들로만 한다.
-    """
-    if key == keyboard.Key.enter:
-        return "send"
-    if toggle_key is not None and key == toggle_key:
-        return "send"
-    if key == keyboard.Key.tab:
-        return "insert"
-    if key == keyboard.Key.esc:
-        return "cancel"
-    return None
-
-
 HOTKEY_KEY_NAMES = {
+    "alt": keyboard.Key.alt,
     "alt_r": keyboard.Key.alt_r,
+    "cmd": keyboard.Key.cmd,
     "cmd_r": keyboard.Key.cmd_r,
+    "ctrl": keyboard.Key.ctrl,
     "ctrl_r": keyboard.Key.ctrl_r,
+    "shift": keyboard.Key.shift,
     "shift_r": keyboard.Key.shift_r,
+    "space": keyboard.Key.space,
+    "enter": keyboard.Key.enter,
+    "tab": keyboard.Key.tab,
+    "esc": keyboard.Key.esc,
+    "backspace": keyboard.Key.backspace,
+    "delete": keyboard.Key.delete,
+    "up": keyboard.Key.up,
+    "down": keyboard.Key.down,
+    "left": keyboard.Key.left,
+    "right": keyboard.Key.right,
+    "home": keyboard.Key.home,
+    "end": keyboard.Key.end,
+    "page_up": keyboard.Key.page_up,
+    "page_down": keyboard.Key.page_down,
 }
-HOTKEY_MODES = ("multi", "single", "double")
+HOTKEY_KEY_NAMES.update({f"f{number}": getattr(keyboard.Key, f"f{number}") for number in range(1, 21)})
+HOTKEY_NAME_BY_KEY = {value: name for name, value in HOTKEY_KEY_NAMES.items()}
+HOTKEY_FN = "fn"
 
 
-def key_from_name(name):
-    """단축키 키이름 → pynput Key. 모르는 이름은 오른쪽 Option 으로."""
-    return HOTKEY_KEY_NAMES.get(name, keyboard.Key.alt_r)
+def token_from_key(key):
+    """pynput key → stored hotkey token. Unknown keys return None."""
+    if key == HOTKEY_FN:
+        return HOTKEY_FN
+    if key in HOTKEY_NAME_BY_KEY:
+        return HOTKEY_NAME_BY_KEY[key]
+    char = getattr(key, "char", None)
+    return str(char).lower() if char and len(str(char)) == 1 else None
 
 
-def validate_hotkey_config(mode, hold_key, toggle_key):
-    """(ok, error). multi 에서 hold==toggle 이면 거부, 모르는 mode 거부."""
-    if mode not in HOTKEY_MODES:
-        return False, f"unknown hotkey mode: {mode}"
-    if mode == "multi" and hold_key == toggle_key:
-        return False, "hold and toggle keys must differ"
-    return True, ""
+def fn_key_transition(event_type, flags, was_pressed):
+    """Quartz flagsChanged 이벤트에서 fn 키의 press/release 전이만 추린다."""
+    if event_type != kCGEventFlagsChanged:
+        return was_pressed, None
+    is_pressed = bool(flags & kCGEventFlagMaskSecondaryFn)
+    if is_pressed == was_pressed:
+        return was_pressed, None
+    return is_pressed, "press" if is_pressed else "release"
 
 
-def paste_text(text, submit=False):
-    subprocess.run(["pbcopy"], input=text.encode("utf-8"), check=True)
-    submit_line = "key code 36" if submit else ""
-    script = f"""
-    tell application "System Events"
-        set frontApp to first process whose frontmost is true
-        set pasted to false
-        try
-            click menu item "붙여넣기" of menu "수정" of menu bar 1 of frontApp
-            set pasted to true
-        end try
-        if pasted is false then
-            try
-                click menu item "Paste" of menu "Edit" of menu bar 1 of frontApp
-                set pasted to true
-            end try
-        end if
-        if pasted is false then
-            keystroke "v" using command down
-        end if
-        delay 0.12
-        {submit_line}
-    end tell
-    """
-    subprocess.run(["osascript", "-e", script], check=True)
+def validate_hotkey_config(hold_key, toggle_key):
+    return hotkeys.validate_hotkey_pair(hold_key, toggle_key)
 
 
 def type_diff(old_text, new_text, keyboard_controller, allow_empty=False):
@@ -257,33 +292,28 @@ class SpeechTranscriber:
         self.device = device
         self.dtype = dtype
         self.pykeyboard = keyboard.Controller()
-        self.model_0_6b = None
         self.model_1_7b = None
         self.model_lock = threading.Lock()
 
-    def get_model(self, model_size):
+    def get_model(self):
         with self.model_lock:
-            if model_size == "1.7b":
-                if self.model_1_7b is None:
-                    safe_notify("Qwen Dictation", "Loading model", "Qwen3-ASR-1.7B 모델을 불러옵니다.")
-                    self.model_1_7b = Qwen3ASRModel.from_pretrained(
-                        MODEL_1_7B,
-                        dtype=self.dtype,
-                    )
-                    self.model_1_7b.model.to(self.device)
-                    self.model_1_7b.device = self.device
-                return self.model_1_7b
-
-            # 0.6b 는 제거됨 — 항상 1.7b 사용.
+            if self.model_1_7b is None:
+                safe_notify("Qwen Dictation", "Loading model", "Qwen3-ASR-1.7B 모델을 불러옵니다.")
+                self.model_1_7b = Qwen3ASRModel.from_pretrained(MODEL_1_7B, dtype=self.dtype)
+                self.model_1_7b.model.to(self.device)
+                self.model_1_7b.device = self.device
             return self.model_1_7b
 
-    def transcribe_file(self, audio_path, language=None, model_size="1.7b"):
+    def transcribe_file(self, audio_path, language=None):
         # 무음/잡음만 있는 버퍼는 건너뛴다. context(등록 단어)를 주면 모델이
         # 음향 증거가 없을 때 그 단어들을 그대로 환각으로 뱉으므로(echo), 말소리가
         # 없을 땐 아예 받아쓰지 않는다. peak 진폭 기준(짧은 단어도 peak 는 큼).
-        if audio_peak(audio_path) < SILENCE_PEAK_THRESHOLD:
+        silence_threshold, _ = volume_peak_thresholds(
+            getattr(self, "min_volume", DEFAULT_MIN_VOLUME)
+        )
+        if audio_peak(audio_path) < silence_threshold:
             return ""
-        model = self.get_model(model_size)
+        model = self.get_model()
         language = normalize_language(language)
         vocab = vocabulary.load_vocabulary()
         context = vocabulary.build_context(vocab)
@@ -306,8 +336,6 @@ class Recorder:
         self.audio_frames = []
         self.audio_lock = threading.Lock()
         self.record_thread = None
-        self.hud_process = None
-        self.capture_process = None
         self.stream_thread = None
         self.window_start = 0
         self.committed_text = ""
@@ -320,7 +348,6 @@ class Recorder:
         self.audio_frames = []
         self.finalize_on_stop = True
         self.recording = True
-        self._start_hud()
         self.record_thread = threading.Thread(target=self._record_impl, args=(language,), daemon=True)
         self.record_thread.start()
         self.stream_thread = threading.Thread(target=self._stream_loop, args=(language,), daemon=True)
@@ -330,31 +357,25 @@ class Recorder:
         # 녹음 루프(_record_impl)가 self.recording=False 를 보고 스스로 종료/정리한다.
         self.finalize_on_stop = bool(finalize)
         self.recording = False
-        self._stop_hud()
         audio_level.clear_level()
-
-    def _start_hud(self):
-        # Overlay is now driven in-process by StatusBarApp._tick_overlay
-        pass
-
-    def _stop_hud(self):
-        # Overlay is now driven in-process by StatusBarApp._tick_overlay
-        pass
 
     def _record_impl(self, language):
         # pyaudio 로 시스템 기본 입력 장치에서 직접 캡처한다. (ffmpeg avfoundation
         # ':default' 는 이 장비에서 'Input/output error' 로 실패해 0프레임이 됐다.)
-        safe_notify("Qwen Dictation", "Recording", "말을 마친 뒤 단축키를 다시 눌러주세요.")
         frames_per_buffer = 1024
         pa = None
         stream = None
         try:
             pa = pyaudio.PyAudio()
+            input_device_index = find_input_device_index(
+                pa, getattr(self.app, "input_device", "")
+            )
             stream = pa.open(
                 format=pyaudio.paInt16,
                 channels=1,
                 rate=16000,
                 input=True,
+                input_device_index=input_device_index,
                 frames_per_buffer=frames_per_buffer,
             )
         except Exception as exc:
@@ -403,9 +424,7 @@ class Recorder:
         path = "/tmp/qwen_dictation_stream.wav"
         audio = np.frombuffer(window_bytes, dtype=np.int16).astype(np.float32) / 32768.0
         sf.write(path, audio, 16000)
-        return self.transcriber.transcribe_file(
-            path, language=language, model_size=self.app.selected_model
-        )
+        return self.transcriber.transcribe_file(path, language=language)
 
     def _stream_tick(self, language, allow_stopped=False):
         with self.audio_lock:
@@ -413,15 +432,31 @@ class Recorder:
             frame_count = len(self.audio_frames)
         if not window:
             return
+        # 새 구간은 분명한 말소리가 들어오기 전까지 추론하지 않는다. 작은 주변
+        # 소리만 계속 쌓이면 Qwen이 "어", "응", "네" 같은 짧은 말을 만들 수 있다.
+        silence_threshold, start_threshold = volume_peak_thresholds(
+            getattr(self.app, "min_volume", DEFAULT_MIN_VOLUME)
+        )
+        self.transcriber.min_volume = normalize_min_volume(
+            getattr(self.app, "min_volume", DEFAULT_MIN_VOLUME)
+        )
+        if pcm_peak(window) < start_threshold:
+            with self.audio_lock:
+                self.window_start = frame_count
+            return
         hypo = self._transcribe_window(window, language)
         if not self.recording and not allow_stopped:
             return
         if looks_like_repetition_hallucination(hypo):
             hypo = ""
+        if looks_like_punctuation_only(hypo):
+            hypo = ""
+        paused = trailing_silence(window, 16000, silence_threshold, PAUSE_SILENCE_SEC)
+        if paused and looks_like_pause_noise_filler(hypo):
+            hypo = ""
         target = self.committed_text + hypo
         self.last_typed = self._type(self.last_typed, target)
         window_secs = len(window) / 2.0 / 16000.0
-        paused = trailing_silence(window, 16000, SILENCE_PEAK_THRESHOLD, PAUSE_SILENCE_SEC)
         if hypo and should_commit(window_secs, paused, MAX_WINDOW_SEC):
             self.committed_text = target
             with self.audio_lock:
@@ -444,87 +479,33 @@ class Recorder:
                 self._stream_tick(language, allow_stopped=True)
             except Exception as exc:
                 print(f"Streaming final tick error: {exc}")
-
-class GlobalKeyListener:
-    def __init__(self, app, key_combination):
-        self.app = app
-        self.key1, self.key2 = self.parse_key_combination(key_combination)
-        self.key1_pressed = False
-        self.key2_pressed = False
-
-    def parse_key_combination(self, key_combination):
-        parts = key_combination.split("+")
-
-        def resolve(name):
-            return getattr(keyboard.Key, name, keyboard.KeyCode(char=name))
-
-        key1 = resolve(parts[0])
-        key2 = resolve(parts[1]) if len(parts) > 1 else None
-        return key1, key2
-
-    def on_key_press(self, key):
-        # Single-key hotkey: toggle on that one key.
-        if self.key2 is None:
-            if key == self.key1:
-                dispatch_app(self.app, self.app.toggle)
-            return
-
-        if key == self.key1:
-            self.key1_pressed = True
-        elif key == self.key2:
-            self.key2_pressed = True
-        if self.key1_pressed and self.key2_pressed:
-            dispatch_app(self.app, self.app.toggle)
-
-    def on_key_release(self, key):
-        if self.key2 is None:
-            return
-        if key == self.key1:
-            self.key1_pressed = False
-        elif key == self.key2:
-            self.key2_pressed = False
-
-
-class DoubleCommandKeyListener:
-    def __init__(self, app):
-        self.app = app
-        self.key = keyboard.Key.cmd_r
-        self.last_press_time = 0
-
-    def on_key_press(self, key):
-        if key != self.key:
-            return
-        current_time = time.time()
-        if self.app.started:
-            dispatch_app(self.app, self.app.toggle)
-        elif current_time - self.last_press_time < 0.5:
-            dispatch_app(self.app, self.app.toggle)
-        self.last_press_time = current_time
-
-    def on_key_release(self, key):
-        pass
+        dictation_history.add_history(self.last_typed)
 
 
 class MultiHotkeyListener:
-    """오른쪽 단일 수정키 2개로 실시간 스트리밍 받아쓰기를 구동한다.
+    """사용자 지정 단일키 또는 조합키 2개로 실시간 받아쓰기를 구동한다.
 
     - 오른쪽 Cmd(cmd_r): 홀드 — 누르는 동안 녹음, 떼면 정지.
-    - 오른쪽 Option(alt_r): 토글 — 눌러 시작, 다시 눌러 정지.
+    - 토글키: 눌러 시작, 다시 눌러 정지. fn도 설정 가능.
     둘 다 streaming: 말하는 대로 입력창에 실시간 타이핑(문맥 보정 포함).
     동시에 하나의 트리거만 활성(active_trigger).
     """
 
-    def __init__(self, app, hold_key=keyboard.Key.cmd_r, toggle_key=keyboard.Key.alt_r):
+    def __init__(self, app, hold_key="cmd_r", toggle_key="alt_r"):
         self.app = app
-        self.hold_key = hold_key
-        self.toggle_key = toggle_key
+        self.hold_key = hotkeys.normalize_hotkey(hold_key)
+        self.toggle_key = hotkeys.normalize_hotkey(toggle_key)
+        self.hold_parts = hotkeys.hotkey_parts(self.hold_key)
+        self.toggle_parts = hotkeys.hotkey_parts(self.toggle_key)
+        self.pressed = set()
+        self.toggle_latched = False
         self.active_trigger = None  # None | "hold" | "toggle"
 
-    def _begin(self, trigger, mode):
+    def _begin(self, trigger):
         if self.app.started:
             return
         self.active_trigger = trigger
-        dispatch_app(self.app, self.app.begin_session, mode)
+        dispatch_app(self.app, self.app.start_app, None)
 
     def _end(self, trigger, finalize=True):
         if self.active_trigger != trigger:
@@ -533,25 +514,37 @@ class MultiHotkeyListener:
         self.active_trigger = None
 
     def on_key_press(self, key):
-        if key == self.hold_key:
-            if not self.app.started:
-                self._begin("hold", MODE_STREAMING)
-        elif key == self.toggle_key:
+        token = token_from_key(key)
+        if token is None:
+            return
+        self.pressed.add(token)
+        hold_matched = self.hold_parts <= self.pressed
+        toggle_matched = self.toggle_parts <= self.pressed
+        if hold_matched and not self.app.started:
+            self._begin("hold")
+        elif toggle_matched and not self.toggle_latched:
+            self.toggle_latched = True
             if self.active_trigger == "toggle":
                 self._end("toggle")
             elif not self.app.started:
-                self._begin("toggle", MODE_STREAMING)
+                self._begin("toggle")
         elif key == keyboard.Key.enter and self.active_trigger == "toggle":
             # Let Enter keep flowing to the focused app so it sends normally.
             self._end("toggle", finalize=False)
 
     def on_key_release(self, key):
-        if key == self.hold_key:
+        token = token_from_key(key)
+        if token is None:
+            return
+        self.pressed.discard(token)
+        if not self.toggle_parts <= self.pressed:
+            self.toggle_latched = False
+        if self.active_trigger == "hold" and not self.hold_parts <= self.pressed:
             self._end("hold")
 
 
 class StatusBarApp(rumps.App):
-    def __init__(self, languages=None, max_time=None, mode=MODE_STREAMING):
+    def __init__(self, languages=None, max_time=None):
         _mb = app_paths.resource_path("assets", "menubar.png")
         if os.path.exists(_mb):
             super().__init__("Qwen Dictation", icon=_mb, template=True)
@@ -559,17 +552,8 @@ class StatusBarApp(rumps.App):
             super().__init__("Qwen Dictation", "⏯")
         self.languages = languages or ["ko", "en"]
         self.current_language = self.languages[0]
-        self.mode = mode
-        self.selected_model = "1.7b"
-        self.stream_interval = 1.2
-        self.k_double_cmd = False
         self.started = False
         self.processing_active = False
-        self.pending_review_text = None
-        self.review_active = False
-        self._review_shown = False
-        self._review_suppress = False
-        self.key_combination = "cmd_l+alt"
         self._global_listener = None
         self.recorder = None
         self.max_time = max_time
@@ -581,10 +565,6 @@ class StatusBarApp(rumps.App):
             "Start Recording",
             "Stop Recording",
             None,
-            rumps.MenuItem("Mode: Streaming", callback=self.set_streaming_mode),
-            rumps.MenuItem("Mode: Batch Paste", callback=self.set_batch_paste_mode),
-            rumps.MenuItem("Mode: Batch Paste + Enter", callback=self.set_batch_submit_mode),
-            None,
             rumps.MenuItem("Open Settings Dashboard", callback=self.open_dashboard),
             None,
         ]
@@ -594,6 +574,8 @@ class StatusBarApp(rumps.App):
         self.menu["Stop Recording"].set_callback(None)
         self.sync_menu_state()
         self._apply_saved_config()
+        if max_time is not None:
+            self.max_time = max(0, float(max_time))
 
         # Always-running main-thread timer that drives the in-process native
         # overlay. Its callback runs on the rumps/AppKit main thread, so it is
@@ -604,16 +586,6 @@ class StatusBarApp(rumps.App):
     def _tick_overlay(self, _):
         try:
             ov = hud_overlay.get_overlay()
-            if self.review_active:
-                # 리뷰 패널 표시(키 입력은 항상 켜진 메인 리스너가 처리)
-                if not getattr(self, "_review_shown", False):
-                    ov.show_review(self.pending_review_text or "")
-                    self._review_shown = True
-                return
-            # 리뷰가 끝났으면 패널 원복
-            if getattr(self, "_review_shown", False):
-                self._review_shown = False
-                ov.hide()
             if self.started and self.start_time is not None:
                 elapsed = int(time.time() - self.start_time)
                 self.elapsed_time = elapsed
@@ -631,14 +603,12 @@ class StatusBarApp(rumps.App):
 
     def current_config(self):
         return {
-            "mode": self.mode,
             "language": self.current_language,
-            "model_size": self.selected_model,
-            "stream_interval": self.stream_interval,
             "max_time": self.max_time or 0,
-            "hotkey_mode": getattr(self, "hotkey_mode", "multi"),
+            "input_device": getattr(self, "input_device", ""),
             "hold_key": getattr(self, "hold_key", "cmd_r"),
             "toggle_key": getattr(self, "toggle_key", "alt_r"),
+            "min_volume": getattr(self, "min_volume", DEFAULT_MIN_VOLUME),
         }
 
     def dispatch_to_main(self, callback, *args, wait=False):
@@ -670,43 +640,22 @@ class StatusBarApp(rumps.App):
 
     def _apply_saved_config(self):
         cfg = app_config.load_config()
-        self.mode = cfg["mode"]
         self.current_language = cfg["language"]
-        self.selected_model = cfg["model_size"]
-        self.stream_interval = cfg["stream_interval"]
         self.max_time = cfg["max_time"]
-        self.hotkey_mode = cfg["hotkey_mode"]
+        self.input_device = cfg["input_device"]
         self.hold_key = cfg["hold_key"]
         self.toggle_key = cfg["toggle_key"]
+        self.min_volume = normalize_min_volume(cfg.get("min_volume", DEFAULT_MIN_VOLUME))
+        if getattr(self, "recorder", None) is not None:
+            self.recorder.transcriber.min_volume = self.min_volume
         self.sync_menu_state()
 
     def sync_menu_state(self):
-        self.menu["Mode: Streaming"].state = int(self.mode == MODE_STREAMING)
-        self.menu["Mode: Batch Paste"].state = int(self.mode == MODE_BATCH_PASTE)
-        self.menu["Mode: Batch Paste + Enter"].state = int(self.mode == MODE_BATCH_SUBMIT)
         for lang in self.languages:
             self.menu[f"Language: {lang}"].state = int(self.current_language == lang)
 
     def open_dashboard(self, _):
         settings_window.open_settings("http://127.0.0.1:5001")
-
-    def set_mode(self, mode):
-        if mode not in SUPPORTED_MODES:
-            raise ValueError(f"Unsupported mode: {mode}")
-        if self.started or self.processing_active:
-            raise RuntimeError("Cannot change mode while recording")
-        self.mode = mode
-        self.sync_menu_state()
-        self.save_settings()
-
-    def set_streaming_mode(self, _):
-        self.set_mode(MODE_STREAMING)
-
-    def set_batch_paste_mode(self, _):
-        self.set_mode(MODE_BATCH_PASTE)
-
-    def set_batch_submit_mode(self, _):
-        self.set_mode(MODE_BATCH_SUBMIT)
 
     def change_language(self, sender):
         self.current_language = sender.title.replace("Language: ", "")
@@ -768,46 +717,12 @@ class StatusBarApp(rumps.App):
         else:
             self.start_app(None)
 
-    def begin_session(self, mode):
-        """단축키가 이번 녹음에만 모드를 적용하고 시작한다(저장하지 않음).
-
-        영속 기본 모드(app_config)는 그대로 두고, 세션 동안만 mode 를 바꾼다.
-        """
-        if self.started:
-            return
-        self.mode = mode
-        self.sync_menu_state()
-        self.start_app(None)
-
-    def request_review(self, text):
-        """배치 받아쓰기 결과를 리뷰 대기 상태로 보관한다(아직 붙여넣지 않음)."""
-        self.pending_review_text = text
-        self.review_active = True
-
-    def resolve_review(self, action):
-        """리뷰 결정 실행. action: 'send' | 'insert' | 'cancel'."""
-        if not self.review_active:
-            return
-        text = self.pending_review_text or ""
-        self.review_active = False
-        self.pending_review_text = None
-        if action == "send":
-            paste_text(text, submit=True)
-        elif action == "insert":
-            paste_text(text, submit=False)
-        # 'cancel' 은 아무 것도 안 함
-
     def build_key_listener(self):
-        """현재 설정(hotkey_mode/hold_key/toggle_key)으로 키 리스너 객체를 만든다."""
-        mode = getattr(self, "hotkey_mode", "multi")
-        if mode == "double":
-            return DoubleCommandKeyListener(self)
-        if mode == "single":
-            return GlobalKeyListener(self, getattr(self, "key_combination", "cmd_l+alt"))
+        """현재 홀드/토글 설정으로 키 리스너 객체를 만든다."""
         return MultiHotkeyListener(
             self,
-            hold_key=key_from_name(getattr(self, "hold_key", "cmd_r")),
-            toggle_key=key_from_name(getattr(self, "toggle_key", "alt_r")),
+            hold_key=getattr(self, "hold_key", "cmd_r"),
+            toggle_key=getattr(self, "toggle_key", "alt_r"),
         )
 
     def apply_hotkey_config(self):
@@ -820,27 +735,27 @@ class StatusBarApp(rumps.App):
                 pass
         key_listener = self.build_key_listener()
         self._key_listener = key_listener
+        fn_pressed = False
 
-        def on_review_or_hotkey(key):
-            if self.review_active:
-                toggle_key = getattr(key_listener, "toggle_key", None)
-                action = decide_review_action(key, toggle_key=toggle_key)
-                if action is not None:
-                    self._review_suppress = True
-                    self.resolve_review(action)
-                return
+        def on_hotkey(key):
             key_listener.on_key_press(key)
 
-        def suppress_review_key(event_type, event):
-            if getattr(self, "_review_suppress", False):
-                self._review_suppress = False
-                return None
+        def intercept_fn_key(event_type, event):
+            nonlocal fn_pressed
+            if CGEventGetFlags is not None:
+                fn_pressed, transition = fn_key_transition(
+                    event_type, CGEventGetFlags(event), fn_pressed
+                )
+                if transition == "press":
+                    on_hotkey(HOTKEY_FN)
+                elif transition == "release":
+                    key_listener.on_key_release(HOTKEY_FN)
             return event
 
         self._global_listener = keyboard.Listener(
-            on_press=on_review_or_hotkey,
+            on_press=on_hotkey,
             on_release=key_listener.on_key_release,
-            darwin_intercept=suppress_review_key,
+            darwin_intercept=intercept_fn_key,
         )
         self._global_listener.start()
 
@@ -848,46 +763,24 @@ class StatusBarApp(rumps.App):
 def parse_args():
     parser = argparse.ArgumentParser(description="Local Qwen3-ASR dictation app for macOS.")
     parser.add_argument(
-        "-k",
-        "--key_combination",
-        type=str,
-        default="cmd_l+alt" if platform.system() == "Darwin" else "ctrl+alt",
-        help="Hotkey to toggle recording, for example cmd_l+alt.",
-    )
-    parser.add_argument(
-        "--k_double_cmd",
-        action="store_true",
-        help="Use double right Command to start and single right Command to stop.",
-    )
-    parser.add_argument(
         "-l",
         "--language",
         type=str,
         default="ko,en",
         help="Comma-separated language choices. First item is used initially.",
     )
-    parser.add_argument("-t", "--max_time", type=float, default=0)
-    parser.add_argument("--mode", choices=SUPPORTED_MODES, default=MODE_STREAMING)
-    parser.add_argument(
-        "--hotkeys",
-        choices=("multi", "single", "double"),
-        default=None,
-        help="Override saved hotkey mode for this run. multi=right Cmd(hold)/right Option(toggle); single=-k combo; double=double right Cmd. Omit to use saved settings.",
-    )
-    parser.add_argument("--model-size", choices=("1.7b",), default="1.7b")
+    parser.add_argument("-t", "--max_time", type=float, default=None)
     return parser.parse_args()
 
 
 def main():
     args = parse_args()
-    vocabulary.ensure_vocabulary()
     languages = [item.strip() for item in args.language.split(",") if item.strip()]
     device = "mps" if torch.backends.mps.is_available() else "cpu"
     dtype = torch.float16 if device == "mps" else torch.float32
     print(f"Initializing Qwen3-ASR on {device}...")
 
-    app = StatusBarApp(languages=languages, max_time=args.max_time, mode=args.mode)
-    app.k_double_cmd = args.k_double_cmd
+    app = StatusBarApp(languages=languages, max_time=args.max_time)
     transcriber = SpeechTranscriber(device, dtype)
     recorder = Recorder(transcriber, app)
     app.recorder = recorder
@@ -896,7 +789,7 @@ def main():
     # 시점이 아니라 시작 시점에 숨긴다 → 첫 받아쓰기도 바로 빠르게).
     def _warmup_model():
         try:
-            transcriber.get_model("1.7b")
+            transcriber.get_model()
             print("Model preloaded (1.7b).")
         except Exception as exc:
             print(f"Model preload error: {exc}")
@@ -904,14 +797,6 @@ def main():
     threading.Thread(target=_warmup_model, daemon=True).start()
 
     dashboard.start_server(app)
-    # CLI 플래그가 있으면 이번 실행에 한해 단축키 설정을 덮어쓴다(없으면 저장된 설정 사용).
-    if args.k_double_cmd or args.hotkeys == "double":
-        app.hotkey_mode = "double"
-    elif args.hotkeys == "single":
-        app.hotkey_mode = "single"
-        app.key_combination = args.key_combination
-    elif args.hotkeys == "multi":
-        app.hotkey_mode = "multi"
     app.apply_hotkey_config()
 
     print("Running Qwen Dictation. Dashboard: http://127.0.0.1:5001")

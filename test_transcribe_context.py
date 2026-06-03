@@ -44,9 +44,9 @@ def test_transcribe_passes_vocabulary_context(tmp_path, monkeypatch):
 
     tr = wd.SpeechTranscriber("cpu", None)
     fake = _FakeModel()
-    monkeypatch.setattr(tr, "get_model", lambda size: fake)
+    monkeypatch.setattr(tr, "get_model", lambda: fake)
 
-    out = tr.transcribe_file(str(wav), language="Korean", model_size="1.7b")
+    out = tr.transcribe_file(str(wav), language="Korean")
     assert out == "녹음 결과"
     assert fake.calls[0]["context"] == "각막, 궤양"
 
@@ -62,9 +62,9 @@ def test_transcribe_skips_silent_audio(tmp_path, monkeypatch):
 
     tr = wd.SpeechTranscriber("cpu", None)
     called = []
-    monkeypatch.setattr(tr, "get_model", lambda size: called.append(size) or _FakeModel())
+    monkeypatch.setattr(tr, "get_model", lambda: called.append(True) or _FakeModel())
 
-    out = tr.transcribe_file(str(sil), language="Korean", model_size="1.7b")
+    out = tr.transcribe_file(str(sil), language="Korean")
     assert out == ""          # 무음 → echo 방지 위해 건너뜀
     assert called == []        # 모델 호출 안 됨
 
@@ -104,10 +104,28 @@ def test_echo_result_retranscribes_without_context(tmp_path, monkeypatch):
 
     tr = wd.SpeechTranscriber("cpu", None)
     fake = EchoThenRealModel()
-    monkeypatch.setattr(tr, "get_model", lambda s: fake)
+    monkeypatch.setattr(tr, "get_model", lambda: fake)
     out = tr.transcribe_file(str(wav), language="Korean")
     assert out == "각막궤양 관찰 결과입니다."   # echo 감지 후 context 없이 재전사 결과
     assert fake.calls[0] != "" and fake.calls[1] == ""  # 1차 context, 2차 무context
+
+
+def test_transcribe_does_not_apply_dictionary_replacements(tmp_path, monkeypatch):
+    import numpy as np
+    wd = _load()
+    vp = tmp_path / "vocabulary.json"
+    monkeypatch.setattr(app_paths, "vocabulary_path", lambda: str(vp))
+    vocabulary.save_vocabulary(["Qwen"])
+    wav = tmp_path / "speech.wav"
+    _write_wav(wav, (np.random.RandomState(3).randn(16000) * 5000))
+
+    class MisheardModel:
+        def transcribe(self, audio, context="", language=None, **kw):
+            return [_FakeResult("큐엔 테스트")]
+
+    tr = wd.SpeechTranscriber("cpu", None)
+    monkeypatch.setattr(tr, "get_model", lambda: MisheardModel())
+    assert tr.transcribe_file(str(wav), language="Korean") == "큐엔 테스트"
 
 
 def test_no_apply_dictionary_symbol():

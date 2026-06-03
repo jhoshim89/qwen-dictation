@@ -1,34 +1,34 @@
 # Qwen Dictation Agent Notes
 
-This project is a local macOS dictation MVP using Qwen3-ASR. Keep the app free and local-first.
+This is a local macOS dictation MVP using Qwen3-ASR 1.7B.
 
-## Product Goal
+## Product rules
 
-- Use local Qwen3-ASR models for STT. Do not add paid cloud STT APIs unless the user explicitly asks.
-- Support three MVP input modes:
-  - `streaming`: repeatedly transcribe while recording and type the visible diff into the focused field.
-  - `batch_paste`: record first, transcribe once, paste into the focused field.
-  - `batch_submit`: record first, transcribe once, paste into the focused field, then press Return.
-- Keep the macOS menu bar app and the local dashboard at `http://127.0.0.1:5001`.
+- Keep one live-streaming input flow: hold-to-talk and toggle start/stop.
+- Keep the menu-bar app and local dashboard at `http://127.0.0.1:5001`.
+- Treat approved vocabulary as Qwen context hints, never guaranteed replacement.
+- Store only the latest 50 final transcript texts locally. Never track edits in
+  external apps or silently learn vocabulary.
 
-## Runtime Rules
+## Runtime and testing
 
-- Run with the project virtualenv: `./venv/bin/python whisper-dictation.py`.
-- Prefer Apple Silicon MPS when available. CPU fallback is allowed but slower.
-- Keep microphone, Accessibility, and Automation permission notes current in `README.md`.
-- Never commit model weights, `venv/`, caches, or generated `__pycache__/` files.
+- Run with `./venv/bin/python whisper-dictation.py`.
+- Prefer Apple Silicon MPS; CPU fallback is allowed.
+- Before claiming the app works, run Python compile checks, `pytest`, the
+  design.md lint, and a packaged app build when packaging changes are touched.
+- After implementing or changing a feature, verify it directly before reporting
+  completion. Prefer an executable check over reasoning from code.
+- When UI is changed, launch the relevant screen and capture screenshots before
+  completion. Inspect the screenshots for broken spacing, overlapping text or
+  controls, clipped labels, awkward empty space, and desktop/mobile responsive
+  issues where applicable.
+- For dashboard changes, verify against `http://127.0.0.1:5001` with a real
+  browser screenshot. For macOS app windows or HUD changes, capture the relevant
+  local window/state and check the visual result before claiming it is done.
+- Keep microphone and Accessibility permission notes current.
 
-## Testing Rules
+## Editing rules
 
-- Before claiming the app works, run at least:
-  - Python compile/import checks.
-  - Dashboard API checks.
-  - A Qwen transcription check using a local audio file.
-  - A paste/Return pipeline check in a controlled prompt field.
-- If macOS blocks input automation, report the exact permission that must be enabled instead of calling the app broken.
-
-## Editing Rules
-
-- Keep the app small and MVP-focused.
-- Do not reintroduce Whisper dependency paths unless explicitly requested.
-- Treat `dictionary.json` as user-editable data. Avoid replacing the user's entries.
+- Keep the app small and local-first. Do not add paid cloud STT APIs.
+- Do not reintroduce Whisper, batch, review-card, or find-replace paths.
+- Preserve user files under `~/.qwen-dictation/`.

@@ -29,10 +29,12 @@ rm -rf build dist
   --osx-bundle-identifier com.shimjaeho.qwendictation \
   --icon assets/AppIcon.icns \
   --add-data "assets/menubar.png:assets" \
+  --add-data "assets/logo-mark.svg:assets" \
+  --add-data "assets/fonts:assets/fonts" \
   --add-data "templates/dashboard.html:templates" \
-  --add-data "dictionary.json:." \
-  --add-data "hud.py:." \
   --add-data "dashboard.py:." \
+  --add-data "dictation_history.py:." \
+  --add-data "hotkeys.py:." \
   --add-data "audio_level.py:." \
   --add-data "app_paths.py:." \
   --add-data "${NAGISA_DIR}/__init__.py:nagisa" \

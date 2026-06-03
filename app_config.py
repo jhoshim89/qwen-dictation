@@ -1,8 +1,7 @@
 # app_config.py
 """사용자 설정을 ~/.qwen-dictation/config.json 에 읽고 쓰는 모듈.
 
-설정은 사전(dictionary.json)과 같은 쓰기 가능 디렉터리에 저장되어
-앱(.app) 재시작 후에도 유지된다.
+설정은 사용자 데이터 디렉터리에 저장되어 앱(.app) 재시작 후에도 유지된다.
 """
 import json
 import os
@@ -11,14 +10,13 @@ import app_paths
 
 # max_time=0 은 "자동중단 없음(무제한)" 을 뜻한다.
 DEFAULTS = {
-    "mode": "streaming",
     "language": "ko",
-    "model_size": "1.7b",
-    "stream_interval": 1.2,
-    "max_time": 0,
-    "hotkey_mode": "multi",
+    "max_time": 300,
+    "input_device": "MATA STUDIO C10",
     "hold_key": "cmd_r",
     "toggle_key": "alt_r",
+    "min_volume": 35,
+    "max_time_zero_migrated": True,
 }
 
 
@@ -29,6 +27,7 @@ def config_path():
 def load_config():
     """저장된 설정을 읽어 DEFAULTS 위에 덮어 반환. 없거나 깨지면 DEFAULTS."""
     cfg = dict(DEFAULTS)
+    saved = {}
     try:
         p = config_path()
         if os.path.exists(p):
@@ -40,8 +39,13 @@ def load_config():
                         cfg[k] = saved[k]
     except Exception as exc:
         print(f"Config load error: {exc}")
-    if cfg.get("model_size") != "1.7b":
-        cfg["model_size"] = "1.7b"
+    # Earlier builds used 0 for unlimited by default. Migrate that legacy value
+    # once, while preserving a later explicit user choice to return to unlimited.
+    if "max_time_zero_migrated" not in saved:
+        if cfg.get("max_time") == 0:
+            cfg["max_time"] = 300
+        cfg["max_time_zero_migrated"] = True
+        save_config(cfg)
     return cfg
 
 

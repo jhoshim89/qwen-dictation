@@ -16,19 +16,22 @@ ROBUSTNESS:
   keep working even if the overlay cannot draw.
 
 LAYOUT:
-- Floats near the BOTTOM-center of the main screen (like other dictation apps).
-- Rounded "pill" while recording; rounded card while reviewing a transcript.
-- The window is transparent; the rounded shape + shadow come from a layer-backed
-  content view (masksToBounds), so corners and the drop shadow are truly rounded.
+- Floats near the BOTTOM-center of the pointer screen, lifted above prompt inputs.
+- Three small raspberry jelly bars gently expand with microphone level while recording.
 """
 
-PANEL_WIDTH = 320.0
-PANEL_HEIGHT = 48.0
-BOTTOM_OFFSET = 24.0  # pixels above the Dock (measured from the visible-area bottom)
-REVIEW_WIDTH = 480.0
-REVIEW_MIN_HEIGHT = 132.0
-BAR_CORNER_RADIUS = PANEL_HEIGHT / 2.0   # full pill while recording
-REVIEW_CORNER_RADIUS = 20.0
+PANEL_WIDTH = 76.0
+PANEL_HEIGHT = 76.0
+BOTTOM_OFFSET = 96.0
+BAR_CORNER_RADIUS = PANEL_HEIGHT / 2.0
+
+
+def jelly_bar_heights(level):
+    """Clamp microphone level and return symmetric (left, center, right) bar heights."""
+    level = min(1.0, max(0.0, float(level)))
+    side = 20.0 + (10.0 * level)
+    center = 30.0 + (25.0 * level)
+    return side, center, side
 
 
 # Importing AppKit at module load is safe (no window is built). Guard anyway so
@@ -40,11 +43,9 @@ try:
         NSPanel,
         NSView,
         NSBezierPath,
-        NSFont,
         NSEvent,
         NSScreen,
         NSMakeRect,
-        NSMakePoint,
         NSWindowStyleMaskBorderless,
         NSWindowStyleMaskNonactivatingPanel,
         NSBackingStoreBuffered,
@@ -52,10 +53,7 @@ try:
         NSWindowCollectionBehaviorStationary,
         NSWindowCollectionBehaviorFullScreenAuxiliary,
         NSStatusWindowLevel,
-        NSFontAttributeName,
-        NSForegroundColorAttributeName,
     )
-    from Foundation import NSString
     _APPKIT_OK = True
 except Exception as _exc:  # pragma: no cover - depends on runtime env
     print(f"hud_overlay: AppKit import failed, overlay disabled: {_exc}")
@@ -69,16 +67,14 @@ if _APPKIT_OK:
             r / 255.0, g / 255.0, b / 255.0, a
         )
 
-    # Palette (kept in one place so the look is consistent).
-    BG_RGBA = (15, 17, 24, 0.94)        # near-black slate, slightly translucent
-    BORDER_RGBA = (255, 255, 255, 0.10)  # faint hairline edge
-    TEXT_RGBA = (243, 244, 246, 1.0)     # near-white label
-    ACCENT_RGBA = (165, 180, 252, 1.0)   # soft indigo for time/hints
-    DOT_RGBA = (244, 63, 94, 1.0)        # recording dot (rose)
-    TRACK_RGBA = (38, 43, 58, 1.0)       # meter track
-
+    # Warm Jelly Voice palette.
+    BG_RGBA = (255, 253, 252, 0.96)
+    BORDER_RGBA = (234, 221, 216, 0.96)
+    JELLY_RGBA = (232, 71, 98, 0.94)
+    JELLY_HALO_RGBA = (232, 71, 98, 0.16)
+    JELLY_HIGHLIGHT_RGBA = (255, 179, 191, 0.86)
     class _OverlayView(NSView):
-        """Custom view that draws the dot, label, level meter and elapsed time."""
+        """Custom view that draws level-reactive jelly bars."""
 
         def initWithFrame_(self, frame):
             self = objc.super(_OverlayView, self).initWithFrame_(frame)
@@ -88,7 +84,6 @@ if _APPKIT_OK:
             self._elapsed = 0
             self._blink_on = True
             self._label_text = "로컬 받아쓰기 중"
-            self._review_text = None  # None 이면 막대 모드, 문자열이면 리뷰 모드
             self._corner_radius = BAR_CORNER_RADIUS
             return self
 
@@ -110,13 +105,10 @@ if _APPKIT_OK:
 
         def setValues_(self, values):
             # values = (level, elapsed_seconds, blink_on)
-            self._level = values[0]
+            # Smooth abrupt microphone changes so the orb breathes instead of jittering.
+            self._level = (self._level * 0.55) + (float(values[0]) * 0.45)
             self._elapsed = values[1]
             self._blink_on = values[2]
-            self.setNeedsDisplay_(True)
-
-        def setReviewText_(self, text):
-            self._review_text = text
             self.setNeedsDisplay_(True)
 
         def setLabelText_(self, text):
@@ -129,110 +121,37 @@ if _APPKIT_OK:
             except Exception as exc:
                 print(f"hud_overlay: drawRect error: {exc}")
 
-        def _draw_review(self):
-            self._draw_background()
-            bounds = self.bounds()
-            w = bounds.size.width
-            h = bounds.size.height
-            # 받아쓴 글(여러 줄, 흰색) — 위쪽부터.
-            body_attrs = {
-                NSFontAttributeName: NSFont.systemFontOfSize_(14.0),
-                NSForegroundColorAttributeName: _rgb(*TEXT_RGBA),
-            }
-            body = NSString.stringWithString_(self._review_text or "")
-            body_rect = NSMakeRect(20.0, 40.0, w - 40.0, h - 56.0)
-            body.drawInRect_withAttributes_(body_rect, body_attrs)
-            # 안내문구(하단, 소프트 인디고).
-            hint = "⌘ 다시·Enter  보내기      Tab  수정      Esc  취소"
-            hint_attrs = {
-                NSFontAttributeName: NSFont.boldSystemFontOfSize_(11.0),
-                NSForegroundColorAttributeName: _rgb(*ACCENT_RGBA),
-            }
-            hint_str = NSString.stringWithString_(hint)
-            hint_str.drawAtPoint_withAttributes_(NSMakePoint(20.0, 14.0), hint_attrs)
-
         def _draw(self):
-            if self._review_text is not None:
-                self._draw_review()
-                return
             self._draw_background()
             bounds = self.bounds()
-            h = bounds.size.height
+            cy = bounds.size.height / 2.0
+            heights = jelly_bar_heights(self._level)
+            bar_w = 11.0
+            gap = 7.0
+            start_x = (bounds.size.width - ((bar_w * 3.0) + (gap * 2.0))) / 2.0
 
-            # Blinking recording dot.
-            dot_cx = 22.0
-            dot_cy = h / 2.0
-            dot_r = 5.0
-            dot_alpha = 1.0 if self._blink_on else 0.28
-            _rgb(DOT_RGBA[0], DOT_RGBA[1], DOT_RGBA[2], dot_alpha).setFill()
-            dot_rect = NSMakeRect(dot_cx - dot_r, dot_cy - dot_r, dot_r * 2, dot_r * 2)
-            NSBezierPath.bezierPathWithOvalInRect_(dot_rect).fill()
+            for index, height in enumerate(heights):
+                x = start_x + (index * (bar_w + gap))
+                y = cy - (height / 2.0)
+                self._draw_jelly_rect(x, y, bar_w, height)
 
-            # Label (recording / transcription progress).
-            label = self._label_text
-            label_font = NSFont.boldSystemFontOfSize_(12.5)
-            label_attrs = {
-                NSFontAttributeName: label_font,
-                NSForegroundColorAttributeName: _rgb(*TEXT_RGBA),
-            }
-            label_str = NSString.stringWithString_(label)
-            label_size = label_str.sizeWithAttributes_(label_attrs)
-            label_x = 38.0
-            label_y = (h - label_size.height) / 2.0
-            label_str.drawAtPoint_withAttributes_(
-                NSMakePoint(label_x, label_y), label_attrs
-            )
-
-            # Elapsed time "MM:SS" on the right.
-            mins, secs = divmod(int(self._elapsed), 60)
-            time_text = f"{mins:02d}:{secs:02d}"
-            time_font = NSFont.boldSystemFontOfSize_(12.5)
-            time_attrs = {
-                NSFontAttributeName: time_font,
-                NSForegroundColorAttributeName: _rgb(*ACCENT_RGBA),
-            }
-            time_str = NSString.stringWithString_(time_text)
-            time_size = time_str.sizeWithAttributes_(time_attrs)
-            time_x = bounds.size.width - time_size.width - 20.0
-            time_y = (h - time_size.height) / 2.0
-            time_str.drawAtPoint_withAttributes_(
-                NSMakePoint(time_x, time_y), time_attrs
-            )
-
-            # Level meter track between the label and the time.
-            track_x = label_x + label_size.width + 12.0
-            track_right = time_x - 12.0
-            track_w = track_right - track_x
-            track_h = 6.0
-            track_y = (h - track_h) / 2.0
-            if track_w < 12.0:
-                return  # not enough room; skip the meter
-
-            radius = track_h / 2.0
-            track_rect = NSMakeRect(track_x, track_y, track_w, track_h)
-            _rgb(*TRACK_RGBA).setFill()
+        def _draw_jelly_rect(self, x, y, width, height, alpha=0.94):
+            halo = 4.0
+            _rgb(*JELLY_HALO_RGBA).setFill()
             NSBezierPath.bezierPathWithRoundedRect_xRadius_yRadius_(
-                track_rect, radius, radius
+                NSMakeRect(x - halo, y - halo, width + (halo * 2.0), height + (halo * 2.0)),
+                (min(width, height) + (halo * 2.0)) / 2.0,
+                (min(width, height) + (halo * 2.0)) / 2.0,
             ).fill()
-
-            level = self._level
-            if level < 0.0:
-                level = 0.0
-            elif level > 1.0:
-                level = 1.0
-            fill_w = track_w * level
-            if fill_w > 0.0:
-                if level < 0.5:
-                    fill_color = _rgb(52, 211, 153)   # emerald
-                elif level < 0.8:
-                    fill_color = _rgb(250, 204, 21)    # amber
-                else:
-                    fill_color = _rgb(244, 63, 94)     # rose
-                fill_rect = NSMakeRect(track_x, track_y, max(fill_w, track_h), track_h)
-                fill_color.setFill()
-                NSBezierPath.bezierPathWithRoundedRect_xRadius_yRadius_(
-                    fill_rect, radius, radius
-                ).fill()
+            _rgb(JELLY_RGBA[0], JELLY_RGBA[1], JELLY_RGBA[2], alpha).setFill()
+            NSBezierPath.bezierPathWithRoundedRect_xRadius_yRadius_(
+                NSMakeRect(x, y, width, height), height / 2.0, height / 2.0
+            ).fill()
+            highlight_width = max(3.0, width - 4.0)
+            _rgb(*JELLY_HIGHLIGHT_RGBA).setFill()
+            NSBezierPath.bezierPathWithRoundedRect_xRadius_yRadius_(
+                NSMakeRect(x + 2.0, y + height - 5.0, highlight_width, 2.5), 1.25, 1.25
+            ).fill()
 
 
 class DictationOverlay:
@@ -243,7 +162,6 @@ class DictationOverlay:
         self._view = None
         self._blink_on = True
         self._visible = False
-        self._review_mode = False
         self._screen_key = None
         if not _APPKIT_OK:
             return
@@ -255,8 +173,7 @@ class DictationOverlay:
             self._view = None
 
     def _screen_box(self):
-        # visibleFrame excludes the Dock and menu bar, so anchoring to its bottom
-        # keeps the overlay just ABOVE the Dock instead of behind it. Use the
+        # visibleFrame excludes the Dock and menu bar. Use the
         # screen containing the pointer: the user normally clicks the text field
         # before dictating, so this follows the monitor where typing is happening.
         screens = list(NSScreen.screens() or [])
@@ -294,7 +211,7 @@ class DictationOverlay:
         sw, sh, ox, oy = self._screen_box()
         self._screen_key = (sw, sh, ox, oy)
         x = ox + (sw - PANEL_WIDTH) / 2.0
-        # AppKit y origin is bottom-left; sit BOTTOM_OFFSET up from the bottom.
+        # AppKit y origin is bottom-left; sit just above the Dock.
         y = oy + BOTTOM_OFFSET
 
         rect = NSMakeRect(x, y, PANEL_WIDTH, PANEL_HEIGHT)
@@ -347,24 +264,10 @@ class DictationOverlay:
         except Exception as exc:
             print(f"hud_overlay: show_status error: {exc}")
 
-    def show_review(self, text):
-        """리뷰 카드를 화면 아래쪽에 띄운다(위로 커지며 받아쓴 글 표시)."""
-        if self._panel is None or self._view is None:
-            return
-        try:
-            self._resize_panel(REVIEW_WIDTH, REVIEW_MIN_HEIGHT, REVIEW_CORNER_RADIUS)
-            self._view.setReviewText_(text)
-            self._panel.orderFrontRegardless()
-            self._visible = True
-            self._review_mode = True
-        except Exception as exc:
-            print(f"hud_overlay: show_review error: {exc}")
-
     def _resize_panel(self, width, height, radius):
         sw, sh, ox, oy = self._screen_box()
         self._screen_key = (sw, sh, ox, oy)
         x = ox + (sw - width) / 2.0
-        # Bottom edge stays fixed at BOTTOM_OFFSET; taller panels grow upward.
         y = oy + BOTTOM_OFFSET
         self._panel.setFrame_display_(NSMakeRect(x, y, width, height), True)
         self._view.setFrame_(NSMakeRect(0, 0, width, height))
@@ -374,13 +277,8 @@ class DictationOverlay:
         if self._panel is None:
             return
         try:
-            if not self._visible and not self._review_mode:
+            if not self._visible:
                 return
-            if self._view is not None:
-                self._view.setReviewText_(None)
-            if self._review_mode:
-                self._resize_panel(PANEL_WIDTH, PANEL_HEIGHT, BAR_CORNER_RADIUS)
-                self._review_mode = False
             if self._visible:
                 self._panel.orderOut_(None)
                 self._visible = False

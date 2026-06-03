@@ -19,7 +19,12 @@ APP = ["whisper-dictation.py"]
 
 DATA_FILES = [
     ("templates", ["templates/dashboard.html"]),
-    ("", ["dictionary.json", "hud.py", "app_paths.py", "dashboard.py", "audio_level.py"]),
+    ("assets", ["assets/menubar.png", "assets/logo-mark.svg"]),
+    ("assets/fonts", [
+        "assets/fonts/PretendardVariable.woff2",
+        "assets/fonts/LICENSE.txt",
+    ]),
+    ("", ["app_paths.py", "dashboard.py", "dictation_history.py", "hotkeys.py", "audio_level.py"]),
 ]
 
 OPTIONS = {

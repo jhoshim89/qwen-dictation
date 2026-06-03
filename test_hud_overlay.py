@@ -16,22 +16,17 @@ class _FakePanel:
 
 class _FakeView:
     def __init__(self):
-        self.review_texts = []
         self.labels = []
-
-    def setReviewText_(self, text):
-        self.review_texts.append(text)
 
     def setLabelText_(self, text):
         self.labels.append(text)
 
 
-def _overlay(visible=False, review_mode=False):
+def _overlay(visible=False):
     overlay = object.__new__(hud_overlay.DictationOverlay)
     overlay._panel = _FakePanel()
     overlay._view = _FakeView()
     overlay._visible = visible
-    overlay._review_mode = review_mode
     overlay._resizes = []
     overlay._resize_panel = lambda width, height, radius: overlay._resizes.append((width, height, radius))
     overlay._reposition_for_pointer_screen = lambda: None
@@ -42,15 +37,13 @@ def test_hide_idle_overlay_does_not_mutate_window_frame():
     overlay = _overlay()
     overlay.hide()
     assert overlay._resizes == []
-    assert overlay._view.review_texts == []
     assert overlay._panel.hidden == 0
 
 
-def test_hide_review_overlay_restores_recording_size_once():
-    overlay = _overlay(visible=True, review_mode=True)
+def test_hide_visible_overlay_orders_window_out():
+    overlay = _overlay(visible=True)
     overlay.hide()
-    assert overlay._resizes == [(hud_overlay.PANEL_WIDTH, hud_overlay.PANEL_HEIGHT, hud_overlay.BAR_CORNER_RADIUS)]
-    assert overlay._view.review_texts == [None]
+    assert overlay._resizes == []
     assert overlay._panel.hidden == 1
 
 
@@ -73,3 +66,15 @@ def test_contains_point_selects_monitor_bounds():
     assert hud_overlay.DictationOverlay._contains_point(
         frame, SimpleNamespace(x=1200, y=500)
     ) is False
+
+
+def test_recording_overlay_is_lifted_bottom_center_jelly_bars():
+    assert hud_overlay.PANEL_WIDTH == 76.0
+    assert hud_overlay.PANEL_HEIGHT == 76.0
+    assert hud_overlay.BOTTOM_OFFSET == 96.0
+
+
+def test_jelly_bar_heights_expand_with_level_clamp_and_stay_symmetric():
+    assert hud_overlay.jelly_bar_heights(-1.0) == (20.0, 30.0, 20.0)
+    assert hud_overlay.jelly_bar_heights(0.5) == (25.0, 42.5, 25.0)
+    assert hud_overlay.jelly_bar_heights(2.0) == (30.0, 55.0, 30.0)

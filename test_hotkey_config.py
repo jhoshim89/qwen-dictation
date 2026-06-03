@@ -9,49 +9,70 @@ def _load():
     return mod
 
 
-def test_key_from_name_known():
+def test_token_from_key_known():
     wd = _load()
-    assert wd.key_from_name("alt_r") == keyboard.Key.alt_r
-    assert wd.key_from_name("cmd_r") == keyboard.Key.cmd_r
-    assert wd.key_from_name("ctrl_r") == keyboard.Key.ctrl_r
-    assert wd.key_from_name("shift_r") == keyboard.Key.shift_r
+    assert wd.token_from_key(keyboard.Key.alt_r) == "alt_r"
+    assert wd.token_from_key(keyboard.Key.cmd_r) == "cmd_r"
+    assert wd.token_from_key(keyboard.Key.space) == "space"
+    assert wd.token_from_key(keyboard.KeyCode(char="K")) == "k"
+    assert wd.token_from_key(wd.HOTKEY_FN) == wd.HOTKEY_FN
 
 
-def test_key_from_name_unknown_falls_back():
+def test_token_from_key_unknown_returns_none():
     wd = _load()
-    assert wd.key_from_name("nope") == keyboard.Key.alt_r
+    assert wd.token_from_key(object()) is None
 
 
-def test_validate_rejects_same_keys_in_multi():
+def test_validate_rejects_same_keys():
     wd = _load()
-    ok, _ = wd.validate_hotkey_config("multi", "cmd_r", "cmd_r")
+    ok, _ = wd.validate_hotkey_config("cmd_r", "cmd_r")
     assert ok is False
 
 
-def test_validate_accepts_distinct_multi():
+def test_validate_accepts_distinct_keys():
     wd = _load()
-    ok, err = wd.validate_hotkey_config("multi", "alt_r", "cmd_r")
+    ok, err = wd.validate_hotkey_config("alt_r", "cmd_r")
     assert ok is True and err == ""
 
 
-def test_validate_rejects_unknown_mode():
+def test_validate_accepts_modifier_combo_and_function_key():
     wd = _load()
-    ok, _ = wd.validate_hotkey_config("weird", "alt_r", "cmd_r")
+    assert wd.validate_hotkey_config("alt+space", "f8") == (True, "")
+
+
+def test_validate_rejects_unknown_key():
+    wd = _load()
+    ok, _ = wd.validate_hotkey_config("weird", "cmd_r")
     assert ok is False
+
+
+def test_fn_key_transition_reports_press_and_release():
+    wd = _load()
+    pressed, transition = wd.fn_key_transition(
+        wd.kCGEventFlagsChanged, wd.kCGEventFlagMaskSecondaryFn, False
+    )
+    assert (pressed, transition) == (True, "press")
+    pressed, transition = wd.fn_key_transition(wd.kCGEventFlagsChanged, 0, pressed)
+    assert (pressed, transition) == (False, "release")
+
+
+def test_fn_key_transition_ignores_unrelated_events():
+    wd = _load()
+    assert wd.fn_key_transition(999, wd.kCGEventFlagMaskSecondaryFn, False) == (False, None)
 
 
 def test_multi_listener_accepts_custom_keys():
     wd = _load()
-    lis = wd.MultiHotkeyListener(object(), hold_key=keyboard.Key.shift_r, toggle_key=keyboard.Key.ctrl_r)
-    assert lis.hold_key == keyboard.Key.shift_r
-    assert lis.toggle_key == keyboard.Key.ctrl_r
+    lis = wd.MultiHotkeyListener(object(), hold_key="shift_r+k", toggle_key="ctrl_r+space")
+    assert lis.hold_key == "shift_r+k"
+    assert lis.toggle_key == "ctrl_r+space"
 
 
 def test_multi_listener_defaults():
     wd = _load()
     lis = wd.MultiHotkeyListener(object())
-    assert lis.hold_key == keyboard.Key.cmd_r
-    assert lis.toggle_key == keyboard.Key.alt_r
+    assert lis.hold_key == "cmd_r"
+    assert lis.toggle_key == "alt_r"
 
 
 def test_app_config_has_hotkey_defaults(tmp_path, monkeypatch):
@@ -59,47 +80,33 @@ def test_app_config_has_hotkey_defaults(tmp_path, monkeypatch):
     cfg_file = tmp_path / "config.json"
     monkeypatch.setattr(app_config, "config_path", lambda: str(cfg_file))
     cfg = app_config.load_config()
-    assert cfg["hotkey_mode"] == "multi"
     assert cfg["hold_key"] == "cmd_r"
     assert cfg["toggle_key"] == "alt_r"
 
 
-def test_build_key_listener_selects_type():
+def test_build_key_listener_uses_multi_listener():
     wd = _load()
 
     class A:
-        hotkey_mode = "multi"
         hold_key = "shift_r"
         toggle_key = "cmd_r"
-        key_combination = "cmd_l+alt"
     a = A()
     a.build_key_listener = wd.StatusBarApp.build_key_listener.__get__(a, A)
     kl = a.build_key_listener()
     assert isinstance(kl, wd.MultiHotkeyListener)
-    assert kl.hold_key == keyboard.Key.shift_r
-
-    a.hotkey_mode = "double"
-    assert isinstance(a.build_key_listener(), wd.DoubleCommandKeyListener)
-
-    a.hotkey_mode = "single"
-    assert isinstance(a.build_key_listener(), wd.GlobalKeyListener)
-
+    assert kl.hold_key == "shift_r"
 
 def test_api_config_sets_and_applies_hotkeys(monkeypatch):
     import dashboard
 
     class FakeApp:
-        mode = "streaming"
         current_language = "ko"
         languages = ["ko", "en"]
-        k_double_cmd = False
-        selected_model = "1.7b"
-        stream_interval = 1.2
         max_time = 0
         started = False
-        hotkey_mode = "multi"
         hold_key = "alt_r"
         toggle_key = "cmd_r"
+        min_volume = 35
         applied = 0
         saved = 0
 
@@ -115,15 +122,54 @@ def test_api_config_sets_and_applies_hotkeys(monkeypatch):
     dashboard.app_instance = fake
     client = dashboard.flask_app.test_client()
 
-    r = client.post("/api/config", json={"hotkey_mode": "multi", "hold_key": "shift_r", "toggle_key": "cmd_r"})
+    r = client.post("/api/config", json={"hold_key": "shift_r+k", "toggle_key": "cmd_r+space"})
     assert r.status_code == 200
-    assert fake.hold_key == "shift_r"
+    assert fake.hold_key == "shift_r+k"
     assert fake.applied == 1
 
     before = fake.applied
-    r2 = client.post("/api/config", json={"hotkey_mode": "multi", "hold_key": "cmd_r", "toggle_key": "cmd_r"})
+    r2 = client.post("/api/config", json={"hold_key": "cmd_r", "toggle_key": "cmd_r"})
     assert r2.status_code == 400
     assert fake.applied == before
+
+
+def test_api_config_sets_min_volume():
+    import dashboard
+
+    class FakeTranscriber:
+        min_volume = 35
+
+    class FakeRecorder:
+        transcriber = FakeTranscriber()
+
+    class FakeApp:
+        current_language = "ko"
+        languages = ["ko", "en"]
+        max_time = 300
+        input_device = ""
+        hold_key = "cmd_r"
+        toggle_key = "alt_r"
+        min_volume = 35
+        recorder = FakeRecorder()
+
+        def save_settings(self):
+            pass
+
+        def sync_menu_state(self):
+            pass
+
+    fake = FakeApp()
+    dashboard.app_instance = fake
+    client = dashboard.flask_app.test_client()
+
+    r = client.post("/api/config", json={"min_volume": 0})
+    assert r.status_code == 200
+    assert fake.min_volume == 1
+    assert fake.recorder.transcriber.min_volume == 1
+
+    r = client.post("/api/config", json={"min_volume": 120})
+    assert r.status_code == 200
+    assert fake.min_volume == 100
 
 
 def test_default_keys_are_cmd_hold_option_toggle():
@@ -131,23 +177,24 @@ def test_default_keys_are_cmd_hold_option_toggle():
     cfg = dict(app_config.DEFAULTS)
     assert cfg["hold_key"] == "cmd_r"      # 홀드 = 오른쪽 Cmd
     assert cfg["toggle_key"] == "alt_r"    # 토글 = 오른쪽 Option
+    assert cfg["min_volume"] == 35          # 기존 음량 게이트와 같은 기본값
 
 
-def test_multi_listener_both_triggers_use_streaming():
+def test_multi_listener_both_triggers_start_app():
     wd = _load()
     starts = []
 
     class App:
         started = False
-        def begin_session(self, mode): starts.append(mode); self.started = True
+        def start_app(self, _): starts.append("start"); self.started = True
         def stop_app(self, _, finalize=True): self.started = False
     app = App()
-    lis = wd.MultiHotkeyListener(app, hold_key=wd.keyboard.Key.cmd_r, toggle_key=wd.keyboard.Key.alt_r)
+    lis = wd.MultiHotkeyListener(app, hold_key="cmd_r", toggle_key="alt_r")
     # 홀드(누름) → streaming 시작
     lis.on_key_press(wd.keyboard.Key.cmd_r)
     # 토글(누름) → 이미 시작 중이면 무시되므로, 새 인스턴스로 토글 확인
     app2 = App()
-    lis2 = wd.MultiHotkeyListener(app2, hold_key=wd.keyboard.Key.cmd_r, toggle_key=wd.keyboard.Key.alt_r)
+    lis2 = wd.MultiHotkeyListener(app2, hold_key="cmd_r", toggle_key="alt_r")
     lis2.on_key_press(wd.keyboard.Key.alt_r)
-    assert starts[0] == wd.MODE_STREAMING            # 홀드가 streaming
-    assert app2.started and starts[-1] == wd.MODE_STREAMING  # 토글도 streaming
+    assert starts[0] == "start"
+    assert app2.started and starts[-1] == "start"

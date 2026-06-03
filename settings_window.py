@@ -29,8 +29,10 @@ except Exception as _e:  # pragma: no cover - depends on platform/frameworks
 
 
 # Window geometry
-_WIN_WIDTH = 520.0
-_WIN_HEIGHT = 640.0
+_WIN_WIDTH = 900.0
+_WIN_HEIGHT = 760.0
+_WIN_MIN_WIDTH = 720.0
+_WIN_MIN_HEIGHT = 620.0
 
 
 def _fallback(url, reason=""):
@@ -61,6 +63,7 @@ class SettingsWindow:
             rect, style, AppKit.NSBackingStoreBuffered, False
         )
         win.setTitle_("Qwen Dictation 설정")
+        win.setMinSize_(Foundation.NSMakeSize(_WIN_MIN_WIDTH, _WIN_MIN_HEIGHT))
         # Closing the window should just hide it; the app keeps running in the
         # menu bar. releasedWhenClosed=False keeps the Python reference valid so
         # we can re-show the same window later.

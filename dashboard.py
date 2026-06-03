@@ -2,9 +2,11 @@ import json
 import logging
 import os
 import threading
-from flask import Flask, jsonify, request, render_template_string
+from flask import Flask, jsonify, request, render_template_string, send_from_directory
 
 import app_paths
+import dictation_history
+import hotkeys
 import vocabulary
 
 # Suppress flask output logs to keep the console clean
@@ -13,6 +15,25 @@ log.setLevel(logging.ERROR)
 
 flask_app = Flask(__name__)
 app_instance = None  # Global reference to StatusBarApp
+
+
+def list_input_devices():
+    """Return available microphone names for the settings dashboard."""
+    try:
+        import pyaudio
+        pa = pyaudio.PyAudio()
+        try:
+            return [
+                pa.get_device_info_by_index(index).get("name", "")
+                for index in range(pa.get_device_count())
+                if int(pa.get_device_info_by_index(index).get("maxInputChannels", 0)) > 0
+            ]
+        finally:
+            pa.terminate()
+    except Exception as exc:
+        print(f"Input device list error: {exc}")
+        return []
+
 
 @flask_app.route('/')
 def home():
@@ -24,22 +45,24 @@ def home():
     except Exception as e:
         return f"Error loading dashboard: {e}", 500
 
+@flask_app.route('/assets/<path:filename>')
+def assets(filename):
+    return send_from_directory(app_paths.resource_path('assets'), filename)
+
 @flask_app.route('/api/config', methods=['GET'])
 def get_config():
     if not app_instance:
         return jsonify({"error": "App instance not initialized"}), 500
 
     return jsonify({
-        "mode": app_instance.mode,
         "language": app_instance.current_language or "ko",
         "languages": app_instance.languages,
-        "k_double_cmd": getattr(app_instance, 'k_double_cmd', False),
-        "model_size": getattr(app_instance, 'selected_model', '1.7b'),
-        "stream_interval": getattr(app_instance, 'stream_interval', 1.2),
-        "max_time": getattr(app_instance, 'max_time', 30),
-        "hotkey_mode": getattr(app_instance, 'hotkey_mode', 'multi'),
-        "hold_key": getattr(app_instance, 'hold_key', 'alt_r'),
-        "toggle_key": getattr(app_instance, 'toggle_key', 'cmd_r'),
+        "max_time": getattr(app_instance, 'max_time', 300),
+        "input_device": getattr(app_instance, 'input_device', ''),
+        "input_devices": list_input_devices(),
+        "hold_key": getattr(app_instance, 'hold_key', 'cmd_r'),
+        "toggle_key": getattr(app_instance, 'toggle_key', 'alt_r'),
+        "min_volume": getattr(app_instance, 'min_volume', 35),
     })
 
 @flask_app.route('/api/config', methods=['POST'])
@@ -51,33 +74,28 @@ def post_config():
     if not data:
         return jsonify({"error": "Invalid request payload"}), 400
 
-    hotkey_changed = any(k in data for k in ("hotkey_mode", "hold_key", "toggle_key"))
+    hotkey_changed = any(k in data for k in ("hold_key", "toggle_key"))
 
     def apply():
-        if 'mode' in data:
-            app_instance.set_mode(data['mode'])
         if 'language' in data:
             app_instance.current_language = data['language']
             app_instance.sync_menu_state()
-        if 'model_size' in data:
-            app_instance.selected_model = data['model_size']
-            print(f"Model size updated to: {app_instance.selected_model}")
-        if 'stream_interval' in data:
-            app_instance.stream_interval = max(0.8, float(data['stream_interval']))
         if 'max_time' in data:
             app_instance.max_time = max(0, float(data['max_time']))
+        if 'input_device' in data:
+            app_instance.input_device = str(data['input_device'] or "")
+        if 'min_volume' in data:
+            app_instance.min_volume = max(1, min(100, int(float(data['min_volume']))))
+            if getattr(app_instance, "recorder", None) is not None:
+                app_instance.recorder.transcriber.min_volume = app_instance.min_volume
         if hotkey_changed:
-            mode = data.get("hotkey_mode", getattr(app_instance, "hotkey_mode", "multi"))
-            hold = data.get("hold_key", getattr(app_instance, "hold_key", "alt_r"))
-            toggle = data.get("toggle_key", getattr(app_instance, "toggle_key", "cmd_r"))
-            valid_keys = ("alt_r", "cmd_r", "ctrl_r", "shift_r")
-            if mode not in ("multi", "single", "double"):
-                raise ValueError("unknown hotkey mode")
-            if mode == "multi" and (hold == toggle or hold not in valid_keys or toggle not in valid_keys):
-                raise ValueError("hold/toggle keys must differ and be valid")
-            app_instance.hotkey_mode = mode
-            app_instance.hold_key = hold
-            app_instance.toggle_key = toggle
+            hold = data.get("hold_key", getattr(app_instance, "hold_key", "cmd_r"))
+            toggle = data.get("toggle_key", getattr(app_instance, "toggle_key", "alt_r"))
+            ok, error = hotkeys.validate_hotkey_pair(hold, toggle)
+            if not ok:
+                raise ValueError(error)
+            app_instance.hold_key = hotkeys.normalize_hotkey(hold)
+            app_instance.toggle_key = hotkeys.normalize_hotkey(toggle)
         if hasattr(app_instance, "save_settings"):
             app_instance.save_settings()
         if hotkey_changed and hasattr(app_instance, "apply_hotkey_config"):
@@ -117,8 +135,19 @@ def selftest():
         seconds = float((request.json or {}).get("seconds", 5)) if request.is_json else 5.0
         seconds = max(1.0, min(15.0, seconds))
         pa = pyaudio.PyAudio()
-        dev = pa.get_default_input_device_info().get("name")
-        st = pa.open(format=pyaudio.paInt16, channels=1, rate=16000, input=True, frames_per_buffer=1024)
+        preferred = getattr(app_instance, "input_device", "")
+        selected = next(
+            (
+                pa.get_device_info_by_index(index)
+                for index in range(pa.get_device_count())
+                if pa.get_device_info_by_index(index).get("name") == preferred
+                and int(pa.get_device_info_by_index(index).get("maxInputChannels", 0)) > 0
+            ),
+            None,
+        )
+        dev = selected or pa.get_default_input_device_info()
+        st = pa.open(format=pyaudio.paInt16, channels=1, rate=16000, input=True,
+                     input_device_index=dev.get("index"), frames_per_buffer=1024)
         frames = []
         for _ in range(int(16000 / 1024 * seconds)):
             frames.append(st.read(1024, exception_on_overflow=False))
@@ -130,11 +159,11 @@ def selftest():
         path = tempfile.gettempdir() + "/qwen_selftest.wav"
         sf.write(path, a.astype(np.float32) / 32768.0, 16000)
         text = app_instance.recorder.transcriber.transcribe_file(
-            path, language=app_instance.current_language, model_size=app_instance.selected_model)
-        return jsonify({"ok": True, "device": dev, "seconds": seconds,
+            path, language=app_instance.current_language)
+        return jsonify({"ok": True, "device": dev.get("name"), "seconds": seconds,
                         "peak": peak, "rms": rms, "text": text,
                         "language": app_instance.current_language,
-                        "model": app_instance.selected_model})
+                        "model": "Qwen3-ASR 1.7B"})
     except Exception as e:
         return jsonify({"ok": False, "error": repr(e)}), 500
 
@@ -173,6 +202,49 @@ def post_vocabulary():
         return jsonify({"error": "expected a list of words"}), 400
     cleaned = vocabulary.save_vocabulary(data)
     return jsonify(cleaned)
+
+
+@flask_app.route('/api/history', methods=['GET'])
+def get_history():
+    return jsonify(dictation_history.load_history())
+
+
+@flask_app.route('/api/history/<history_id>/correction', methods=['POST'])
+def post_history_correction(history_id):
+    corrected_text = (request.json or {}).get("corrected_text", "")
+    try:
+        return jsonify({"candidates": dictation_history.record_correction(history_id, corrected_text)})
+    except ValueError as exc:
+        return jsonify({"error": str(exc)}), 404
+
+
+@flask_app.route('/api/vocabulary/candidates', methods=['GET'])
+def get_vocabulary_candidates():
+    return jsonify(dictation_history.list_candidates())
+
+
+@flask_app.route('/api/vocabulary/candidates/accept', methods=['POST'])
+def accept_vocabulary_candidate():
+    try:
+        words = dictation_history.accept_candidate((request.json or {}).get("term"))
+        return jsonify({"vocabulary": words, "candidates": dictation_history.list_candidates()})
+    except ValueError as exc:
+        return jsonify({"error": str(exc)}), 400
+
+
+@flask_app.route('/api/vocabulary/candidates/dismiss', methods=['POST'])
+def dismiss_vocabulary_candidate():
+    try:
+        dictation_history.dismiss_candidate((request.json or {}).get("term"))
+        return jsonify(dictation_history.list_candidates())
+    except ValueError as exc:
+        return jsonify({"error": str(exc)}), 400
+
+
+@flask_app.route('/api/vocabulary/candidates/reset-dismissed', methods=['POST'])
+def reset_dismissed_vocabulary_candidates():
+    dictation_history.reset_dismissed()
+    return jsonify(dictation_history.list_candidates())
 
 def start_server(app):
     global app_instance

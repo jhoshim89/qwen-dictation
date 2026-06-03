@@ -37,6 +37,42 @@ def test_trailing_silence_short_audio_false():
     assert wd.trailing_silence(audio, 16000, 1000.0, 0.8) is False
 
 
+def test_pcm_peak_uses_absolute_int16_amplitude():
+    wd = _load()
+    assert wd.pcm_peak(_pcm([0, -4200, 1200])) == 4200.0
+
+
+def test_volume_threshold_defaults_match_legacy_values():
+    wd = _load()
+    silence, start = wd.volume_peak_thresholds(35)
+    assert silence == wd.SILENCE_PEAK_THRESHOLD
+    assert start == wd.SPEECH_START_PEAK_THRESHOLD
+
+
+def test_volume_threshold_lower_value_catches_quieter_speech():
+    wd = _load()
+    _, default_start = wd.volume_peak_thresholds(35)
+    _, quiet_start = wd.volume_peak_thresholds(10)
+    assert quiet_start < default_start
+
+
+def test_find_input_device_index_matches_named_microphone():
+    wd = _load()
+
+    class FakePyAudio:
+        devices = [
+            {"name": "Speakers", "maxInputChannels": 0},
+            {"name": "MATA STUDIO C10", "maxInputChannels": 2},
+        ]
+        def get_device_count(self): return len(self.devices)
+        def get_device_info_by_index(self, index): return self.devices[index]
+
+    pa = FakePyAudio()
+    assert wd.find_input_device_index(pa, "MATA STUDIO C10") == 1
+    assert wd.find_input_device_index(pa, "missing") is None
+    assert wd.find_input_device_index(pa, "") is None
+
+
 def test_should_commit_on_pause():
     wd = _load()
     assert wd.should_commit(window_secs=3.0, paused=True, max_secs=12.0) is True
@@ -64,6 +100,8 @@ def _make_recorder(wd, monkeypatch, hypo_by_call):
     rec.committed_text = ""
     rec.last_typed = ""
     rec.recording = True
+    rec.app = type("App", (), {"min_volume": 35})()
+    rec.transcriber = FakeTranscriber()
     rec.typed_log = []
     # type 함수 주입: (old,new)->new, 로그 기록
     rec._type = lambda old, new: (rec.typed_log.append(new) or new)
@@ -85,6 +123,33 @@ def test_stream_tick_types_committed_plus_hypothesis(monkeypatch):
     assert rec.last_typed == "안녕"
     assert rec.committed_text == ""          # 안 쉬었으니 확정 안 됨
     assert rec.window_start == 0
+
+
+def test_stream_tick_discards_quiet_window_before_transcribing():
+    wd = _load()
+    rec = _make_recorder(wd, None, ["잘못 나온 말"])
+    rec.app = type("App", (), {"min_volume": 35})()
+    rec.transcriber = type("Transcriber", (), {})()
+    quiet_noise = (np.ones(16000, dtype=np.int16) * 2200).tobytes()
+    with rec.audio_lock:
+        rec.audio_frames = [quiet_noise]
+    wd.Recorder._stream_tick(rec, language="Korean")
+    assert rec.last_typed == ""
+    assert rec.typed_log == []
+    assert rec.window_start == 1
+
+
+def test_stream_tick_low_min_volume_allows_quiet_window():
+    wd = _load()
+    rec = _make_recorder(wd, None, ["작게 말함"])
+    rec.app = type("App", (), {"min_volume": 10})()
+    rec.transcriber = type("Transcriber", (), {})()
+    quiet_speech = (np.ones(16000, dtype=np.int16) * 2200).tobytes()
+    with rec.audio_lock:
+        rec.audio_frames = [quiet_speech]
+    wd.Recorder._stream_tick(rec, language="Korean")
+    assert rec.last_typed == "작게 말함"
+    assert rec.transcriber.min_volume == 10
 
 
 def test_stream_tick_commits_on_pause_and_advances_window():
@@ -117,6 +182,50 @@ def test_repetition_hallucination_filter_keeps_normal_sentence():
     wd = _load()
     assert wd.looks_like_repetition_hallucination("내 내 내") is True
     assert wd.looks_like_repetition_hallucination("내가 말한 내용") is False
+
+
+def test_pause_noise_filler_filter_rejects_short_response_only():
+    wd = _load()
+    assert wd.looks_like_pause_noise_filler("어.") is True
+    assert wd.looks_like_pause_noise_filler("네") is True
+    assert wd.looks_like_pause_noise_filler("네 알겠습니다") is False
+
+
+def test_punctuation_only_filter_keeps_contextual_punctuation():
+    wd = _load()
+    assert wd.looks_like_punctuation_only(".") is True
+    assert wd.looks_like_punctuation_only("?") is True
+    assert wd.looks_like_punctuation_only("...!?") is True
+    assert wd.looks_like_punctuation_only("안녕하세요.") is False
+    assert wd.looks_like_punctuation_only("괜찮나요?") is False
+
+
+def test_stream_tick_removes_short_filler_at_pause():
+    wd = _load()
+    rec = _make_recorder(wd, None, ["어."])
+    rec.last_typed = "어"
+    loud = (np.random.RandomState(0).randn(16000) * 6000).astype(np.int16).tobytes()
+    quiet = (np.zeros(16000, dtype=np.int16)).tobytes()
+    with rec.audio_lock:
+        rec.audio_frames = [loud, quiet]
+    wd.Recorder._stream_tick(rec, language="Korean")
+    assert rec.last_typed == ""
+    assert rec.committed_text == ""
+    assert rec.typed_log == [""]
+
+
+def test_stream_tick_removes_punctuation_only_at_pause():
+    wd = _load()
+    rec = _make_recorder(wd, None, ["."])
+    rec.last_typed = "."
+    loud = (np.random.RandomState(0).randn(16000) * 6000).astype(np.int16).tobytes()
+    quiet = (np.zeros(16000, dtype=np.int16)).tobytes()
+    with rec.audio_lock:
+        rec.audio_frames = [loud, quiet]
+    wd.Recorder._stream_tick(rec, language="Korean")
+    assert rec.last_typed == ""
+    assert rec.committed_text == ""
+    assert rec.typed_log == [""]
 
 
 def test_stream_loop_skips_final_tick_after_enter_send():

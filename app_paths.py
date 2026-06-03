@@ -33,25 +33,16 @@ def user_data_dir():
     return d
 
 
-def dictionary_path():
-    """사용자 사전 파일 경로(쓰기 가능 위치)."""
-    return os.path.join(user_data_dir(), "dictionary.json")
-
-
-def seed_dictionary_path():
-    """앱에 기본 동봉되는 사전 시드(읽기전용)."""
-    return resource_path("dictionary.json")
-
-
 def vocabulary_path():
     """사용자 단어 목록 파일 경로(쓰기 가능 위치)."""
     return os.path.join(user_data_dir(), "vocabulary.json")
 
 
-def hud_command(max_time=30):
-    """HUD 오버레이를 띄우는 subprocess 커맨드 리스트.
+def history_path():
+    """최근 받아쓰기 텍스트 기록 파일 경로."""
+    return os.path.join(user_data_dir(), "history.json")
 
-    번들에서는 번들 내부 파이썬(sys.executable)으로 hud.py 를 실행하고,
-    개발 중에는 동일하게 현재 인터프리터로 실행한다.
-    """
-    return [sys.executable, resource_path("hud.py"), "--max_time", str(int(max_time))]
+
+def vocabulary_candidates_path():
+    """승인 전 단어 후보와 숨김 상태 파일 경로."""
+    return os.path.join(user_data_dir(), "vocabulary-candidates.json")
