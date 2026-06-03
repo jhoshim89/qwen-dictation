@@ -6,10 +6,11 @@ import app_config
 def test_defaults_only_have_live_settings():
     assert set(app_config.DEFAULTS) == {
         "language", "max_time", "input_device", "hold_key", "toggle_key",
-        "min_volume", "max_time_zero_migrated",
+        "min_volume", "edit_interrupt_mode", "max_time_zero_migrated",
     }
     assert app_config.DEFAULTS["max_time"] == 300
     assert app_config.DEFAULTS["min_volume"] == 35
+    assert app_config.DEFAULTS["edit_interrupt_mode"] == "continue"
 
 
 def test_save_then_load_roundtrip(tmp_path, monkeypatch):

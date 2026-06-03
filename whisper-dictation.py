@@ -230,6 +230,14 @@ HOTKEY_NAME_BY_KEY = {value: name for name, value in HOTKEY_KEY_NAMES.items()}
 HOTKEY_FN = "fn"
 
 
+# 수동 편집으로 치지 않는 토큰: 모디파이어 단독과 Enter.
+# (Enter 는 토글 종료 등 기존 동작을 그대로 둔다.)
+EDIT_IGNORED_TOKENS = {
+    "shift", "shift_r", "ctrl", "ctrl_r", "alt", "alt_r",
+    "cmd", "cmd_r", HOTKEY_FN, "enter",
+}
+
+
 def token_from_key(key):
     """pynput key → stored hotkey token. Unknown keys return None."""
     if key == HOTKEY_FN:
@@ -341,12 +349,24 @@ class Recorder:
         self.committed_text = ""
         self.last_typed = ""
         self.finalize_on_stop = True
+        # 사용자가 받아쓰기 중 직접 고친 뒤 "지금 입력창이 새 기준"으로 다시 잡으라는
+        # 요청 플래그. 리스너 스레드가 세우고 스트리밍 스레드가 틱 시작에서 소비한다.
+        self.rebaseline_pending = False
+        # 우리가 type_diff 로 타이핑하는 동안 발생하는 합성 키 이벤트를 사용자의 수동
+        # 입력으로 오인하지 않도록, 이 시각 전까지는 들어오는 키를 합성으로 간주한다.
+        self.self_type_guard_until = 0.0
+
+    def rebaseline(self):
+        """입력창 글자에 대한 소유권을 내려놓는다. 다음 발화는 빈 기준에서 시작해
+        백스페이스 없이 커서 위치에 새 글자만 덧붙는다(사용자 수정 보존)."""
+        self.rebaseline_pending = True
 
     def start(self, language=None):
         if self.recording:
             return
         self.audio_frames = []
         self.finalize_on_stop = True
+        self.rebaseline_pending = False
         self.recording = True
         self.record_thread = threading.Thread(target=self._record_impl, args=(language,), daemon=True)
         self.record_thread.start()
@@ -427,6 +447,14 @@ class Recorder:
         return self.transcriber.transcribe_file(path, language=language)
 
     def _stream_tick(self, language, allow_stopped=False):
+        # 사용자가 직접 고친 직후라면 기준점을 현재로 리셋한다. 리스너 스레드와의
+        # 경합을 피하려 플래그만 받아 스트리밍 스레드인 여기서 실제 상태를 바꾼다.
+        if self.rebaseline_pending:
+            with self.audio_lock:
+                self.window_start = len(self.audio_frames)
+            self.committed_text = ""
+            self.last_typed = ""
+            self.rebaseline_pending = False
         with self.audio_lock:
             window = b"".join(self.audio_frames[self.window_start:])
             frame_count = len(self.audio_frames)
@@ -455,7 +483,13 @@ class Recorder:
         if paused and looks_like_pause_noise_filler(hypo):
             hypo = ""
         target = self.committed_text + hypo
-        self.last_typed = self._type(self.last_typed, target)
+        # 타이핑 중과 직후 0.2초는 우리가 만든 합성 키 이벤트가 들어오므로, 그 사이
+        # 리스너가 키를 사용자 수동 편집으로 오인하지 않도록 가드 시각을 세운다.
+        self.self_type_guard_until = time.time() + 30.0
+        try:
+            self.last_typed = self._type(self.last_typed, target)
+        finally:
+            self.self_type_guard_until = time.time() + 0.2
         window_secs = len(window) / 2.0 / 16000.0
         if hypo and should_commit(window_secs, paused, MAX_WINDOW_SEC):
             self.committed_text = target
@@ -513,9 +547,36 @@ class MultiHotkeyListener:
         dispatch_app(self.app, self.app.stop_app, None, finalize)
         self.active_trigger = None
 
+    def _is_manual_edit(self, token):
+        """활성 세션 중 이 키가 사용자의 수동 편집인지 판단(단축키/모디파이어 제외)."""
+        if token in self.hold_parts or token in self.toggle_parts:
+            return False
+        if token in EDIT_IGNORED_TOKENS:
+            return False
+        return True
+
+    def _handle_manual_edit(self):
+        mode = getattr(self.app, "edit_interrupt_mode", "continue")
+        if mode == "stop":
+            # 마지막 틱 없이 종료 — 사용자가 방금 친 글자를 다시 건드리지 않는다.
+            trigger = self.active_trigger
+            if trigger is not None:
+                self._end(trigger, finalize=False)
+        else:  # "continue": 수정 보존하고 세션 유지
+            recorder = getattr(self.app, "recorder", None)
+            if recorder is not None:
+                recorder.rebaseline()
+
     def on_key_press(self, key):
         token = token_from_key(key)
         if token is None:
+            return
+        if self.active_trigger is not None and self._is_manual_edit(token):
+            recorder = getattr(self.app, "recorder", None)
+            guard = getattr(recorder, "self_type_guard_until", 0.0) if recorder else 0.0
+            if time.time() < guard:
+                return  # 우리가 타이핑한 합성 키 이벤트 — 무시
+            self._handle_manual_edit()
             return
         self.pressed.add(token)
         hold_matched = self.hold_parts <= self.pressed
@@ -609,6 +670,7 @@ class StatusBarApp(rumps.App):
             "hold_key": getattr(self, "hold_key", "cmd_r"),
             "toggle_key": getattr(self, "toggle_key", "alt_r"),
             "min_volume": getattr(self, "min_volume", DEFAULT_MIN_VOLUME),
+            "edit_interrupt_mode": getattr(self, "edit_interrupt_mode", "continue"),
         }
 
     def dispatch_to_main(self, callback, *args, wait=False):
@@ -646,6 +708,8 @@ class StatusBarApp(rumps.App):
         self.hold_key = cfg["hold_key"]
         self.toggle_key = cfg["toggle_key"]
         self.min_volume = normalize_min_volume(cfg.get("min_volume", DEFAULT_MIN_VOLUME))
+        mode = cfg.get("edit_interrupt_mode", "continue")
+        self.edit_interrupt_mode = mode if mode in ("continue", "stop") else "continue"
         if getattr(self, "recorder", None) is not None:
             self.recorder.transcriber.min_volume = self.min_volume
         self.sync_menu_state()

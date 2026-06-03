@@ -100,6 +100,8 @@ def _make_recorder(wd, monkeypatch, hypo_by_call):
     rec.committed_text = ""
     rec.last_typed = ""
     rec.recording = True
+    rec.rebaseline_pending = False
+    rec.self_type_guard_until = 0.0
     rec.app = type("App", (), {"min_volume": 35})()
     rec.transcriber = FakeTranscriber()
     rec.typed_log = []
@@ -150,6 +152,33 @@ def test_stream_tick_low_min_volume_allows_quiet_window():
     wd.Recorder._stream_tick(rec, language="Korean")
     assert rec.last_typed == "작게 말함"
     assert rec.transcriber.min_volume == 10
+
+
+def test_rebaseline_sets_pending_flag():
+    wd = _load()
+    rec = wd.Recorder.__new__(wd.Recorder)
+    rec.rebaseline_pending = False
+    wd.Recorder.rebaseline(rec)
+    assert rec.rebaseline_pending is True
+
+
+def test_stream_tick_consumes_rebaseline_and_resets_ownership():
+    wd = _load()
+    rec = _make_recorder(wd, None, ["새 발화"])
+    # 이전 받아쓰기 흔적 + 사용자가 직접 고친 뒤 재기준화 요청
+    with rec.audio_lock:
+        rec.audio_frames = [b"\x00\x00" * 16000]
+    rec.committed_text = "이전 글자"
+    rec.last_typed = "이전 글자"
+    rec.window_start = 0
+    rec.rebaseline_pending = True
+    wd.Recorder._stream_tick(rec, language="Korean")
+    # 기준점이 현재 프레임 끝으로 리셋되어 빈 창 → 이번 틱은 타이핑하지 않음
+    assert rec.rebaseline_pending is False
+    assert rec.committed_text == ""
+    assert rec.last_typed == ""
+    assert rec.window_start == 1
+    assert rec.typed_log == []
 
 
 def test_stream_tick_commits_on_pause_and_advances_window():

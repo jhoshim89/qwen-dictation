@@ -16,6 +16,9 @@ DEFAULTS = {
     "hold_key": "cmd_r",
     "toggle_key": "alt_r",
     "min_volume": 35,
+    # 받아쓰기 도중 사용자가 키보드로 직접 고쳤을 때의 동작.
+    # "continue": 수정 보존하고 세션 유지(다시 말하면 이어서), "stop": 즉시 종료.
+    "edit_interrupt_mode": "continue",
     "max_time_zero_migrated": True,
 }
 
