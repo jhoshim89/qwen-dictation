@@ -8,12 +8,16 @@ def test_defaults_only_have_live_settings():
         "language", "max_time", "input_device", "hold_key", "toggle_key",
         "min_volume", "edit_interrupt_mode", "max_time_zero_migrated",
         "hold_send_enter", "domain_context",
+        "hud_mode", "hud_pin_x", "hud_pin_y",
     }
     assert app_config.DEFAULTS["max_time"] == 300
     assert app_config.DEFAULTS["min_volume"] == 35
     assert app_config.DEFAULTS["edit_interrupt_mode"] == "continue"
     assert app_config.DEFAULTS["hold_send_enter"] is True
     assert app_config.DEFAULTS["domain_context"] == ""
+    assert app_config.DEFAULTS["hud_mode"] == "pill"
+    assert app_config.DEFAULTS["hud_pin_x"] is None
+    assert app_config.DEFAULTS["hud_pin_y"] is None
 
 
 def test_save_then_load_roundtrip(tmp_path, monkeypatch):
@@ -61,3 +65,17 @@ def test_domain_context_roundtrips(tmp_path, monkeypatch):
     monkeypatch.setattr(app_config, "config_path", lambda: str(tmp_path / "config.json"))
     app_config.save_config({"domain_context": "수의안과 진료"})
     assert app_config.load_config()["domain_context"] == "수의안과 진료"
+
+
+def test_hud_mode_defaults_to_pill(tmp_path, monkeypatch):
+    monkeypatch.setattr(app_config, "config_path", lambda: str(tmp_path / "config.json"))
+    assert app_config.load_config()["hud_mode"] == "pill"
+
+
+def test_hud_settings_roundtrip(tmp_path, monkeypatch):
+    monkeypatch.setattr(app_config, "config_path", lambda: str(tmp_path / "config.json"))
+    app_config.save_config({"hud_mode": "pinned", "hud_pin_x": 1380.0, "hud_pin_y": 24.0})
+    cfg = app_config.load_config()
+    assert cfg["hud_mode"] == "pinned"
+    assert cfg["hud_pin_x"] == 1380.0
+    assert cfg["hud_pin_y"] == 24.0

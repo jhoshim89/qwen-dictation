@@ -24,6 +24,11 @@ DEFAULTS = {
     # 받아쓰기 분야 머리말(자유 문장). 매 변환의 context 앞에 붙어 모델을 그 분야로
     # 편향한다. 예: "수의안과 진료. 안과 질환과 검사 용어 위주". 빈 문자열이면 미사용.
     "domain_context": "",
+    # 받아쓰기 표시(HUD) 모드: "pill"(알약·기본) | "pinned"(아이콘 고정) | "cursor"(커서 추적).
+    "hud_mode": "pill",
+    # B(고정) 모드에서 드래그로 저장된 절대 좌표(AppKit, 좌하단 원점). None이면 기본 우하단.
+    "hud_pin_x": None,
+    "hud_pin_y": None,
     "max_time_zero_migrated": True,
 }
 
