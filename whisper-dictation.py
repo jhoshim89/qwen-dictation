@@ -781,15 +781,35 @@ class StatusBarApp(rumps.App):
     def _tick_overlay(self, _):
         try:
             ov = hud_overlay.get_overlay()
+            desired = (
+                getattr(self, "hud_mode", "pill"),
+                getattr(self, "hud_pin_x", None),
+                getattr(self, "hud_pin_y", None),
+            )
+            if desired != getattr(self, "_applied_hud", None):
+                ov.set_mode(desired[0], (desired[1], desired[2]))
+                self._applied_hud = desired
+            mode = desired[0]
+
             if self.started and self.start_time is not None:
                 elapsed = int(time.time() - self.start_time)
                 self.elapsed_time = elapsed
                 minutes, seconds = divmod(elapsed, 60)
                 self.title = f"({minutes:02d}:{seconds:02d}) 🔴"
                 ov.update(audio_level.read_level(), elapsed)
+                if mode == "cursor":
+                    ov.reposition_to_cursor()
+                ov.set_processing(False)
                 ov.show_status("듣는 중")
+                if mode == "pinned":
+                    origin = ov.current_origin()
+                    if origin and (origin[0], origin[1]) != (self.hud_pin_x, self.hud_pin_y):
+                        self.hud_pin_x, self.hud_pin_y = origin
+                        self.save_settings()
+                        self._applied_hud = (mode, origin[0], origin[1])
             elif self.processing_active:
                 ov.update(0.0, 0)
+                ov.set_processing(True)
                 ov.show_status("변환 중")
             else:
                 ov.hide()
@@ -807,6 +827,9 @@ class StatusBarApp(rumps.App):
             "edit_interrupt_mode": getattr(self, "edit_interrupt_mode", "stop"),
             "hold_send_enter": getattr(self, "hold_send_enter", True),
             "domain_context": getattr(self, "domain_context", ""),
+            "hud_mode": getattr(self, "hud_mode", "pill"),
+            "hud_pin_x": getattr(self, "hud_pin_x", None),
+            "hud_pin_y": getattr(self, "hud_pin_y", None),
         }
 
     def dispatch_to_main(self, callback, *args, wait=False):
@@ -848,6 +871,9 @@ class StatusBarApp(rumps.App):
         self.edit_interrupt_mode = mode if mode in ("continue", "stop") else "stop"
         self.hold_send_enter = bool(cfg.get("hold_send_enter", True))
         self.domain_context = str(cfg.get("domain_context", "") or "")
+        self.hud_mode = hud_overlay.normalize_hud_mode(cfg.get("hud_mode", "pill"))
+        self.hud_pin_x = cfg.get("hud_pin_x")
+        self.hud_pin_y = cfg.get("hud_pin_y")
         if getattr(self, "recorder", None) is not None:
             self.recorder.transcriber.min_volume = self.min_volume
             self.recorder.transcriber.domain_context = self.domain_context
