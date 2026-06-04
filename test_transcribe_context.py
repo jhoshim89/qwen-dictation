@@ -215,3 +215,16 @@ def test_domain_echo_retranscribes_without_context(tmp_path, monkeypatch):
     out = tr.transcribe_file(str(wav), language="Korean")
     assert out == "녹내장입니다"
     assert fake.calls[0] != "" and fake.calls[1] == ""
+
+
+def test_current_config_includes_domain_context():
+    import types
+    wd = _load()
+    stub = types.SimpleNamespace(
+        current_language="ko", max_time=300, input_device="",
+        hold_key="cmd_r", toggle_key="alt_r", min_volume=35,
+        edit_interrupt_mode="stop", hold_send_enter=True,
+        domain_context="수의안과 진료",
+    )
+    cfg = wd.StatusBarApp.current_config(stub)
+    assert cfg["domain_context"] == "수의안과 진료"

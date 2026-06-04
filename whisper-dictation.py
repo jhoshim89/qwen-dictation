@@ -510,6 +510,7 @@ class Recorder:
         self.transcriber.min_volume = normalize_min_volume(
             getattr(self.app, "min_volume", DEFAULT_MIN_VOLUME)
         )
+        self.transcriber.domain_context = getattr(self.app, "domain_context", "")
         if pcm_peak(window) < start_threshold:
             with self.audio_lock:
                 self.window_start = frame_count
@@ -748,6 +749,7 @@ class StatusBarApp(rumps.App):
             "min_volume": getattr(self, "min_volume", DEFAULT_MIN_VOLUME),
             "edit_interrupt_mode": getattr(self, "edit_interrupt_mode", "stop"),
             "hold_send_enter": getattr(self, "hold_send_enter", True),
+            "domain_context": getattr(self, "domain_context", ""),
         }
 
     def dispatch_to_main(self, callback, *args, wait=False):
@@ -788,8 +790,10 @@ class StatusBarApp(rumps.App):
         mode = cfg.get("edit_interrupt_mode", "stop")
         self.edit_interrupt_mode = mode if mode in ("continue", "stop") else "stop"
         self.hold_send_enter = bool(cfg.get("hold_send_enter", True))
+        self.domain_context = str(cfg.get("domain_context", "") or "")
         if getattr(self, "recorder", None) is not None:
             self.recorder.transcriber.min_volume = self.min_volume
+            self.recorder.transcriber.domain_context = self.domain_context
         self.sync_menu_state()
 
     def sync_menu_state(self):
