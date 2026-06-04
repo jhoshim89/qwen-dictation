@@ -488,3 +488,61 @@ def test_recorder_type_uses_unicode_inserter(monkeypatch):
         assert captured["insert"] is wd.unicode_type
     else:
         assert captured["insert"] is None
+
+
+def test_start_seeds_audio_frames_from_preroll(monkeypatch):
+    wd = _load()
+    rec = _kbd_recorder(wd)
+    rec._preroll.extend([b"aa", b"bb"])
+    monkeypatch.setattr(rec, "start_capture", lambda: None)
+    monkeypatch.setattr(rec, "_stream_loop", lambda *a, **k: None)
+    rec.start("ko")
+    assert rec.audio_frames == [b"aa", b"bb"]  # 직전 preroll 이 앞에 깔림
+    rec.recording = False
+
+
+def test_capture_loop_fills_preroll_but_records_only_when_recording():
+    wd = _load()
+    rec = _kbd_recorder(wd)  # app=None → input_device 기본 ""
+    chunks = [b"\x00\x01", b"\x02\x03", b"\x04\x05"]
+    state = {"i": 0}
+
+    class FakeStream:
+        def read(self, n, exception_on_overflow=False):
+            i = state["i"]; state["i"] += 1
+            if i >= len(chunks):
+                rec._capture_on = False
+                return b"\x00\x00"
+            return chunks[i]
+        def stop_stream(self): pass
+        def close(self): pass
+
+    rec._stream = FakeStream()
+    rec._open_device = ""      # app.input_device 기본 "" 과 일치 → 재오픈 안 함
+    rec._capture_on = True
+    rec.recording = False      # 녹음 아님 → audio_frames 엔 안 쌓임
+    rec._capture_loop()
+    assert len(rec._preroll) > 0       # preroll 은 계속 채워짐
+    assert rec.audio_frames == []      # 녹음 중 아니므로 기록 안 됨
+
+
+def test_capture_loop_appends_to_audio_frames_while_recording():
+    wd = _load()
+    rec = _kbd_recorder(wd)
+    state = {"i": 0}
+
+    class FakeStream:
+        def read(self, n, exception_on_overflow=False):
+            i = state["i"]; state["i"] += 1
+            if i >= 2:
+                rec._capture_on = False
+            return b"\x01\x02"
+        def stop_stream(self): pass
+        def close(self): pass
+
+    rec._stream = FakeStream()
+    rec._open_device = ""
+    rec._capture_on = True
+    rec.recording = True       # 녹음 중 → audio_frames 에도 쌓임
+    rec._capture_loop()
+    assert len(rec.audio_frames) >= 1

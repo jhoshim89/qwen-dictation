@@ -93,14 +93,6 @@ PAUSE_SILENCE_SEC = 0.3      # 초: 끝이 이만큼 조용하면 쉼 → 확정
 MAX_WINDOW_SEC = 12.0        # 초: 창이 이보다 길면 강제 확정(드물게 걸리는 안전망)
 NOISE_FILLER_TEXTS = {"어", "응", "음", "네", "예"}
 
-# 임시: '첫 단어 잘림' 진단용 계측. 원인 확인 후 제거한다.
-DEBUG_FIRSTWORD = True
-
-
-def _fwlog(msg):
-    if DEBUG_FIRSTWORD:
-        print(f"[FW] {msg}", file=sys.stderr, flush=True)
-
 
 def audio_peak(audio_path):
     """오디오의 최대 절대 진폭(int16 스케일). 못 읽으면 inf(게이트 안 함)."""
@@ -236,6 +228,17 @@ def looks_like_domain_echo(text, domain):
         return True
     probe = norm_domain[:DOMAIN_ECHO_PROBE_LEN] if len(norm_domain) >= DOMAIN_ECHO_PROBE_LEN else norm_domain
     return bool(probe) and probe in norm_text
+
+
+def looks_like_context_label_echo(text):
+    """출력에 context 머리표('전문 용어')가 들어오면 통째 echo 로 본다.
+
+    build_context 는 등록 단어를 `전문 용어: a, b` 로 라벨링해 모델에 넣는다. 근거가
+    약한 첫 구간에서 모델은 이 라벨을 단어째(때로는 vocab 에 없는 분야 용어를 지어내
+    붙여서) 그대로 뱉는다. 머리표는 사용자가 말하는 내용이 아니므로, 존재만으로 echo
+    로 판정한다 — 단어 echo·분야 echo 가드가 vocab/domain 매칭에 실패하는 경우까지 잡는다.
+    """
+    return bool(text) and vocabulary.CONTEXT_TERM_LABEL in text
 
 
 def looks_like_repetition_hallucination(text):
@@ -445,7 +448,11 @@ class SpeechTranscriber:
         # 분야 문장이 샜으면(실제 단어와 섞여서라도) 분야 문장만 빼고 단어 biasing 은
         # 유지해 재전사한다 — 단어 인식 정확도는 지키면서 새는 문장만 제거한다.
         if context:
-            if looks_like_vocab_echo(text, vocab):
+            if looks_like_context_label_echo(text):
+                # 머리표('전문 용어')가 새면 통째 echo — context 전부 빼고 재전사한다.
+                plain = model.transcribe(audio_path, context="", language=language)
+                text = plain[0].text.strip() if plain else ""
+            elif looks_like_vocab_echo(text, vocab):
                 plain = model.transcribe(audio_path, context="", language=language)
                 text = plain[0].text.strip() if plain else ""
             elif domain and looks_like_domain_echo(text, domain):
@@ -515,8 +522,6 @@ class Recorder:
         # 붙여, 키 누르자마자/살짝 먼저 말해도 첫 단어가 잡히게 한다.
         with self.audio_lock:
             self.audio_frames = list(self._preroll)
-            seeded = len(self.audio_frames)
-        _fwlog(f"start: preroll_seeded={seeded} chunks (~{seeded*FRAMES_PER_BUFFER/16000:.2f}s)")
         self.recording = True
         # 캡처가 아직 안 돌고 있으면(안전망) 지금 띄운다.
         self.start_capture()
@@ -659,20 +664,11 @@ class Recorder:
             getattr(self.app, "min_volume", DEFAULT_MIN_VOLUME)
         )
         self.transcriber.domain_context = getattr(self.app, "domain_context", "")
-        dbg = getattr(self, "_dbg_tick", 99)
-        peak = pcm_peak(window)
-        wsecs = len(window) / 2.0 / 16000.0
-        if peak < start_threshold:
-            if dbg < 6:
-                _fwlog(f"tick#{dbg} GATED(discard): win={wsecs:.2f}s peak={peak:.0f} < start_thr={start_threshold:.0f}")
-                self._dbg_tick = dbg + 1
+        if pcm_peak(window) < start_threshold:
             with self.audio_lock:
                 self.window_start = frame_count
             return
         hypo = self._transcribe_window(window, language)
-        if dbg < 6:
-            _fwlog(f"tick#{dbg} pass: win={wsecs:.2f}s peak={peak:.0f}>=start_thr={start_threshold:.0f} hypo={hypo!r}")
-            self._dbg_tick = dbg + 1
         if not self.recording and not allow_stopped:
             return
         if looks_like_repetition_hallucination(hypo):
@@ -719,7 +715,6 @@ class Recorder:
         self.window_start = 0
         self.committed_text = ""
         self.last_typed = ""
-        self._dbg_tick = 0
         while self.recording:
             # 주기마다 한 번씩 틱. 단, 도중에 정지 신호가 오면 즉시 깨어나
             # 남은 대기 없이 곧장 마지막 틱으로 넘어간다(키 떼고 Enter 지연 최소화).

@@ -44,15 +44,24 @@ def save_vocabulary(words):
 # 커진다. Deepgram 등은 "가장 중요한 20~50개만"을 권장한다 — 그 하단으로 제한한다.
 MAX_CONTEXT_TERMS = 24
 
+# 등록 단어를 그냥 나열하면 Qwen3-ASR 이 그 목록을 '받아쓸 내용'으로 착각해 출력에
+# 흘린다(echo/leakage). 머리표로 게이팅하면 모델이 '받아쓸 텍스트'가 아니라 '곧 올
+# 오디오에 대한 메타데이터(참고 사전)'로 인식해 새는 걸 막고 인식 정확도도 올라간다.
+# (TypeWhisper 실측: 라벨링으로 leakage 사라지고 WER 약 절반 — github #321)
+CONTEXT_TERM_LABEL = "전문 용어"
+
 
 def build_context(words, domain="", limit=MAX_CONTEXT_TERMS):
     """단어 목록 → model.transcribe 의 context 문자열.
 
-    domain 이 있으면 분야 머리말로 맨 앞에 붙여 모델을 그 분야로 편향한다(예:
-    "수의안과 진료"). 단어는 앞에서부터 limit 개만 쓴다 — domain 은 그 한도에
-    포함되지 않는다. domain 이 비면 기존과 동일하게 단어 목록만 반환한다.
+    단어 목록은 `전문 용어: a, b, c` 처럼 머리표로 게이팅해 모델이 메타데이터(참고
+    사전)로 인식하게 한다 — 그냥 나열하면 출력에 흘리는(echo) 걸 막기 위함이다.
+    domain 이 있으면 분야 머리말을 맨 앞 문장으로 두고, 그 뒤에 단어 라벨을 붙인다
+    (예: "수의안과 진료. 전문 용어: 각막, 궤양"). 단어는 앞에서부터 limit 개만 쓴다
+    — domain 은 그 한도에 포함되지 않는다. 단어가 없으면 라벨도 붙이지 않는다.
     """
     domain = str(domain).strip()
-    terms = [w for w in words if w]
-    parts = ([domain] if domain else []) + terms[:limit]
-    return ", ".join(parts)
+    terms = [w for w in words if w][:limit]
+    labeled_terms = f"{CONTEXT_TERM_LABEL}: " + ", ".join(terms) if terms else ""
+    parts = [p for p in (domain, labeled_terms) if p]
+    return ". ".join(parts)
