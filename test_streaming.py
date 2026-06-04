@@ -454,3 +454,17 @@ def test_type_diff_defaults_insert_to_keyboard_type():
 
     wd.type_diff("", "hi", _KbWithType())
     assert typed == ["hi"]
+
+
+def test_unicode_type_posts_down_and_up_per_char():
+    wd = _load()
+    posts = []
+    wd.unicode_type("hi", _post=lambda tap, ev: posts.append(ev))
+    assert len(posts) == 4  # down+up for 'h', down+up for 'i'
+
+
+def test_unicode_type_empty_posts_nothing():
+    wd = _load()
+    posts = []
+    wd.unicode_type("", _post=lambda tap, ev: posts.append(ev))
+    assert posts == []

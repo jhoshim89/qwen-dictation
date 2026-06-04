@@ -39,11 +39,19 @@ try:
         CGEventGetFlags,
         kCGEventFlagMaskSecondaryFn,
         kCGEventFlagsChanged,
+        CGEventCreateKeyboardEvent,
+        CGEventKeyboardSetUnicodeString,
+        CGEventPost,
+        kCGHIDEventTap,
     )
 except Exception:
     CGEventGetFlags = None
     kCGEventFlagMaskSecondaryFn = 1 << 23
     kCGEventFlagsChanged = 12
+    CGEventCreateKeyboardEvent = None
+    CGEventKeyboardSetUnicodeString = None
+    CGEventPost = None
+    kCGHIDEventTap = None
 
 
 MODEL_1_7B = os.environ.get("QWEN_ASR_1_7B_PATH", "Qwen/Qwen3-ASR-1.7B")
@@ -288,6 +296,24 @@ def fn_key_transition(event_type, flags, was_pressed):
 
 def validate_hotkey_config(hold_key, toggle_key):
     return hotkeys.validate_hotkey_pair(hold_key, toggle_key)
+
+
+def unicode_type(text, _post=None):
+    """Insert `text` as literal Unicode via CGEvents (keycode 0 + Unicode string).
+
+    Posting on keycode 0 with the Unicode string set makes macOS insert the
+    characters literally, bypassing the active keyboard layout and IME. A Korean
+    input source therefore can't remap Latin letters to Hangul, so English
+    dictation lands as English. `_post` is injectable for tests.
+    """
+    post = _post or CGEventPost
+    for ch in text:
+        down = CGEventCreateKeyboardEvent(None, 0, True)
+        CGEventKeyboardSetUnicodeString(down, 1, ch)
+        post(kCGHIDEventTap, down)
+        up = CGEventCreateKeyboardEvent(None, 0, False)
+        CGEventKeyboardSetUnicodeString(up, 1, ch)
+        post(kCGHIDEventTap, up)
 
 
 def type_diff(old_text, new_text, keyboard_controller, allow_empty=False, insert=None):
