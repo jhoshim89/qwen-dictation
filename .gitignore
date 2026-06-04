@@ -8,3 +8,5 @@ dist/
 *.spec
 app_main.py
 .claude/
+
+.superpowers/
