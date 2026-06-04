@@ -166,6 +166,20 @@ def looks_like_vocab_echo(text, vocab):
     return matched >= 2 and leftover == ""
 
 
+def looks_like_domain_echo(text, domain):
+    """결과가 분야 머리말(domain)을 거의 그대로 뱉은 것이면 context 환각으로 본다.
+
+    공백·구두점을 무시하고 비교한다. domain 이 비었거나 text 가 비면 False.
+    """
+    domain = str(domain).strip()
+    if not domain or not str(text).strip():
+        return False
+    strip_re = r"[\s,.;!?·]+"
+    norm_text = re.sub(strip_re, "", str(text)).lower()
+    norm_domain = re.sub(strip_re, "", domain).lower()
+    return norm_text == norm_domain
+
+
 def looks_like_repetition_hallucination(text):
     """Reject short repeated filler that Qwen can emit when there is no speech."""
     compact = re.sub(r"[\s,.;!?·]+", "", text or "")
@@ -339,14 +353,15 @@ class SpeechTranscriber:
         model = self.get_model()
         language = normalize_language(language)
         vocab = vocabulary.load_vocabulary()
-        # 분명한 말소리일 때만 등록 단어로 편향한다(약하면 context 비워 echo 차단).
-        context = vocabulary.build_context(vocab) if peak >= speech_threshold else ""
+        domain = getattr(self, "domain_context", "")
+        # 분명한 말소리일 때만 등록 단어/분야 머리말로 편향한다(약하면 context 비워 echo 차단).
+        context = vocabulary.build_context(vocab, domain) if peak >= speech_threshold else ""
         results = model.transcribe(audio_path, context=context, language=language)
         if not results:
             return ""
         text = results[0].text.strip()
-        # context 환각(등록 단어만 나옴) 의심 시 → context 없이 다시 받아써 실제 들린 것 우선.
-        if context and looks_like_vocab_echo(text, vocab):
+        # context 환각(등록 단어만 / 분야 머리말 그대로) 의심 시 → context 없이 재전사.
+        if context and (looks_like_vocab_echo(text, vocab) or looks_like_domain_echo(text, domain)):
             plain = model.transcribe(audio_path, context="", language=language)
             text = plain[0].text.strip() if plain else ""
         return text

@@ -160,3 +160,58 @@ def test_transcribe_drops_context_on_weak_audio(tmp_path, monkeypatch):
     out = tr.transcribe_file(str(wav), language="Korean")
     assert out == "녹음 결과"
     assert fake.calls[0]["context"] == ""   # 약한 소리 → context 비움(echo 차단)
+
+
+def test_transcribe_prepends_domain_context(tmp_path, monkeypatch):
+    import numpy as np
+    wd = _load()
+    vp = tmp_path / "vocabulary.json"
+    monkeypatch.setattr(app_paths, "vocabulary_path", lambda: str(vp))
+    vocabulary.save_vocabulary(["녹내장"])
+    wav = tmp_path / "speech.wav"
+    _write_wav(wav, (np.random.RandomState(7).randn(16000) * 5000))
+
+    tr = wd.SpeechTranscriber("cpu", None)
+    tr.domain_context = "수의안과 진료"
+    fake = _FakeModel()
+    monkeypatch.setattr(tr, "get_model", lambda: fake)
+
+    out = tr.transcribe_file(str(wav), language="Korean")
+    assert out == "녹음 결과"
+    assert fake.calls[0]["context"] == "수의안과 진료, 녹내장"
+
+
+def test_looks_like_domain_echo():
+    wd = _load()
+    assert wd.looks_like_domain_echo("수의안과 진료", "수의안과 진료.") is True
+    assert wd.looks_like_domain_echo("녹내장입니다", "수의안과 진료") is False
+    assert wd.looks_like_domain_echo("anything", "") is False
+    assert wd.looks_like_domain_echo("", "수의안과 진료") is False
+
+
+def test_domain_echo_retranscribes_without_context(tmp_path, monkeypatch):
+    import numpy as np
+    wd = _load()
+    vp = tmp_path / "vocabulary.json"
+    monkeypatch.setattr(app_paths, "vocabulary_path", lambda: str(vp))
+    vocabulary.save_vocabulary(["녹내장"])
+    wav = tmp_path / "speech.wav"
+    _write_wav(wav, (np.random.RandomState(8).randn(16000) * 5000))
+
+    class EchoDomainModel:
+        def __init__(self):
+            self.calls = []
+
+        def transcribe(self, audio, context="", language=None, **kw):
+            self.calls.append(context)
+            # context 있으면 분야 머리말을 그대로 뱉음(echo), 없으면 진짜
+            return [_FakeResult("수의안과 진료" if context else "녹내장입니다")]
+
+    tr = wd.SpeechTranscriber("cpu", None)
+    tr.domain_context = "수의안과 진료"
+    fake = EchoDomainModel()
+    monkeypatch.setattr(tr, "get_model", lambda: fake)
+
+    out = tr.transcribe_file(str(wav), language="Korean")
+    assert out == "녹내장입니다"
+    assert fake.calls[0] != "" and fake.calls[1] == ""
