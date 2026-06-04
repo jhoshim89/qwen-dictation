@@ -175,17 +175,23 @@ def looks_like_vocab_echo(text, vocab):
 
 
 def looks_like_domain_echo(text, domain):
-    """결과가 분야 머리말(domain)을 거의 그대로 뱉은 것이면 context 환각으로 본다.
+    """결과가 분야 머리말(domain)을 통째로 또는 그 앞부분을 그대로 뱉은 것이면
+    context 환각(echo)으로 본다.
 
-    공백·구두점을 무시하고 비교한다. domain 이 비었거나 text 가 비면 False.
+    실시간 받아쓰기의 첫 짧은 조각은 분야 문장의 '앞부분'만 새기 쉬우므로, 정확
+    일치뿐 아니라 결과가 분야 문장의 앞부분(prefix)인 경우도 echo 로 본다. 공백·
+    구두점·대시(—,–,-)를 무시하고 비교한다. domain 이 비었거나 text 가 비면 False.
     """
     domain = str(domain).strip()
-    if not domain or not str(text).strip():
+    text = str(text).strip()
+    if not domain or not text:
         return False
-    strip_re = r"[\s,.;!?·]+"
-    norm_text = re.sub(strip_re, "", str(text)).lower()
+    strip_re = r"[\s,.;!?·\-—–]+"
+    norm_text = re.sub(strip_re, "", text).lower()
     norm_domain = re.sub(strip_re, "", domain).lower()
-    return norm_text == norm_domain
+    if not norm_text:
+        return False
+    return norm_domain.startswith(norm_text)
 
 
 def looks_like_repetition_hallucination(text):

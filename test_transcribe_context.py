@@ -189,6 +189,22 @@ def test_looks_like_domain_echo():
     assert wd.looks_like_domain_echo("", "수의안과 진료") is False
 
 
+def test_looks_like_domain_echo_partial_and_dash():
+    wd = _load()
+    DOM = "수의안과 진료와 소프트웨어 개발 — 안과 검사 용어와 프로그래밍 용어 위주"
+    # 분야 문장의 앞부분만 새는 부분 echo (실시간 첫 짧은 조각에서 자주 발생)
+    assert wd.looks_like_domain_echo("수의안과 진료와 소프트웨어 개발", DOM) is True
+    # em-dash 를 빼거나 하이픈으로 바꿔 뱉은 전체 echo
+    assert wd.looks_like_domain_echo(
+        "수의안과 진료와 소프트웨어 개발 안과 검사 용어와 프로그래밍 용어 위주", DOM) is True
+    assert wd.looks_like_domain_echo(
+        "수의안과 진료와 소프트웨어 개발 - 안과 검사 용어와 프로그래밍 용어 위주", DOM) is True
+    # 실제 발화/등록 단어는 보존(echo 아님)
+    assert wd.looks_like_domain_echo("녹내장", DOM) is False
+    assert wd.looks_like_domain_echo("안압", DOM) is False
+    assert wd.looks_like_domain_echo("녹내장 소견이 보입니다", DOM) is False
+
+
 def test_domain_echo_retranscribes_without_context(tmp_path, monkeypatch):
     import numpy as np
     wd = _load()
