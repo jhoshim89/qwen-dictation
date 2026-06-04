@@ -21,6 +21,9 @@ DEFAULTS = {
     "edit_interrupt_mode": "continue",
     # 홀드 키를 떼면 마지막 글자까지 입력한 뒤 자동으로 Enter 를 보낼지.
     "hold_send_enter": True,
+    # 받아쓰기 분야 머리말(자유 문장). 매 변환의 context 앞에 붙어 모델을 그 분야로
+    # 편향한다. 예: "수의안과 진료. 안과 질환과 검사 용어 위주". 빈 문자열이면 미사용.
+    "domain_context": "",
     "max_time_zero_migrated": True,
 }
 
