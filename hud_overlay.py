@@ -20,7 +20,7 @@ LAYOUT:
 - A slim macOS-style status pill shows a tiny reactive voice meter and state text.
 """
 
-PANEL_WIDTH = 104.0
+PANEL_WIDTH = 92.0
 PANEL_HEIGHT = 40.0
 BOTTOM_OFFSET = 86.0
 BAR_CORNER_RADIUS = PANEL_HEIGHT / 2.0
@@ -158,7 +158,7 @@ if _APPKIT_OK:
             # Plain Python str does not expose the AppKit drawing category; wrap
             # it in an NSString so drawAtPoint_withAttributes_ is available.
             NSString.stringWithString_(text).drawAtPoint_withAttributes_(
-                NSMakePoint(44.0, 11.0), attrs
+                NSMakePoint(40.0, 11.0), attrs
             )
 
         def _draw_jelly_rect(self, x, y, width, height, alpha=0.94):

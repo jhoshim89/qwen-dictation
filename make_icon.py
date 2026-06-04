@@ -25,17 +25,15 @@ def draw_app_icon(size):
 
 
 def draw_menubar(size=44):
-    """메뉴바용 흑백 template 이미지(파형 세 줄 + 출력 두 줄)."""
+    """메뉴바용 흑백 template 이미지(HUD와 같은 세 줄 파형)."""
     img = Image.new("RGBA", (size, size), (0, 0, 0, 0))
     d = ImageDraw.Draw(img)
     black = (0, 0, 0, 255)
-    radius = max(1, int(size * .07))
+    radius = max(1, int(size * .045))
     for left, top, right, bottom in (
-        (.10, .30, .23, .70),
-        (.29, .16, .42, .84),
-        (.48, .30, .61, .70),
-        (.69, .34, .92, .47),
-        (.69, .56, .92, .69),
+        (.28, .35, .37, .65),
+        (.455, .22, .545, .78),
+        (.63, .35, .72, .65),
     ):
         d.rounded_rectangle(
             (size * left, size * top, size * right, size * bottom),
