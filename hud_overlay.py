@@ -79,10 +79,10 @@ if _APPKIT_OK:
 
     # Quiet Dictation palette: darker and slimmer so it reads as a system HUD,
     # not as a decorative badge over the user's writing surface.
-    BG_RGBA = (34, 31, 32, 0.78)
+    BG_RGBA = (34, 31, 32, 0.58)
     BORDER_RGBA = (255, 255, 255, 0.11)
     TEXT_RGBA = (255, 250, 248, 0.94)
-    JELLY_RGBA = (255, 111, 133, 0.96)
+    JELLY_RGBA = (255, 111, 133, 0.86)
     JELLY_HALO_RGBA = (255, 111, 133, 0.13)
     JELLY_HIGHLIGHT_RGBA = (255, 190, 201, 0.64)
     class _OverlayView(NSView):
