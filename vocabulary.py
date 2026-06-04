@@ -45,7 +45,14 @@ def save_vocabulary(words):
 MAX_CONTEXT_TERMS = 24
 
 
-def build_context(words, limit=MAX_CONTEXT_TERMS):
-    """단어 목록 → model.transcribe 의 context 문자열. 앞에서부터 limit 개만 쓴다."""
+def build_context(words, domain="", limit=MAX_CONTEXT_TERMS):
+    """단어 목록 → model.transcribe 의 context 문자열.
+
+    domain 이 있으면 분야 머리말로 맨 앞에 붙여 모델을 그 분야로 편향한다(예:
+    "수의안과 진료"). 단어는 앞에서부터 limit 개만 쓴다 — domain 은 그 한도에
+    포함되지 않는다. domain 이 비면 기존과 동일하게 단어 목록만 반환한다.
+    """
+    domain = str(domain).strip()
     terms = [w for w in words if w]
-    return ", ".join(terms[:limit])
+    parts = ([domain] if domain else []) + terms[:limit]
+    return ", ".join(parts)
