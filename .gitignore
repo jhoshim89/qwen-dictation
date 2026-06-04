@@ -10,3 +10,6 @@ app_main.py
 .claude/
 
 .superpowers/
+
+# 별도 프로젝트(Postiz labpc 배포) 산출물 — 이 저장소와 무관
+.postiz-deploy/
