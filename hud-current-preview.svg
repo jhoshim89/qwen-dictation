@@ -1,0 +1,35 @@
+<svg xmlns="http://www.w3.org/2000/svg" width="960" height="540" viewBox="0 0 960 540">
+  <defs>
+    <filter id="hudShadow" x="-80%" y="-120%" width="260%" height="340%">
+      <feDropShadow dx="0" dy="10" stdDeviation="12" flood-color="#1d1718" flood-opacity=".16"/>
+    </filter>
+    <style>
+      .ui{font-family:-apple-system,BlinkMacSystemFont,"Pretendard","Segoe UI",sans-serif}
+      .body{font:500 20px -apple-system,BlinkMacSystemFont,"Pretendard","Segoe UI",sans-serif;fill:#4b4243}
+      .muted{font:500 15px -apple-system,BlinkMacSystemFont,"Pretendard","Segoe UI",sans-serif;fill:#9a8e8e}
+      .hud{font:650 13px -apple-system,BlinkMacSystemFont,"Pretendard","Segoe UI",sans-serif;fill:rgba(255,250,248,.94)}
+    </style>
+  </defs>
+
+  <rect width="960" height="540" fill="#f7f3ec"/>
+  <rect x="128" y="78" width="704" height="376" rx="18" fill="#fffdfb" stroke="#e2d9d1"/>
+  <circle cx="158" cy="108" r="6" fill="#ff6b65"/>
+  <circle cx="180" cy="108" r="6" fill="#ffbe4b"/>
+  <circle cx="202" cy="108" r="6" fill="#29c85f"/>
+
+  <rect x="184" y="170" width="592" height="170" rx="18" fill="#ffffff" stroke="#ded6cf"/>
+  <text x="222" y="224" class="body">메시지를 입력하세요</text>
+  <rect x="222" y="255" width="315" height="13" rx="6.5" fill="#eee8e2"/>
+  <rect x="222" y="289" width="416" height="13" rx="6.5" fill="#eee8e2"/>
+  <rect x="222" y="323" width="250" height="13" rx="6.5" fill="#eee8e2"/>
+
+  <text x="184" y="388" class="muted">현재 코드 기준: 104 x 40, 배경 alpha 0.78, 중앙 하단</text>
+
+  <g transform="translate(428 362)" filter="url(#hudShadow)">
+    <rect width="104" height="40" rx="20" fill="#221f20" fill-opacity=".78" stroke="#ffffff" stroke-opacity=".11"/>
+    <rect x="14" y="17.5" width="4" height="5" rx="2" fill="#ff6f85" opacity=".96"/>
+    <rect x="22" y="16" width="4" height="8" rx="2" fill="#ff6f85" opacity=".96"/>
+    <rect x="30" y="17.5" width="4" height="5" rx="2" fill="#ff6f85" opacity=".96"/>
+    <text x="44" y="26" class="hud">듣는 중</text>
+  </g>
+</svg>
