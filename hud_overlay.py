@@ -128,6 +128,8 @@ if _APPKIT_OK:
             self._blink_on = True
             self._label_text = "듣는 중"
             self._corner_radius = BAR_CORNER_RADIUS
+            self._compact = False
+            self._dimmed = False
             return self
 
         def setCornerRadius_(self, r):
@@ -159,6 +161,14 @@ if _APPKIT_OK:
             self._label_text = text
             self.setNeedsDisplay_(True)
 
+        def setCompact_(self, flag):
+            self._compact = bool(flag)
+            self.setNeedsDisplay_(True)
+
+        def setDimmed_(self, flag):
+            self._dimmed = bool(flag)
+            self.setNeedsDisplay_(True)
+
         def drawRect_(self, rect):
             try:
                 self._draw()
@@ -170,6 +180,17 @@ if _APPKIT_OK:
             bounds = self.bounds()
             cy = bounds.size.height / 2.0
             heights = jelly_bar_heights(self._level)
+
+            if self._compact:
+                total = (ICON_BAR_WIDTH * 3) + (ICON_BAR_GAP * 2)
+                start_x = (bounds.size.width - total) / 2.0
+                alpha = 0.5 if self._dimmed else 0.94
+                for index, height in enumerate(heights):
+                    x = start_x + (index * (ICON_BAR_WIDTH + ICON_BAR_GAP))
+                    y = cy - (height / 2.0)
+                    self._draw_jelly_rect(x, y, ICON_BAR_WIDTH, height, alpha=alpha)
+                return
+
             bar_w = 4.0
             gap = 4.0
             start_x = 14.0
