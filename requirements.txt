@@ -1,6 +1,7 @@
 accelerate
 flask
 hf_transfer
+huggingface_hub
 modelscope
 numpy
 pyaudio

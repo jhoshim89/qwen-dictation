@@ -8,11 +8,24 @@ Local macOS dictation MVP powered by Qwen3-ASR. It runs from the menu bar, opens
 
 ## Install
 
+One-line install for a new Mac:
+
+```bash
+curl -fsSL https://raw.githubusercontent.com/jhoshim89/qwen-dictation/feat/bottom-overlay/install.sh | bash
+```
+
+This installs PortAudio with Homebrew, clones the app into
+`~/.qwen-dictation/source`, creates a Python virtual environment, downloads
+`Qwen/Qwen3-ASR-1.7B` into the Hugging Face cache, and launches the menu-bar app.
+
+Manual development install:
+
 ```bash
 brew install portaudio
 python3 -m venv venv
 source venv/bin/activate
 pip install -r requirements.txt
+HF_HUB_DISABLE_XET=1 HF_HUB_ENABLE_HF_TRANSFER=1 huggingface-cli download Qwen/Qwen3-ASR-1.7B
 ```
 
 ## Run
@@ -106,13 +119,13 @@ print("imports ok", torch.backends.mps.is_available())
 PY
 ```
 
-Pre-download the default model if the first run is slow:
+Pre-download the default model without launching the app:
 
 ```bash
 HF_HUB_DISABLE_XET=1 HF_HUB_ENABLE_HF_TRANSFER=1 ./venv/bin/huggingface-cli download Qwen/Qwen3-ASR-1.7B
 ```
 
-If that is slow or stalls, use the resumable parallel downloader:
+Equivalent Python helper:
 
 ```bash
 ./venv/bin/python download_qwen_model.py
