@@ -100,7 +100,9 @@ def post_config():
                 app_instance.recorder.transcriber.domain_context = app_instance.domain_context
         if 'hud_mode' in data:
             m = str(data['hud_mode'])
-            app_instance.hud_mode = m if m in ("pill", "pinned", "cursor") else "pill"
+            if m == "cursor":  # 옛 값 호환
+                m = "caret"
+            app_instance.hud_mode = m if m in ("pill", "pinned", "caret") else "pill"
         if 'edit_interrupt_mode' in data:
             mode = str(data['edit_interrupt_mode'])
             app_instance.edit_interrupt_mode = mode if mode in ("continue", "stop") else "continue"

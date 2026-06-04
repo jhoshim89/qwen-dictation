@@ -797,8 +797,8 @@ class StatusBarApp(rumps.App):
                 minutes, seconds = divmod(elapsed, 60)
                 self.title = f"({minutes:02d}:{seconds:02d}) 🔴"
                 ov.update(audio_level.read_level(), elapsed)
-                if mode == "cursor":
-                    ov.reposition_to_cursor()
+                if mode == "caret":
+                    ov.reposition_to_caret()
                 ov.set_processing(False)
                 ov.show_status("듣는 중")
                 if mode == "pinned":

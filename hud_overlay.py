@@ -40,18 +40,32 @@ def jelly_bar_heights(level):
 
 
 # 표시 모드와 아이콘(컴팩트) 사양. AppKit 없이도 import/테스트되도록 모듈 상단에 둔다.
-HUD_MODES = ("pill", "pinned", "cursor")
+# "caret" = 글자가 입력되는 텍스트 커서 위치를 따라간다(마우스 커서 아님).
+HUD_MODES = ("pill", "pinned", "caret")
 ICON_SIZE = 36.0
 ICON_BAR_WIDTH = 3.5
 ICON_BAR_GAP = 2.5
 PIN_DEFAULT_MARGIN = 24.0
-CURSOR_OFFSET_X = 14.0
-CURSOR_OFFSET_Y = 6.0
+CARET_GAP = 8.0  # 텍스트 커서 오른쪽으로 이만큼 띄워 아이콘을 둔다
 
 
 def normalize_hud_mode(value):
-    """알 수 없는 값은 안전하게 'pill'로 떨어뜨린다."""
+    """알 수 없는 값은 안전하게 'pill'로 떨어뜨린다. 옛 값 'cursor'는 'caret'로 옮긴다."""
+    if value == "cursor":
+        return "caret"
     return value if value in HUD_MODES else "pill"
+
+
+def caret_icon_origin(caret_rect_topleft, main_screen_height, icon_size, gap=CARET_GAP):
+    """텍스트 커서(caret)의 화면 사각형을 받아 아이콘을 둘 AppKit 좌표(좌하단 원점)를 돌려준다.
+
+    caret_rect_topleft = (x, y, w, h). AX가 주는 좌표는 주 모니터 좌상단 원점이라
+    y를 뒤집어 Cocoa(좌하단 원점)로 바꾼다. 아이콘은 커서 오른쪽, 세로 중앙에 둔다."""
+    cx, cy, cw, ch = caret_rect_topleft
+    appkit_y = main_screen_height - cy - ch
+    x = cx + cw + gap
+    y = appkit_y + (ch - icon_size) / 2.0
+    return float(x), float(y)
 
 
 def clamp_to_visible(x, y, width, height, screen_boxes):
@@ -99,6 +113,25 @@ try:
 except Exception as _exc:  # pragma: no cover - depends on runtime env
     print(f"hud_overlay: AppKit import failed, overlay disabled: {_exc}")
     _APPKIT_OK = False
+
+
+# 텍스트 커서(caret) 위치 추적용 접근성 API. 별도 guard: 실패해도 오버레이는 살아있고
+# caret 모드만 폴백한다. 이 프로세스가 손쉬운 사용 권한이 있어야 실제 좌표가 나온다.
+try:
+    from ApplicationServices import (
+        AXUIElementCreateSystemWide,
+        AXUIElementCopyAttributeValue,
+        AXUIElementCopyParameterizedAttributeValue,
+        AXValueGetValue,
+        kAXFocusedUIElementAttribute,
+        kAXSelectedTextRangeAttribute,
+        kAXBoundsForRangeParameterizedAttribute,
+        kAXValueCGRectType,
+    )
+    _AX_OK = True
+except Exception as _ax_exc:  # pragma: no cover - depends on runtime env
+    print(f"hud_overlay: Accessibility import failed, caret follow disabled: {_ax_exc}")
+    _AX_OK = False
 
 
 if _APPKIT_OK:
@@ -243,6 +276,7 @@ class DictationOverlay:
         self._screen_key = None
         self._mode = "pill"
         self._pin_xy = None
+        self._last_caret_xy = None
         if not _APPKIT_OK:
             return
         try:
@@ -313,25 +347,82 @@ class DictationOverlay:
             if is_pinned:
                 x, y = self._resolve_pin_xy(pin_xy)
                 self._panel.setFrame_display_(NSMakeRect(x, y, ICON_SIZE, ICON_SIZE), True)
-            else:  # cursor
+            else:  # caret(타이핑되는 텍스트 커서 위치)
                 self._panel.setFrame_display_(NSMakeRect(0, 0, ICON_SIZE, ICON_SIZE), True)
-                self.reposition_to_cursor()
+                self.reposition_to_caret()
         except Exception as exc:
             print(f"hud_overlay: set_mode error: {exc}")
 
-    def reposition_to_cursor(self):
-        if self._panel is None or self._mode != "cursor":
+    def _main_screen_height(self):
+        try:
+            screens = NSScreen.screens()
+            if screens and len(screens):
+                return float(screens[0].frame().size.height)
+        except Exception:
+            pass
+        return 900.0
+
+    def _caret_rect_topleft(self):
+        """포커스된 입력의 텍스트 커서 화면 사각형(좌상단 원점) (x,y,w,h) 또는 None.
+        앱이 caret 위치를 안 내주거나 권한이 없으면 None."""
+        if not _AX_OK:
+            return None
+        try:
+            sysw = AXUIElementCreateSystemWide()
+            err, focused = AXUIElementCopyAttributeValue(
+                sysw, kAXFocusedUIElementAttribute, None)
+            if err != 0 or focused is None:
+                return None
+            err, rng = AXUIElementCopyAttributeValue(
+                focused, kAXSelectedTextRangeAttribute, None)
+            if err != 0 or rng is None:
+                return None
+            err, bounds = AXUIElementCopyParameterizedAttributeValue(
+                focused, kAXBoundsForRangeParameterizedAttribute, rng, None)
+            if err != 0 or bounds is None:
+                return None
+            ok, rect = AXValueGetValue(bounds, kAXValueCGRectType, None)
+            if not ok:
+                return None
+            return (float(rect.origin.x), float(rect.origin.y),
+                    float(rect.size.width), float(rect.size.height))
+        except Exception as exc:
+            print(f"hud_overlay: caret query error: {exc}")
+            return None
+
+    def _clamp_into_some_screen(self, x, y):
+        boxes = self._screen_boxes_list()
+        cx, cy = x + ICON_SIZE / 2.0, y + ICON_SIZE / 2.0
+        target = next(((ox, oy, sw, sh) for ox, oy, sw, sh in boxes
+                       if ox <= cx <= ox + sw and oy <= cy <= oy + sh), None)
+        if target is None and boxes:
+            target = boxes[0]
+        if target is None:
+            return x, y
+        ox, oy, sw, sh = target
+        x = min(max(x, ox), ox + sw - ICON_SIZE)
+        y = min(max(y, oy), oy + sh - ICON_SIZE)
+        return x, y
+
+    def reposition_to_caret(self):
+        if self._panel is None or self._mode != "caret":
             return
         try:
-            sw, sh, ox, oy = self._screen_box()
-            p = NSEvent.mouseLocation()
-            x = p.x + CURSOR_OFFSET_X
-            y = p.y - ICON_SIZE - CURSOR_OFFSET_Y
-            x = min(max(x, ox), ox + sw - ICON_SIZE)
-            y = min(max(y, oy), oy + sh - ICON_SIZE)
+            rect = self._caret_rect_topleft()
+            if rect is not None:
+                x, y = caret_icon_origin(rect, self._main_screen_height(), ICON_SIZE)
+                self._last_caret_xy = (x, y)
+            elif self._last_caret_xy is not None:
+                x, y = self._last_caret_xy
+            else:
+                # 폴백: caret을 못 찾으면 포인터 화면 하단 중앙(마우스 추적 아님)
+                sw, sh, ox, oy = self._screen_box()
+                x = ox + (sw - ICON_SIZE) / 2.0
+                y = oy + PIN_DEFAULT_MARGIN
+            x, y = self._clamp_into_some_screen(x, y)
             self._panel.setFrameOrigin_(NSMakePoint(x, y))
         except Exception as exc:
-            print(f"hud_overlay: reposition_to_cursor error: {exc}")
+            print(f"hud_overlay: reposition_to_caret error: {exc}")
 
     def current_origin(self):
         if self._panel is None or self._mode != "pinned" or not self._visible:
