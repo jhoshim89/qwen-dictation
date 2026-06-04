@@ -20,7 +20,7 @@ LAYOUT:
 - A slim macOS-style status pill shows a tiny reactive voice meter and state text.
 """
 
-PANEL_WIDTH = 156.0
+PANEL_WIDTH = 104.0
 PANEL_HEIGHT = 40.0
 BOTTOM_OFFSET = 86.0
 BAR_CORNER_RADIUS = PANEL_HEIGHT / 2.0
@@ -79,8 +79,8 @@ if _APPKIT_OK:
 
     # Quiet Dictation palette: darker and slimmer so it reads as a system HUD,
     # not as a decorative badge over the user's writing surface.
-    BG_RGBA = (34, 31, 32, 0.88)
-    BORDER_RGBA = (255, 255, 255, 0.14)
+    BG_RGBA = (34, 31, 32, 0.78)
+    BORDER_RGBA = (255, 255, 255, 0.11)
     TEXT_RGBA = (255, 250, 248, 0.94)
     JELLY_RGBA = (255, 111, 133, 0.96)
     JELLY_HALO_RGBA = (255, 111, 133, 0.13)
@@ -141,7 +141,7 @@ if _APPKIT_OK:
             heights = jelly_bar_heights(self._level)
             bar_w = 4.0
             gap = 4.0
-            start_x = 18.0
+            start_x = 14.0
 
             for index, height in enumerate(heights):
                 x = start_x + (index * (bar_w + gap))
@@ -158,7 +158,7 @@ if _APPKIT_OK:
             # Plain Python str does not expose the AppKit drawing category; wrap
             # it in an NSString so drawAtPoint_withAttributes_ is available.
             NSString.stringWithString_(text).drawAtPoint_withAttributes_(
-                NSMakePoint(52.0, 11.0), attrs
+                NSMakePoint(44.0, 11.0), attrs
             )
 
         def _draw_jelly_rect(self, x, y, width, height, alpha=0.94):

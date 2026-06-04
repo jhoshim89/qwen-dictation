@@ -69,7 +69,7 @@ def test_contains_point_selects_monitor_bounds():
 
 
 def test_recording_overlay_is_lifted_bottom_center_status_pill():
-    assert hud_overlay.PANEL_WIDTH == 156.0
+    assert hud_overlay.PANEL_WIDTH == 104.0
     assert hud_overlay.PANEL_HEIGHT == 40.0
     assert hud_overlay.BOTTOM_OFFSET == 86.0
 

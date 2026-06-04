@@ -340,10 +340,74 @@ def test_stream_loop_no_enter_when_flag_unset(monkeypatch):
     assert rec.transcriber.pykeyboard.events == []
 
 
-def test_streaming_timing_defaults_measured_on_this_machine():
+def test_streaming_timing_defaults_stay_responsive():
     wd = _load()
-    # Measured Qwen inference ~0.1s/pass (mps) -> poll faster than generic 0.8s default.
+    # Measured Qwen inference ~0.1s/pass (mps) -> poll well under the generic 0.8s
+    # default so the last words show quickly. Values are hand-tuned; assert the
+    # design intent (responsive bounds) rather than exact numbers so tuning is free.
     # See docs/superpowers/plans/2026-06-04-streaming-dictation-defaults.md
-    assert wd.STREAM_INTERVAL == 0.4
-    assert wd.PAUSE_SILENCE_SEC == 0.4
-    assert wd.MAX_WINDOW_SEC == 12.0
+    assert 0 < wd.STREAM_INTERVAL <= 0.5
+    assert 0.2 <= wd.PAUSE_SILENCE_SEC <= 0.6
+    assert 4.0 <= wd.MAX_WINDOW_SEC <= 20.0
+
+
+def test_stream_loop_wakes_immediately_on_stop_signal(monkeypatch):
+    wd = _load()
+    rec = _kbd_recorder(wd)
+    rec.recording = True
+    rec._wake.set()  # 정지 신호가 이미 와 있는 상태
+    rec.finalize_on_stop = True
+    rec.send_enter_on_stop = False
+    ticks = []
+    monkeypatch.setattr(rec, "_stream_tick", lambda *a, **k: ticks.append(k))
+    monkeypatch.setattr(wd.dictation_history, "add_history", lambda *_: None)
+    rec._stream_loop("ko")
+    # 일반 틱 없이 마지막 틱(allow_stopped=True) 한 번만 돈다.
+    assert len(ticks) == 1
+    assert ticks[0].get("allow_stopped") is True
+
+
+def test_enter_skips_settle_when_final_tick_adds_nothing(monkeypatch):
+    wd = _load()
+    rec = _kbd_recorder(wd)
+    rec.recording = False
+    rec.finalize_on_stop = True
+    rec.send_enter_on_stop = True
+    monkeypatch.setattr(rec, "_stream_tick", lambda *a, **k: None)  # 새 글자 없음
+    monkeypatch.setattr(wd.dictation_history, "add_history", lambda *_: None)
+    settles = []
+    monkeypatch.setattr(rec, "_send_enter", lambda settle=0.03: settles.append(settle))
+    rec._stream_loop("ko")
+    assert settles == [0.0]  # 변화 없음 → 곧장 엔터
+
+
+def test_enter_uses_settle_when_final_tick_types_new_text(monkeypatch):
+    wd = _load()
+    rec = _kbd_recorder(wd)
+    rec.recording = False
+    rec.finalize_on_stop = True
+    rec.send_enter_on_stop = True
+
+    def tick(*a, **k):
+        rec.last_typed = "끝말"  # 마지막 틱이 새 글자를 침
+
+    monkeypatch.setattr(rec, "_stream_tick", tick)
+    monkeypatch.setattr(wd.dictation_history, "add_history", lambda *_: None)
+    settles = []
+    monkeypatch.setattr(rec, "_send_enter", lambda settle=0.03: settles.append(settle))
+    rec._stream_loop("ko")
+    assert settles and settles[0] > 0  # 새 글자 있음 → 반영 대기 후 엔터
+
+
+def test_history_saved_after_enter(monkeypatch):
+    wd = _load()
+    rec = _kbd_recorder(wd)
+    rec.recording = False
+    rec.finalize_on_stop = True
+    rec.send_enter_on_stop = True
+    monkeypatch.setattr(rec, "_stream_tick", lambda *a, **k: None)
+    order = []
+    monkeypatch.setattr(rec, "_send_enter", lambda settle=0.03: order.append("enter"))
+    monkeypatch.setattr(wd.dictation_history, "add_history", lambda *_: order.append("history"))
+    rec._stream_loop("ko")
+    assert order == ["enter", "history"]  # 엔터가 기록 저장보다 먼저

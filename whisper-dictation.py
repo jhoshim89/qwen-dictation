@@ -70,8 +70,8 @@ DEFAULT_MIN_VOLUME = 35
 # 이 맥에서 한 번 받아쓰는 데 약 0.1초밖에 안 걸린다(길이 1~8초 측정, mps). 그래서
 # 끝의 기다림은 모델 속도가 아니라 '확인 간격'이 좌우한다. 간격을 짧게 둬 말끝이 빨리
 # 들어오게 한다. (일반 권장값 0.8초는 모델이 느릴 때 얘기라 우리엔 과하게 보수적)
-STREAM_INTERVAL = 0.4        # 초: 스트리밍 갱신 주기(추론 ~0.1초라 여유 충분)
-PAUSE_SILENCE_SEC = 0.4      # 초: 끝이 이만큼 조용하면 쉼 → 확정(말끝 지연의 핵심 손잡이)
+STREAM_INTERVAL = 0.25       # 초: 스트리밍 갱신 주기(추론 ~0.1초라 자주 확인해도 안 밀림 → 마지막 말이 빨리 뜸)
+PAUSE_SILENCE_SEC = 0.3      # 초: 끝이 이만큼 조용하면 쉼 → 확정(단어 사이 멈춤과 구분되는 바닥값)
 # 매 틱마다 '확정 이후의 창 전체'를 다시 받아쓴다. 보통은 쉼(PAUSE_SILENCE_SEC)에서 먼저
 # 확정되므로 이 상한은 거의 안 걸린다. Whisper 계열 30초 한계보다 한참 아래로 두는 안전망.
 MAX_WINDOW_SEC = 12.0        # 초: 창이 이보다 길면 강제 확정(드물게 걸리는 안전망)
@@ -373,6 +373,9 @@ class Recorder:
         self.self_type_guard_until = 0.0
         # 홀드 키를 떼서 정상 종료할 때만, 마지막 글자 입력 뒤 Enter 를 보낼지.
         self.send_enter_on_stop = False
+        # 스트리밍 루프의 주기 대기를 즉시 깨우는 정지 신호. 키를 떼면 set 되어
+        # 다음 확인 주기를 기다리지 않고 곧장 마지막 틱(+Enter)으로 넘어간다.
+        self._wake = threading.Event()
 
     def rebaseline(self):
         """입력창 글자에 대한 소유권을 내려놓는다. 다음 발화는 빈 기준에서 시작해
@@ -386,6 +389,7 @@ class Recorder:
         self.finalize_on_stop = True
         self.send_enter_on_stop = False
         self.rebaseline_pending = False
+        self._wake.clear()
         self.recording = True
         self.record_thread = threading.Thread(target=self._record_impl, args=(language,), daemon=True)
         self.record_thread.start()
@@ -398,6 +402,8 @@ class Recorder:
         # 홀드 해제로 정상 종료할 때만 마지막 글자 입력 뒤 Enter 를 보낸다.
         self.send_enter_on_stop = bool(send_enter and finalize)
         self.recording = False
+        # 스트리밍 루프가 주기 대기 중이면 즉시 깨워 마지막 처리를 바로 시작한다.
+        self._wake.set()
         audio_level.clear_level()
 
     def _record_impl(self, language):
@@ -519,12 +525,17 @@ class Recorder:
             with self.audio_lock:
                 self.window_start = frame_count
 
-    def _send_enter(self):
-        """마지막 글자까지 입력된 뒤 Enter 를 보낸다(홀드 떼면 자동 전송)."""
+    def _send_enter(self, settle=0.03):
+        """마지막 글자까지 입력된 뒤 Enter 를 보낸다(홀드 떼면 자동 전송).
+
+        settle: 직전에 새로 친 글자가 OS 에 반영될 시간을 주는 짧은 대기. 마지막
+        틱에서 새로 친 글자가 없으면(이미 말 끝나 쉰 경우) 0 으로 두고 곧장 보낸다.
+        """
         # 합성 Enter 가 수동 편집으로 오인되지 않도록 가드 시각을 잠깐 세운다.
         self.self_type_guard_until = time.time() + 0.5
         try:
-            time.sleep(0.05)  # 직전 타이핑 합성 이벤트 flush
+            if settle > 0:
+                time.sleep(settle)  # 직전 타이핑 합성 이벤트 flush
             kb = self.transcriber.pykeyboard
             kb.press(keyboard.Key.enter)
             kb.release(keyboard.Key.enter)
@@ -536,21 +547,27 @@ class Recorder:
         self.committed_text = ""
         self.last_typed = ""
         while self.recording:
-            time.sleep(STREAM_INTERVAL)
+            # 주기마다 한 번씩 틱. 단, 도중에 정지 신호가 오면 즉시 깨어나
+            # 남은 대기 없이 곧장 마지막 틱으로 넘어간다(키 떼고 Enter 지연 최소화).
+            if self._wake.wait(STREAM_INTERVAL):
+                break
             try:
                 self._stream_tick(language)
             except Exception as exc:
                 print(f"Streaming tick error: {exc}")
         # 일반 정지는 남은 말을 한 번 반영한다. Enter 전송으로 멈춘 경우에는
         # 전송 뒤 새 입력창에 늦은 글자가 들어가지 않도록 마지막 틱을 생략한다.
+        typed_before = self.last_typed
         if self.finalize_on_stop:
             try:
                 self._stream_tick(language, allow_stopped=True)
             except Exception as exc:
                 print(f"Streaming final tick error: {exc}")
-        dictation_history.add_history(self.last_typed)
+        # Enter 를 먼저 보내고(사용자가 체감하는 지연), 기록 저장은 그 뒤로 미룬다.
+        # 마지막 틱에서 새로 친 글자가 있으면 짧은 반영 대기를, 없으면 곧장 보낸다.
         if getattr(self, "send_enter_on_stop", False):
-            self._send_enter()
+            self._send_enter(settle=0.03 if self.last_typed != typed_before else 0.0)
+        dictation_history.add_history(self.last_typed)
 
 
 class MultiHotkeyListener:
