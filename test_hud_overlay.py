@@ -6,6 +6,8 @@ class _FakePanel:
     def __init__(self):
         self.hidden = 0
         self.shown = 0
+        self.ignores_mouse = None
+        self.movable = None
 
     def orderOut_(self, _):
         self.hidden += 1
@@ -13,13 +15,27 @@ class _FakePanel:
     def orderFrontRegardless(self):
         self.shown += 1
 
+    def setIgnoresMouseEvents_(self, flag):
+        self.ignores_mouse = flag
+
+    def setMovableByWindowBackground_(self, flag):
+        self.movable = flag
+
 
 class _FakeView:
     def __init__(self):
         self.labels = []
+        self.compact = None
+        self.dimmed = None
 
     def setLabelText_(self, text):
         self.labels.append(text)
+
+    def setCompact_(self, flag):
+        self.compact = flag
+
+    def setDimmed_(self, flag):
+        self.dimmed = flag
 
 
 def _overlay(visible=False):
@@ -30,6 +46,8 @@ def _overlay(visible=False):
     overlay._resizes = []
     overlay._resize_panel = lambda width, height, radius: overlay._resizes.append((width, height, radius))
     overlay._reposition_for_pointer_screen = lambda: None
+    overlay._mode = "pill"
+    overlay._pin_xy = None
     return overlay
 
 
@@ -112,3 +130,25 @@ def test_clamp_to_visible_none_returns_default():
 
 def test_clamp_to_visible_no_screens_returns_origin():
     assert hud_overlay.clamp_to_visible(None, None, 36.0, 36.0, []) == (0.0, 0.0)
+
+
+def test_set_mode_pill_uses_full_pill_and_ignores_mouse():
+    overlay = _overlay()
+    overlay._mode = "cursor"
+    overlay.set_mode("pill", None)
+    assert overlay._mode == "pill"
+    assert overlay._view.compact is False
+    assert overlay._panel.ignores_mouse is True
+    assert overlay._panel.movable is False
+
+
+def test_set_mode_unknown_falls_back_to_pill():
+    overlay = _overlay()
+    overlay.set_mode("bogus", None)
+    assert overlay._mode == "pill"
+
+
+def test_current_origin_none_when_not_pinned_or_hidden():
+    overlay = _overlay(visible=False)
+    overlay._mode = "pinned"
+    assert overlay.current_origin() is None

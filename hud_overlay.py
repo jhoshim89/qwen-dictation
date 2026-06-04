@@ -241,6 +241,8 @@ class DictationOverlay:
         self._blink_on = True
         self._visible = False
         self._screen_key = None
+        self._mode = "pill"
+        self._pin_xy = None
         if not _APPKIT_OK:
             return
         try:
@@ -270,6 +272,83 @@ class DictationOverlay:
             frame.origin.x <= point.x < frame.origin.x + frame.size.width
             and frame.origin.y <= point.y < frame.origin.y + frame.size.height
         )
+
+    def _screen_boxes_list(self):
+        """모든 화면의 visibleFrame을 (ox, oy, sw, sh) 리스트로. 주 모니터가 첫 번째."""
+        boxes = []
+        for s in (NSScreen.screens() or []):
+            f = s.visibleFrame()
+            boxes.append((f.origin.x, f.origin.y, f.size.width, f.size.height))
+        return boxes
+
+    def _resolve_pin_xy(self, pin_xy):
+        boxes = self._screen_boxes_list()
+        if pin_xy:
+            px, py = pin_xy
+        else:
+            px, py = None, None
+        return clamp_to_visible(px, py, ICON_SIZE, ICON_SIZE, boxes)
+
+    def set_mode(self, mode, pin_xy=None):
+        if self._panel is None or self._view is None:
+            return
+        mode = normalize_hud_mode(mode)
+        self._mode = mode
+        self._pin_xy = pin_xy
+        try:
+            if mode == "pill":
+                self._view.setCompact_(False)
+                self._panel.setIgnoresMouseEvents_(True)
+                self._panel.setMovableByWindowBackground_(False)
+                self._screen_key = None  # 다음 show에서 하단중앙 재배치 강제
+                self._resize_panel(PANEL_WIDTH, PANEL_HEIGHT, BAR_CORNER_RADIUS)
+                return
+            # 아이콘(컴팩트) 모드 공통
+            self._view.setCompact_(True)
+            is_pinned = (mode == "pinned")
+            self._panel.setIgnoresMouseEvents_(not is_pinned)
+            self._panel.setMovableByWindowBackground_(is_pinned)
+            self._view.setFrame_(NSMakeRect(0, 0, ICON_SIZE, ICON_SIZE))
+            self._view.setCornerRadius_(ICON_SIZE / 2.0)
+            if is_pinned:
+                x, y = self._resolve_pin_xy(pin_xy)
+                self._panel.setFrame_display_(NSMakeRect(x, y, ICON_SIZE, ICON_SIZE), True)
+            else:  # cursor
+                self._panel.setFrame_display_(NSMakeRect(0, 0, ICON_SIZE, ICON_SIZE), True)
+                self.reposition_to_cursor()
+        except Exception as exc:
+            print(f"hud_overlay: set_mode error: {exc}")
+
+    def reposition_to_cursor(self):
+        if self._panel is None or self._mode != "cursor":
+            return
+        try:
+            sw, sh, ox, oy = self._screen_box()
+            p = NSEvent.mouseLocation()
+            x = p.x + CURSOR_OFFSET_X
+            y = p.y - ICON_SIZE - CURSOR_OFFSET_Y
+            x = min(max(x, ox), ox + sw - ICON_SIZE)
+            y = min(max(y, oy), oy + sh - ICON_SIZE)
+            self._panel.setFrameOrigin_(NSMakePoint(x, y))
+        except Exception as exc:
+            print(f"hud_overlay: reposition_to_cursor error: {exc}")
+
+    def current_origin(self):
+        if self._panel is None or self._mode != "pinned" or not self._visible:
+            return None
+        try:
+            f = self._panel.frame()
+            return (float(f.origin.x), float(f.origin.y))
+        except Exception:
+            return None
+
+    def set_processing(self, flag):
+        if self._view is None:
+            return
+        try:
+            self._view.setDimmed_(flag)
+        except Exception as exc:
+            print(f"hud_overlay: set_processing error: {exc}")
 
     def _current_screen_key(self):
         sw, sh, ox, oy = self._screen_box()
@@ -326,7 +405,8 @@ class DictationOverlay:
         if self._panel is None:
             return
         try:
-            self._reposition_for_pointer_screen()
+            if self._mode == "pill":
+                self._reposition_for_pointer_screen()
             if not self._visible:
                 self._panel.orderFrontRegardless()
                 self._visible = True
