@@ -199,10 +199,16 @@ def test_looks_like_domain_echo_partial_and_dash():
         "수의안과 진료와 소프트웨어 개발 안과 검사 용어와 프로그래밍 용어 위주", DOM) is True
     assert wd.looks_like_domain_echo(
         "수의안과 진료와 소프트웨어 개발 - 안과 검사 용어와 프로그래밍 용어 위주", DOM) is True
+    # 실제 단어와 분야 문장이 섞여 새는 leakage(혼합) — 실사용에서 가장 흔한 증상
+    assert wd.looks_like_domain_echo(
+        "녹내장 수의안과 진료와 소프트웨어 개발. 안과 검사 용어와 프로그래밍 용어 위주", DOM) is True
+    assert wd.looks_like_domain_echo(
+        "수의안과 진료와 소프트웨어 개발 녹내장", DOM) is True
     # 실제 발화/등록 단어는 보존(echo 아님)
     assert wd.looks_like_domain_echo("녹내장", DOM) is False
     assert wd.looks_like_domain_echo("안압", DOM) is False
     assert wd.looks_like_domain_echo("녹내장 소견이 보입니다", DOM) is False
+    assert wd.looks_like_domain_echo("오늘 점심 뭐 먹지", DOM) is False
 
 
 def test_domain_echo_retranscribes_without_context(tmp_path, monkeypatch):
@@ -220,8 +226,10 @@ def test_domain_echo_retranscribes_without_context(tmp_path, monkeypatch):
 
         def transcribe(self, audio, context="", language=None, **kw):
             self.calls.append(context)
-            # context 있으면 분야 머리말을 그대로 뱉음(echo), 없으면 진짜
-            return [_FakeResult("수의안과 진료" if context else "녹내장입니다")]
+            # 분야 문장이 system 지시문에 들어가면 흘림(leakage), 없으면 진짜.
+            if "수의안과" in context:
+                return [_FakeResult("수의안과 진료")]
+            return [_FakeResult("녹내장입니다")]
 
     tr = wd.SpeechTranscriber("cpu", None)
     tr.domain_context = "수의안과 진료"
@@ -230,7 +238,38 @@ def test_domain_echo_retranscribes_without_context(tmp_path, monkeypatch):
 
     out = tr.transcribe_file(str(wav), language="Korean")
     assert out == "녹내장입니다"
-    assert fake.calls[0] != "" and fake.calls[1] == ""
+    assert "수의안과" in fake.calls[0]    # 1차는 분야 문장 포함
+    assert fake.calls[1] == "녹내장"      # 2차는 분야 문장만 빼고 단어장 유지
+
+
+def test_domain_leakage_mixed_keeps_vocab(tmp_path, monkeypatch):
+    import numpy as np
+    wd = _load()
+    vp = tmp_path / "vocabulary.json"
+    monkeypatch.setattr(app_paths, "vocabulary_path", lambda: str(vp))
+    vocabulary.save_vocabulary(["녹내장"])
+    wav = tmp_path / "speech.wav"
+    _write_wav(wav, (np.random.RandomState(9).randn(16000) * 5000))
+
+    class MixedLeakModel:
+        def __init__(self):
+            self.calls = []
+
+        def transcribe(self, audio, context="", language=None, **kw):
+            self.calls.append(context)
+            # 실제 단어 + 분야 문장을 섞어 흘림. 분야 문장 없으면 깨끗한 단어만.
+            if "수의안과" in context:
+                return [_FakeResult("녹내장 수의안과 진료. 안과 검사 용어 위주")]
+            return [_FakeResult("녹내장")]
+
+    tr = wd.SpeechTranscriber("cpu", None)
+    tr.domain_context = "수의안과 진료. 안과 검사 용어 위주"
+    fake = MixedLeakModel()
+    monkeypatch.setattr(tr, "get_model", lambda: fake)
+
+    out = tr.transcribe_file(str(wav), language="Korean")
+    assert out == "녹내장"               # 분야 문장 leakage 제거, 실제 단어만 남음
+    assert fake.calls[1] == "녹내장"      # 단어장 biasing 은 유지된 채 재전사
 
 
 def test_current_config_includes_domain_context():

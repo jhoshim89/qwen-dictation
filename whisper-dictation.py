@@ -174,13 +174,18 @@ def looks_like_vocab_echo(text, vocab):
     return matched >= 2 and leftover == ""
 
 
-def looks_like_domain_echo(text, domain):
-    """결과가 분야 머리말(domain)을 통째로 또는 그 앞부분을 그대로 뱉은 것이면
-    context 환각(echo)으로 본다.
+DOMAIN_ECHO_PROBE_LEN = 10
 
-    실시간 받아쓰기의 첫 짧은 조각은 분야 문장의 '앞부분'만 새기 쉬우므로, 정확
-    일치뿐 아니라 결과가 분야 문장의 앞부분(prefix)인 경우도 echo 로 본다. 공백·
-    구두점·대시(—,–,-)를 무시하고 비교한다. domain 이 비었거나 text 가 비면 False.
+
+def looks_like_domain_echo(text, domain):
+    """결과에 분야 머리말(domain)이 새어 들어온 context 환각(echo)인지 본다.
+
+    `context` 는 모델의 system 지시문으로 들어가는데, 완결된 긴 분야 문장은 모델이
+    '받아쓸 내용'으로 착각해 출력에 흘린다(leakage). 두 형태를 잡는다:
+      1) 결과가 분야 문장의 앞부분/전체  — 약하거나 짧은 첫 조각의 순수 echo
+      2) 분야 문장의 식별 가능한 앞 조각이 결과 어딘가에 끼어듦 — 실제 단어와 섞인 leakage
+         (예: "녹내장 수의안과 진료와 소프트웨어 개발 …")
+    공백·구두점·대시(—,–,-)를 무시하고 비교한다. domain 이 비었거나 text 가 비면 False.
     """
     domain = str(domain).strip()
     text = str(text).strip()
@@ -191,7 +196,10 @@ def looks_like_domain_echo(text, domain):
     norm_domain = re.sub(strip_re, "", domain).lower()
     if not norm_text:
         return False
-    return norm_domain.startswith(norm_text)
+    if norm_domain.startswith(norm_text):
+        return True
+    probe = norm_domain[:DOMAIN_ECHO_PROBE_LEN] if len(norm_domain) >= DOMAIN_ECHO_PROBE_LEN else norm_domain
+    return bool(probe) and probe in norm_text
 
 
 def looks_like_repetition_hallucination(text):
@@ -397,10 +405,17 @@ class SpeechTranscriber:
         if not results:
             return ""
         text = results[0].text.strip()
-        # context 환각(등록 단어만 / 분야 머리말 그대로) 의심 시 → context 없이 재전사.
-        if context and (looks_like_vocab_echo(text, vocab) or looks_like_domain_echo(text, domain)):
-            plain = model.transcribe(audio_path, context="", language=language)
-            text = plain[0].text.strip() if plain else ""
+        # context 환각 의심 시 재전사한다. 등록 단어만 새면 context 를 통째로 비우고,
+        # 분야 문장이 샜으면(실제 단어와 섞여서라도) 분야 문장만 빼고 단어 biasing 은
+        # 유지해 재전사한다 — 단어 인식 정확도는 지키면서 새는 문장만 제거한다.
+        if context:
+            if looks_like_vocab_echo(text, vocab):
+                plain = model.transcribe(audio_path, context="", language=language)
+                text = plain[0].text.strip() if plain else ""
+            elif domain and looks_like_domain_echo(text, domain):
+                vocab_context = vocabulary.build_context(vocab, "")
+                plain = model.transcribe(audio_path, context=vocab_context, language=language)
+                text = plain[0].text.strip() if plain else ""
         return text
 
 
