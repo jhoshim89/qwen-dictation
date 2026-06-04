@@ -468,3 +468,23 @@ def test_unicode_type_empty_posts_nothing():
     posts = []
     wd.unicode_type("", _post=lambda tap, ev: posts.append(ev))
     assert posts == []
+
+
+def test_recorder_type_uses_unicode_inserter(monkeypatch):
+    wd = _load()
+    captured = {}
+
+    def fake_type_diff(old, new, kb, allow_empty=False, insert=None):
+        captured["insert"] = insert
+        return new
+
+    monkeypatch.setattr(wd, "type_diff", fake_type_diff)
+    rec = _kbd_recorder(wd)
+    rec._type("", "hello")
+    # When Quartz CGEvents are available, the inserter must be unicode_type.
+    # Otherwise _type passes insert=None and type_diff falls back to
+    # keyboard_controller.type internally.
+    if wd.CGEventCreateKeyboardEvent is not None:
+        assert captured["insert"] is wd.unicode_type
+    else:
+        assert captured["insert"] is None

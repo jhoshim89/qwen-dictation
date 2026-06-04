@@ -511,7 +511,12 @@ class Recorder:
         return True
 
     def _type(self, old, new):
-        return type_diff(old, new, self.transcriber.pykeyboard, allow_empty=True)
+        # Insert via IME-immune Unicode CGEvents so Latin text isn't remapped to
+        # Hangul under a Korean input source; fall back to keystrokes if Quartz
+        # CGEvents are unavailable. Backspaces stay as keycodes either way.
+        inserter = unicode_type if CGEventCreateKeyboardEvent is not None else None
+        return type_diff(old, new, self.transcriber.pykeyboard,
+                         allow_empty=True, insert=inserter)
 
     def _transcribe_window(self, window_bytes, language):
         path = "/tmp/qwen_dictation_stream.wav"
