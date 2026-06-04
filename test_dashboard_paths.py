@@ -57,3 +57,39 @@ def test_dashboard_history_correction_candidate_flow(tmp_path, monkeypatch):
     accepted = client.post("/api/vocabulary/candidates/accept", json={"term": "Qwen"})
     assert accepted.status_code == 200
     assert accepted.get_json()["vocabulary"] == ["Qwen"]
+
+
+def test_dashboard_config_hud_mode_roundtrip(monkeypatch):
+    from types import SimpleNamespace
+    fake = SimpleNamespace(
+        current_language="ko", languages=["ko", "en", "auto"],
+        max_time=300, input_device="", hold_key="cmd_r", toggle_key="alt_r",
+        min_volume=35, edit_interrupt_mode="continue", hold_send_enter=True,
+        domain_context="", hud_mode="pill", hud_pin_x=None, hud_pin_y=None,
+    )
+    fake.sync_menu_state = lambda: None
+    fake.save_settings = lambda: None
+    monkeypatch.setattr(dashboard, "app_instance", fake)
+
+    client = dashboard.flask_app.test_client()
+    resp = client.post("/api/config", json={"hud_mode": "pinned"})
+    assert resp.status_code == 200
+    assert fake.hud_mode == "pinned"
+    assert client.get("/api/config").get_json()["hud_mode"] == "pinned"
+
+
+def test_dashboard_config_hud_mode_rejects_unknown(monkeypatch):
+    from types import SimpleNamespace
+    fake = SimpleNamespace(
+        current_language="ko", languages=["ko"], max_time=300, input_device="",
+        hold_key="cmd_r", toggle_key="alt_r", min_volume=35,
+        edit_interrupt_mode="continue", hold_send_enter=True, domain_context="",
+        hud_mode="pill", hud_pin_x=None, hud_pin_y=None,
+    )
+    fake.sync_menu_state = lambda: None
+    fake.save_settings = lambda: None
+    monkeypatch.setattr(dashboard, "app_instance", fake)
+
+    client = dashboard.flask_app.test_client()
+    client.post("/api/config", json={"hud_mode": "bogus"})
+    assert fake.hud_mode == "pill"

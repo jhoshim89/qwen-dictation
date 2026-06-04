@@ -66,6 +66,9 @@ def get_config():
         "edit_interrupt_mode": getattr(app_instance, 'edit_interrupt_mode', 'continue'),
         "hold_send_enter": bool(getattr(app_instance, 'hold_send_enter', True)),
         "domain_context": getattr(app_instance, 'domain_context', ''),
+        "hud_mode": getattr(app_instance, 'hud_mode', 'pill'),
+        "hud_pin_x": getattr(app_instance, 'hud_pin_x', None),
+        "hud_pin_y": getattr(app_instance, 'hud_pin_y', None),
     })
 
 @flask_app.route('/api/config', methods=['POST'])
@@ -95,6 +98,9 @@ def post_config():
             app_instance.domain_context = str(data['domain_context'] or "")
             if getattr(app_instance, "recorder", None) is not None:
                 app_instance.recorder.transcriber.domain_context = app_instance.domain_context
+        if 'hud_mode' in data:
+            m = str(data['hud_mode'])
+            app_instance.hud_mode = m if m in ("pill", "pinned", "cursor") else "pill"
         if 'edit_interrupt_mode' in data:
             mode = str(data['edit_interrupt_mode'])
             app_instance.edit_interrupt_mode = mode if mode in ("continue", "stop") else "continue"
