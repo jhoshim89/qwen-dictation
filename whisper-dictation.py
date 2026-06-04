@@ -1,4 +1,5 @@
 import argparse
+import collections
 import multiprocessing
 import os
 import re
@@ -75,6 +76,13 @@ LANGUAGE_MAP = {
 SILENCE_PEAK_THRESHOLD = 1000.0
 SPEECH_START_PEAK_THRESHOLD = 3500.0
 DEFAULT_MIN_VOLUME = 35
+# 마이크 한 번 읽을 때 샘플 수(~64ms @16kHz). 마이크는 앱 시작부터 계속 열어두고
+# 읽어, 키 누르는 순간 바로 잡히게 한다(누를 때마다 새로 여는 ~1초 지연 제거).
+FRAMES_PER_BUFFER = 1024
+# 키 누르기 직전 이만큼을 미리 들고 있다가 받아쓰기에 포함한다(누르자마자, 혹은
+# 살짝 먼저 말해도 첫 단어가 안 잘림).
+PREROLL_SEC = 0.5
+PREROLL_CHUNKS = max(1, round(PREROLL_SEC * 16000 / FRAMES_PER_BUFFER))
 # 이 맥에서 한 번 받아쓰는 데 약 0.1초밖에 안 걸린다(길이 1~8초 측정, mps). 그래서
 # 끝의 기다림은 모델 속도가 아니라 '확인 간격'이 좌우한다. 간격을 짧게 둬 말끝이 빨리
 # 들어오게 한다. (일반 권장값 0.8초는 모델이 느릴 때 얘기라 우리엔 과하게 보수적)
@@ -84,6 +92,14 @@ PAUSE_SILENCE_SEC = 0.3      # 초: 끝이 이만큼 조용하면 쉼 → 확정
 # 확정되므로 이 상한은 거의 안 걸린다. Whisper 계열 30초 한계보다 한참 아래로 두는 안전망.
 MAX_WINDOW_SEC = 12.0        # 초: 창이 이보다 길면 강제 확정(드물게 걸리는 안전망)
 NOISE_FILLER_TEXTS = {"어", "응", "음", "네", "예"}
+
+# 임시: '첫 단어 잘림' 진단용 계측. 원인 확인 후 제거한다.
+DEBUG_FIRSTWORD = True
+
+
+def _fwlog(msg):
+    if DEBUG_FIRSTWORD:
+        print(f"[FW] {msg}", file=sys.stderr, flush=True)
 
 
 def audio_peak(audio_path):
@@ -172,6 +188,26 @@ def looks_like_vocab_echo(text, vocab):
             matched += 1
     leftover = re.sub(r"\s+", "", norm)
     return matched >= 2 and leftover == ""
+
+
+def vocab_terms_in_text(text, vocab):
+    """text 에 (조사·구두점 무시) 등장하는 등록 단어 목록 — vocab 등록 순서로.
+
+    '녹내장이', '오늘 환자 녹내장 봤어' 처럼 실제 말에 조사가 붙거나 섞여 끼어든
+    경우까지 잡으려고 공백/구두점을 없앤 부분문자열로 본다. 단독 echo(1개)와
+    혼합 leakage 를 함께 잡아, 편향 끈 결과와 대조할 후보를 고른다.
+    """
+    if not vocab or not text:
+        return []
+    norm = re.sub(r"[\s,.;!?·]+", "", text).lower()
+    found = []
+    seen = set()
+    for v in vocab:
+        phrase = str(v).strip().lower().replace(" ", "")
+        if phrase and phrase in norm and phrase not in seen:
+            seen.add(phrase)
+            found.append(phrase)
+    return found
 
 
 DOMAIN_ECHO_PROBE_LEN = 10
@@ -416,6 +452,17 @@ class SpeechTranscriber:
                 vocab_context = vocabulary.build_context(vocab, "")
                 plain = model.transcribe(audio_path, context=vocab_context, language=language)
                 text = plain[0].text.strip() if plain else ""
+            else:
+                # 등록 단어가 실제 말에 섞이거나 단독으로 끼어든 경우(가장 흔한 leakage).
+                # 편향(context)을 끈 결과와 대조해, 음향이 뒷받침하지 않는(편향이 지어낸)
+                # 단어가 있으면 음향 결과로 대체한다 — "확실할 때만 등록 단어를 남긴다".
+                present = vocab_terms_in_text(text, vocab)
+                if present:
+                    plain = model.transcribe(audio_path, context="", language=language)
+                    plain_text = plain[0].text.strip() if plain else ""
+                    confirmed = set(vocab_terms_in_text(plain_text, present))
+                    if any(term not in confirmed for term in present):
+                        text = plain_text
         return text
 
 
@@ -426,8 +473,16 @@ class Recorder:
         self.recording = False
         self.audio_frames = []
         self.audio_lock = threading.Lock()
-        self.record_thread = None
         self.stream_thread = None
+        # 항상 열려 도는 마이크 캡처 스레드와, 그 캡처가 쓰는 PortAudio 스트림.
+        self._capture_on = False
+        self._capture_thread = None
+        self._pa = None
+        self._stream = None
+        self._open_device = None
+        self._capture_error_notified = False
+        # 키 누르기 직전 오디오를 들고 있는 롤링 버퍼(받아쓰기 시작 시 앞에 붙인다).
+        self._preroll = collections.deque(maxlen=PREROLL_CHUNKS)
         self.window_start = 0
         self.committed_text = ""
         self.last_typed = ""
@@ -452,19 +507,25 @@ class Recorder:
     def start(self, language=None):
         if self.recording:
             return
-        self.audio_frames = []
         self.finalize_on_stop = True
         self.send_enter_on_stop = False
         self.rebaseline_pending = False
         self._wake.clear()
+        # 마이크는 이미 계속 열려 있으니 여는 지연이 없다. 직전 0.5초(preroll)를 앞에
+        # 붙여, 키 누르자마자/살짝 먼저 말해도 첫 단어가 잡히게 한다.
+        with self.audio_lock:
+            self.audio_frames = list(self._preroll)
+            seeded = len(self.audio_frames)
+        _fwlog(f"start: preroll_seeded={seeded} chunks (~{seeded*FRAMES_PER_BUFFER/16000:.2f}s)")
         self.recording = True
-        self.record_thread = threading.Thread(target=self._record_impl, args=(language,), daemon=True)
-        self.record_thread.start()
+        # 캡처가 아직 안 돌고 있으면(안전망) 지금 띄운다.
+        self.start_capture()
         self.stream_thread = threading.Thread(target=self._stream_loop, args=(language,), daemon=True)
         self.stream_thread.start()
 
     def stop(self, finalize=True, send_enter=False):
-        # 녹음 루프(_record_impl)가 self.recording=False 를 보고 스스로 종료/정리한다.
+        # recording=False 면 캡처 스레드는 계속 돌되 audio_frames 에 더는 안 쌓고
+        # preroll 만 갱신한다(마이크는 계속 열린 채 다음 시작을 즉시 받는다).
         self.finalize_on_stop = bool(finalize)
         # 홀드 해제로 정상 종료할 때만 마지막 글자 입력 뒤 Enter 를 보낸다.
         self.send_enter_on_stop = bool(send_enter and finalize)
@@ -473,52 +534,82 @@ class Recorder:
         self._wake.set()
         audio_level.clear_level()
 
-    def _record_impl(self, language):
+    def start_capture(self):
+        """앱 시작 시 마이크를 미리 열어 계속 읽어둔다(키 누르면 즉시 잡히도록).
+
+        한 번만 띄우면 되고, 이후 떼고/다시 누르는 동안 스트림은 계속 열려 있다.
+        """
+        if self._capture_on:
+            return
+        self._capture_on = True
+        self._capture_thread = threading.Thread(target=self._capture_loop, daemon=True)
+        self._capture_thread.start()
+
+    def stop_capture(self):
+        """마이크 캡처를 멈춘다(앱 종료 정리용). 루프가 스스로 스트림을 닫는다."""
+        self._capture_on = False
+
+    def _open_stream(self):
         # pyaudio 로 시스템 기본 입력 장치에서 직접 캡처한다. (ffmpeg avfoundation
         # ':default' 는 이 장비에서 'Input/output error' 로 실패해 0프레임이 됐다.)
-        frames_per_buffer = 1024
-        pa = None
-        stream = None
-        try:
-            pa = pyaudio.PyAudio()
-            input_device_index = find_input_device_index(
-                pa, getattr(self.app, "input_device", "")
-            )
-            stream = pa.open(
-                format=pyaudio.paInt16,
-                channels=1,
-                rate=16000,
-                input=True,
-                input_device_index=input_device_index,
-                frames_per_buffer=frames_per_buffer,
-            )
-        except Exception as exc:
-            self.recording = False
-            audio_level.clear_level()
-            if pa is not None:
-                pa.terminate()
-            self.app.dispatch_to_main(self.app.handle_recording_error, str(exc))
-            return
+        self._pa = pyaudio.PyAudio()
+        device = getattr(self.app, "input_device", "")
+        self._stream = self._pa.open(
+            format=pyaudio.paInt16,
+            channels=1,
+            rate=16000,
+            input=True,
+            input_device_index=find_input_device_index(self._pa, device),
+            frames_per_buffer=FRAMES_PER_BUFFER,
+        )
+        self._open_device = device
 
+    def _close_stream(self):
         try:
-            while self.recording:
+            if self._stream is not None:
+                self._stream.stop_stream()
+                self._stream.close()
+        except Exception:
+            pass
+        try:
+            if self._pa is not None:
+                self._pa.terminate()
+        except Exception:
+            pass
+        self._stream = None
+        self._pa = None
+        self._open_device = None
+
+    def _capture_loop(self):
+        try:
+            while self._capture_on:
+                # 스트림이 없거나 대시보드에서 마이크가 바뀌었으면 (재)연다.
+                if self._stream is None or self._open_device != getattr(self.app, "input_device", ""):
+                    self._close_stream()
+                    try:
+                        self._open_stream()
+                        self._capture_error_notified = False
+                    except Exception as exc:
+                        if not self._capture_error_notified:
+                            self._capture_error_notified = True
+                            self.app.dispatch_to_main(self.app.handle_recording_error, str(exc))
+                        time.sleep(0.5)
+                        continue
                 try:
-                    data = stream.read(frames_per_buffer, exception_on_overflow=False)
+                    data = self._stream.read(FRAMES_PER_BUFFER, exception_on_overflow=False)
                 except Exception as exc:
                     print(f"Audio read error: {exc}")
-                    self.recording = False
-                    self.app.dispatch_to_main(self.app.handle_recording_error, str(exc))
-                    break
+                    self._close_stream()
+                    time.sleep(0.2)
+                    continue
                 with self.audio_lock:
-                    self.audio_frames.append(data)
-                audio_level.write_level(audio_level.compute_rms(data))
+                    self._preroll.append(data)
+                    if self.recording:
+                        self.audio_frames.append(data)
+                if self.recording:
+                    audio_level.write_level(audio_level.compute_rms(data))
         finally:
-            try:
-                stream.stop_stream()
-                stream.close()
-            except Exception:
-                pass
-            pa.terminate()
+            self._close_stream()
             audio_level.clear_level()
 
     def _write_current_audio(self, path):
@@ -568,11 +659,20 @@ class Recorder:
             getattr(self.app, "min_volume", DEFAULT_MIN_VOLUME)
         )
         self.transcriber.domain_context = getattr(self.app, "domain_context", "")
-        if pcm_peak(window) < start_threshold:
+        dbg = getattr(self, "_dbg_tick", 99)
+        peak = pcm_peak(window)
+        wsecs = len(window) / 2.0 / 16000.0
+        if peak < start_threshold:
+            if dbg < 6:
+                _fwlog(f"tick#{dbg} GATED(discard): win={wsecs:.2f}s peak={peak:.0f} < start_thr={start_threshold:.0f}")
+                self._dbg_tick = dbg + 1
             with self.audio_lock:
                 self.window_start = frame_count
             return
         hypo = self._transcribe_window(window, language)
+        if dbg < 6:
+            _fwlog(f"tick#{dbg} pass: win={wsecs:.2f}s peak={peak:.0f}>=start_thr={start_threshold:.0f} hypo={hypo!r}")
+            self._dbg_tick = dbg + 1
         if not self.recording and not allow_stopped:
             return
         if looks_like_repetition_hallucination(hypo):
@@ -619,6 +719,7 @@ class Recorder:
         self.window_start = 0
         self.committed_text = ""
         self.last_typed = ""
+        self._dbg_tick = 0
         while self.recording:
             # 주기마다 한 번씩 틱. 단, 도중에 정지 신호가 오면 즉시 깨어나
             # 남은 대기 없이 곧장 마지막 틱으로 넘어간다(키 떼고 Enter 지연 최소화).
@@ -797,8 +898,6 @@ class StatusBarApp(rumps.App):
                 minutes, seconds = divmod(elapsed, 60)
                 self.title = f"({minutes:02d}:{seconds:02d}) 🔴"
                 ov.update(audio_level.read_level(), elapsed)
-                if mode == "caret":
-                    ov.reposition_to_caret()
                 ov.set_processing(False)
                 ov.show_status("듣는 중")
                 if mode == "pinned":
@@ -1024,6 +1123,10 @@ def main():
             print(f"Model preload error: {exc}")
 
     threading.Thread(target=_warmup_model, daemon=True).start()
+
+    # 마이크도 시작 시점에 미리 열어 계속 읽어둔다. 키 누르는 순간 바로 잡혀,
+    # 홀드로 누르자마자 말해도 첫 단어가 잘리지 않는다(여는 ~1초 지연 제거).
+    recorder.start_capture()
 
     dashboard.start_server(app)
     app.apply_hotkey_config()

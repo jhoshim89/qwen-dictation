@@ -103,23 +103,16 @@ def test_jelly_bar_heights_expand_with_level_clamp_and_stay_symmetric():
 def test_normalize_hud_mode_accepts_known_and_falls_back():
     assert hud_overlay.normalize_hud_mode("pill") == "pill"
     assert hud_overlay.normalize_hud_mode("pinned") == "pinned"
-    assert hud_overlay.normalize_hud_mode("caret") == "caret"
-    # 옛 값 'cursor'는 'caret'로 옮긴다(마우스 추적 → 타이핑 위치 추적).
-    assert hud_overlay.normalize_hud_mode("cursor") == "caret"
+    # 제거된 모드(옛 'caret'/'cursor')와 미지값은 기본 'pill'로.
+    assert hud_overlay.normalize_hud_mode("caret") == "pill"
+    assert hud_overlay.normalize_hud_mode("cursor") == "pill"
     assert hud_overlay.normalize_hud_mode("bogus") == "pill"
     assert hud_overlay.normalize_hud_mode(None) == "pill"
+    assert hud_overlay.HUD_MODES == ("pill", "pinned")
 
 
-def test_caret_icon_origin_flips_y_and_places_right_of_caret():
-    # 주 모니터 높이 900, caret 사각형(좌상단 원점) x=300 y=100 w=2 h=18, 아이콘 36, gap 8.
-    # appkit_y = 900 - 100 - 18 = 782; x = 300 + 2 + 8 = 310; y = 782 + (18-36)/2 = 773
-    x, y = hud_overlay.caret_icon_origin((300.0, 100.0, 2.0, 18.0), 900.0, 36.0, gap=8.0)
-    assert x == 310.0
-    assert y == 773.0
-
-
-def test_icon_size_is_36():
-    assert hud_overlay.ICON_SIZE == 36.0
+def test_icon_size_is_small():
+    assert hud_overlay.ICON_SIZE == 24.0
 
 
 def test_clamp_to_visible_keeps_point_inside_a_screen():
@@ -144,7 +137,7 @@ def test_clamp_to_visible_no_screens_returns_origin():
 
 def test_set_mode_pill_uses_full_pill_and_ignores_mouse():
     overlay = _overlay()
-    overlay._mode = "cursor"
+    overlay._mode = "pinned"
     overlay.set_mode("pill", None)
     assert overlay._mode == "pill"
     assert overlay._view.compact is False
