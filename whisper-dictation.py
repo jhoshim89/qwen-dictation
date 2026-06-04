@@ -290,7 +290,12 @@ def validate_hotkey_config(hold_key, toggle_key):
     return hotkeys.validate_hotkey_pair(hold_key, toggle_key)
 
 
-def type_diff(old_text, new_text, keyboard_controller, allow_empty=False):
+def type_diff(old_text, new_text, keyboard_controller, allow_empty=False, insert=None):
+    # `insert(text)` performs the actual character insertion. Default is the
+    # pynput controller's keystroke typing, but the streaming path injects an
+    # IME-immune Unicode inserter so Latin text isn't remapped to Hangul.
+    if insert is None:
+        insert = keyboard_controller.type
     old_text = old_text.strip()
     new_text = new_text.strip()
     if not new_text:
@@ -301,12 +306,12 @@ def type_diff(old_text, new_text, keyboard_controller, allow_empty=False):
             return ""
         return old_text
     if not old_text:
-        keyboard_controller.type(new_text)
+        insert(new_text)
         return new_text
     if new_text.startswith(old_text):
         diff = new_text[len(old_text):]
         if diff:
-            keyboard_controller.type(diff)
+            insert(diff)
             return new_text
         return old_text
 
@@ -318,7 +323,7 @@ def type_diff(old_text, new_text, keyboard_controller, allow_empty=False):
         time.sleep(0.001)
     diff = new_text[len(common_prefix):]
     if diff:
-        keyboard_controller.type(diff)
+        insert(diff)
         return new_text
     return old_text
 

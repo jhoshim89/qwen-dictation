@@ -411,3 +411,46 @@ def test_history_saved_after_enter(monkeypatch):
     monkeypatch.setattr(wd.dictation_history, "add_history", lambda *_: order.append("history"))
     rec._stream_loop("ko")
     assert order == ["enter", "history"]  # 엔터가 기록 저장보다 먼저
+
+
+def test_type_diff_inserts_additions_via_insert_callable():
+    wd = _load()
+    inserted = []
+    kb = _FakeKeyboard()
+    result = wd.type_diff("", "hello", kb, insert=inserted.append)
+    assert result == "hello"
+    assert inserted == ["hello"]
+    assert kb.events == []  # pure insertion uses no keystrokes
+
+
+def test_type_diff_appends_only_the_new_suffix():
+    wd = _load()
+    inserted = []
+    kb = _FakeKeyboard()
+    result = wd.type_diff("abc", "abcde", kb, insert=inserted.append)
+    assert result == "abcde"
+    assert inserted == ["de"]
+    assert kb.events == []
+
+
+def test_type_diff_backspaces_via_keyboard_then_inserts_via_callable():
+    wd = _load()
+    from pynput import keyboard
+    inserted = []
+    kb = _FakeKeyboard()
+    result = wd.type_diff("abcX", "abcY", kb, insert=inserted.append)
+    assert result == "abcY"
+    assert inserted == ["Y"]
+    assert kb.events.count(("press", keyboard.Key.backspace)) == 1
+
+
+def test_type_diff_defaults_insert_to_keyboard_type():
+    wd = _load()
+    typed = []
+
+    class _KbWithType(_FakeKeyboard):
+        def type(self, text):
+            typed.append(text)
+
+    wd.type_diff("", "hi", _KbWithType())
+    assert typed == ["hi"]
