@@ -65,6 +65,7 @@ def get_config():
         "min_volume": getattr(app_instance, 'min_volume', 35),
         "edit_interrupt_mode": getattr(app_instance, 'edit_interrupt_mode', 'continue'),
         "hold_send_enter": bool(getattr(app_instance, 'hold_send_enter', True)),
+        "domain_context": getattr(app_instance, 'domain_context', ''),
     })
 
 @flask_app.route('/api/config', methods=['POST'])
@@ -90,6 +91,10 @@ def post_config():
             app_instance.min_volume = max(1, min(100, int(float(data['min_volume']))))
             if getattr(app_instance, "recorder", None) is not None:
                 app_instance.recorder.transcriber.min_volume = app_instance.min_volume
+        if 'domain_context' in data:
+            app_instance.domain_context = str(data['domain_context'] or "")
+            if getattr(app_instance, "recorder", None) is not None:
+                app_instance.recorder.transcriber.domain_context = app_instance.domain_context
         if 'edit_interrupt_mode' in data:
             mode = str(data['edit_interrupt_mode'])
             app_instance.edit_interrupt_mode = mode if mode in ("continue", "stop") else "continue"
