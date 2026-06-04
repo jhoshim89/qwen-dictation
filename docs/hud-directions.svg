@@ -1,0 +1,108 @@
+<svg xmlns="http://www.w3.org/2000/svg" width="1440" height="920" viewBox="0 0 1440 920">
+  <defs>
+    <linearGradient id="screen" x1="0" y1="0" x2="1" y2="1">
+      <stop offset="0" stop-color="#f7f5f1"/>
+      <stop offset="1" stop-color="#ebe7df"/>
+    </linearGradient>
+    <filter id="shadow" x="-20%" y="-30%" width="140%" height="170%">
+      <feDropShadow dx="0" dy="18" stdDeviation="22" flood-color="#1d1718" flood-opacity=".18"/>
+    </filter>
+    <filter id="softShadow" x="-20%" y="-30%" width="140%" height="170%">
+      <feDropShadow dx="0" dy="10" stdDeviation="13" flood-color="#1d1718" flood-opacity=".12"/>
+    </filter>
+    <style>
+      .title{font:700 30px -apple-system,BlinkMacSystemFont,"Pretendard","Segoe UI",sans-serif;fill:#2f2729}
+      .sub{font:500 15px -apple-system,BlinkMacSystemFont,"Pretendard","Segoe UI",sans-serif;fill:#756a6b}
+      .cardTitle{font:700 19px -apple-system,BlinkMacSystemFont,"Pretendard","Segoe UI",sans-serif;fill:#31292b}
+      .cardText{font:500 13px -apple-system,BlinkMacSystemFont,"Pretendard","Segoe UI",sans-serif;fill:#756a6b}
+      .hudText{font:650 14px -apple-system,BlinkMacSystemFont,"Pretendard","Segoe UI",sans-serif}
+      .tiny{font:700 11px -apple-system,BlinkMacSystemFont,"Pretendard","Segoe UI",sans-serif;letter-spacing:.4px}
+      .inputText{font:500 18px -apple-system,BlinkMacSystemFont,"Pretendard","Segoe UI",sans-serif;fill:#4b4243}
+    </style>
+  </defs>
+
+  <rect width="1440" height="920" fill="#fbfaf7"/>
+  <text x="64" y="70" class="title">받아쓰기 HUD 방향 6가지</text>
+  <text x="64" y="99" class="sub">입력 흐름을 덜 방해하고, “녹음 중임”만 정확히 알려주는 쪽으로 비교</text>
+
+  <g transform="translate(64 140)">
+    <rect width="400" height="310" rx="18" fill="url(#screen)" stroke="#dfd7ce"/>
+    <rect x="34" y="52" width="332" height="192" rx="14" fill="#fff" stroke="#ddd3ca"/>
+    <text x="58" y="96" class="inputText">회의 내용을 정리하면...</text>
+    <line x1="58" y1="121" x2="290" y2="121" stroke="#ede7df" stroke-width="12" stroke-linecap="round"/>
+    <line x1="58" y1="153" x2="330" y2="153" stroke="#ede7df" stroke-width="12" stroke-linecap="round"/>
+    <rect x="122" y="244" width="156" height="40" rx="20" fill="#221f20" opacity=".9" filter="url(#shadow)"/>
+    <rect x="140" y="258" width="4" height="12" rx="2" fill="#ff6f85"/>
+    <rect x="148" y="252" width="4" height="24" rx="2" fill="#ff6f85"/>
+    <rect x="156" y="258" width="4" height="12" rx="2" fill="#ff6f85"/>
+    <text x="176" y="269" class="hudText" fill="#fffaf8">듣는 중</text>
+  </g>
+  <text x="64" y="490" class="cardTitle">1. 조용한 시스템 pill</text>
+  <text x="64" y="516" class="cardText">지금 고친 방향. 가장 무난하고 Mac 앱처럼 보임.</text>
+
+  <g transform="translate(520 140)">
+    <rect width="400" height="310" rx="18" fill="url(#screen)" stroke="#dfd7ce"/>
+    <rect x="34" y="52" width="332" height="192" rx="14" fill="#fff" stroke="#ddd3ca"/>
+    <text x="58" y="96" class="inputText">회의 내용을 정리하면...</text>
+    <line x1="58" y1="121" x2="290" y2="121" stroke="#ede7df" stroke-width="12" stroke-linecap="round"/>
+    <line x1="58" y1="153" x2="330" y2="153" stroke="#ede7df" stroke-width="12" stroke-linecap="round"/>
+    <rect x="164" y="228" width="72" height="72" rx="36" fill="#ffffff" stroke="#ded8d2" filter="url(#softShadow)"/>
+    <circle cx="200" cy="264" r="17" fill="#222"/>
+    <rect x="195" y="246" width="10" height="26" rx="5" fill="#ff6f85"/>
+    <path d="M188 262c0 11 24 11 24 0" fill="none" stroke="#ff6f85" stroke-width="4" stroke-linecap="round"/>
+  </g>
+  <text x="520" y="490" class="cardTitle">2. Apple Voice Control식 마이크 버튼</text>
+  <text x="520" y="516" class="cardText">명확하지만 살짝 접근성 도구 느낌. 오래 떠 있으면 눈에 띔.</text>
+
+  <g transform="translate(976 140)">
+    <rect width="400" height="310" rx="18" fill="url(#screen)" stroke="#dfd7ce"/>
+    <rect x="34" y="52" width="332" height="192" rx="14" fill="#fff" stroke="#ddd3ca"/>
+    <text x="58" y="96" class="inputText">회의 내용을 정리하면...</text>
+    <line x1="58" y1="121" x2="290" y2="121" stroke="#ede7df" stroke-width="12" stroke-linecap="round"/>
+    <rect x="48" y="236" width="304" height="52" rx="26" fill="#fff" stroke="#ded8d2" filter="url(#shadow)"/>
+    <text x="78" y="268" class="hudText" fill="#2f292a">받아쓰기 중...</text>
+    <circle cx="310" cy="262" r="16" fill="#222"/>
+    <rect x="306" y="252" width="8" height="16" rx="4" fill="#ff6f85"/>
+  </g>
+  <text x="976" y="490" class="cardTitle">3. Chat Bar 미니 입력바</text>
+  <text x="976" y="516" class="cardText">상태와 액션을 담기 좋음. 대신 “새 입력창”처럼 오해될 수 있음.</text>
+
+  <g transform="translate(64 570)">
+    <rect width="400" height="250" rx="18" fill="url(#screen)" stroke="#dfd7ce"/>
+    <rect x="34" y="46" width="332" height="152" rx="14" fill="#fff" stroke="#ddd3ca"/>
+    <text x="58" y="90" class="inputText">회의 내용을 정리하면...</text>
+    <line x1="58" y1="115" x2="290" y2="115" stroke="#ede7df" stroke-width="12" stroke-linecap="round"/>
+    <rect x="120" y="14" width="160" height="42" rx="21" fill="#111" filter="url(#shadow)"/>
+    <rect x="144" y="28" width="4" height="13" rx="2" fill="#7ff0c5"/>
+    <rect x="153" y="23" width="4" height="23" rx="2" fill="#7ff0c5"/>
+    <rect x="162" y="28" width="4" height="13" rx="2" fill="#7ff0c5"/>
+    <text x="188" y="40" class="hudText" fill="#f8fffb">녹음 중</text>
+  </g>
+  <text x="64" y="860" class="cardTitle">4. Dynamic Island 상단형</text>
+  <text x="64" y="886" class="cardText">멋은 있는데 시선이 위로 튐. 입력 필드 보조보단 앱 상태에 가까움.</text>
+
+  <g transform="translate(520 570)">
+    <rect width="400" height="250" rx="18" fill="url(#screen)" stroke="#dfd7ce"/>
+    <rect x="34" y="46" width="332" height="152" rx="14" fill="#fff" stroke="#ddd3ca"/>
+    <text x="58" y="90" class="inputText">회의 내용을 정리하면...</text>
+    <line x1="58" y1="115" x2="290" y2="115" stroke="#ede7df" stroke-width="12" stroke-linecap="round"/>
+    <rect x="286" y="78" width="54" height="28" rx="14" fill="#221f20" opacity=".92" filter="url(#softShadow)"/>
+    <rect x="301" y="87" width="4" height="10" rx="2" fill="#ff6f85"/>
+    <rect x="309" y="82" width="4" height="20" rx="2" fill="#ff6f85"/>
+    <rect x="317" y="87" width="4" height="10" rx="2" fill="#ff6f85"/>
+  </g>
+  <text x="520" y="860" class="cardTitle">5. 커서 옆 인라인 배지</text>
+  <text x="520" y="886" class="cardText">가장 입력과 붙어 있음. 구현 난도와 앱별 위치 추적 부담이 큼.</text>
+
+  <g transform="translate(976 570)">
+    <rect width="400" height="250" rx="18" fill="url(#screen)" stroke="#dfd7ce"/>
+    <rect x="34" y="46" width="332" height="152" rx="14" fill="#fff" stroke="#ddd3ca"/>
+    <text x="58" y="90" class="inputText">회의 내용을 정리하면...</text>
+    <line x1="58" y1="115" x2="290" y2="115" stroke="#ede7df" stroke-width="12" stroke-linecap="round"/>
+    <rect x="36" y="10" width="328" height="26" rx="8" fill="#f7f7f5" stroke="#ded8d2"/>
+    <circle cx="331" cy="23" r="5" fill="#ff6f85"/>
+    <text x="54" y="28" class="tiny" fill="#817676">QWEN DICTATION READY</text>
+  </g>
+  <text x="976" y="860" class="cardTitle">6. Zero-UI 메뉴바 상태</text>
+  <text x="976" y="886" class="cardText">제일 안 거슬림. 단, 사용자가 “녹음 중인가?”를 놓칠 수 있음.</text>
+</svg>

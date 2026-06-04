@@ -131,3 +131,32 @@ def test_transcribe_does_not_apply_dictionary_replacements(tmp_path, monkeypatch
 def test_no_apply_dictionary_symbol():
     wd = _load()
     assert not hasattr(wd, "apply_dictionary")
+
+
+def test_looks_like_vocab_echo_handles_multiword():
+    wd = _load()
+    vocab = ["corneal ulcer", "cornea", "fluorescein"]
+    # 여러 단어 등록어로만 → echo (이전 토큰 기반 가드는 못 잡던 케이스)
+    assert wd.looks_like_vocab_echo("corneal ulcer, cornea, fluorescein", vocab) is True
+    # 실제 문장 안에 포함 → echo 아님
+    assert wd.looks_like_vocab_echo("the corneal ulcer healed well", vocab) is False
+
+
+def test_transcribe_drops_context_on_weak_audio(tmp_path, monkeypatch):
+    import numpy as np
+    import soundfile as sf
+    wd = _load()
+    vp = tmp_path / "vocabulary.json"
+    monkeypatch.setattr(app_paths, "vocabulary_path", lambda: str(vp))
+    vocabulary.save_vocabulary(["각막", "궤양"])
+    # 무음은 아니지만(>silence) 분명한 말소리 임계 미만(<speech)인 약한 신호
+    t = np.arange(16000)
+    weak = (2000 * np.sin(2 * np.pi * 220 * t / 16000)).astype("int16")
+    wav = tmp_path / "weak.wav"
+    sf.write(str(wav), weak, 16000)
+    tr = wd.SpeechTranscriber("cpu", None)
+    fake = _FakeModel()
+    monkeypatch.setattr(tr, "get_model", lambda: fake)
+    out = tr.transcribe_file(str(wav), language="Korean")
+    assert out == "녹음 결과"
+    assert fake.calls[0]["context"] == ""   # 약한 소리 → context 비움(echo 차단)

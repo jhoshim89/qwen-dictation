@@ -40,6 +40,12 @@ def save_vocabulary(words):
     return cleaned
 
 
-def build_context(words):
-    """단어 목록 → model.transcribe 의 context 문자열."""
-    return ", ".join(w for w in words if w)
+# 문맥 단어가 많으면 받아쓰기가 느려지고, 약한 소리에 목록이 통째로 새는 echo 위험이
+# 커진다. Deepgram 등은 "가장 중요한 20~50개만"을 권장한다 — 그 하단으로 제한한다.
+MAX_CONTEXT_TERMS = 24
+
+
+def build_context(words, limit=MAX_CONTEXT_TERMS):
+    """단어 목록 → model.transcribe 의 context 문자열. 앞에서부터 limit 개만 쓴다."""
+    terms = [w for w in words if w]
+    return ", ".join(terms[:limit])

@@ -15,3 +15,10 @@ def test_load_missing_returns_empty(tmp_path, monkeypatch):
 
 def test_build_context():
     assert vocabulary.build_context(["각막", "궤양"]) == "각막, 궤양"
+
+
+def test_build_context_caps_term_count():
+    words = [f"w{i}" for i in range(40)]
+    terms = vocabulary.build_context(words).split(", ")
+    assert len(terms) == vocabulary.MAX_CONTEXT_TERMS
+    assert terms[0] == "w0" and terms[-1] == "w23"

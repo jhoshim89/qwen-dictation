@@ -17,12 +17,12 @@ ROBUSTNESS:
 
 LAYOUT:
 - Floats near the BOTTOM-center of the pointer screen, lifted above prompt inputs.
-- Three small raspberry jelly bars gently expand with microphone level while recording.
+- A slim macOS-style status pill shows a tiny reactive voice meter and state text.
 """
 
-PANEL_WIDTH = 56.0
-PANEL_HEIGHT = 56.0
-BOTTOM_OFFSET = 96.0
+PANEL_WIDTH = 156.0
+PANEL_HEIGHT = 40.0
+BOTTOM_OFFSET = 86.0
 BAR_CORNER_RADIUS = PANEL_HEIGHT / 2.0
 
 
@@ -34,8 +34,8 @@ def jelly_bar_heights(level):
     as the microphone picks up the voice.
     """
     level = min(1.0, max(0.0, float(level)))
-    side = 7.0 + (17.0 * level)
-    center = 10.0 + (32.0 * level)
+    side = 5.0 + (8.0 * level)
+    center = 8.0 + (16.0 * level)
     return side, center, side
 
 
@@ -48,9 +48,13 @@ try:
         NSPanel,
         NSView,
         NSBezierPath,
+        NSFont,
         NSEvent,
         NSScreen,
         NSMakeRect,
+        NSMakePoint,
+        NSForegroundColorAttributeName,
+        NSFontAttributeName,
         NSWindowStyleMaskBorderless,
         NSWindowStyleMaskNonactivatingPanel,
         NSBackingStoreBuffered,
@@ -59,6 +63,7 @@ try:
         NSWindowCollectionBehaviorFullScreenAuxiliary,
         NSStatusWindowLevel,
     )
+    from Foundation import NSString
     _APPKIT_OK = True
 except Exception as _exc:  # pragma: no cover - depends on runtime env
     print(f"hud_overlay: AppKit import failed, overlay disabled: {_exc}")
@@ -72,12 +77,14 @@ if _APPKIT_OK:
             r / 255.0, g / 255.0, b / 255.0, a
         )
 
-    # Warm Jelly Voice palette.
-    BG_RGBA = (255, 253, 252, 0.96)
-    BORDER_RGBA = (234, 221, 216, 0.96)
-    JELLY_RGBA = (232, 71, 98, 0.94)
-    JELLY_HALO_RGBA = (232, 71, 98, 0.16)
-    JELLY_HIGHLIGHT_RGBA = (255, 179, 191, 0.86)
+    # Quiet Dictation palette: darker and slimmer so it reads as a system HUD,
+    # not as a decorative badge over the user's writing surface.
+    BG_RGBA = (34, 31, 32, 0.88)
+    BORDER_RGBA = (255, 255, 255, 0.14)
+    TEXT_RGBA = (255, 250, 248, 0.94)
+    JELLY_RGBA = (255, 111, 133, 0.96)
+    JELLY_HALO_RGBA = (255, 111, 133, 0.13)
+    JELLY_HIGHLIGHT_RGBA = (255, 190, 201, 0.64)
     class _OverlayView(NSView):
         """Custom view that draws level-reactive jelly bars."""
 
@@ -88,7 +95,7 @@ if _APPKIT_OK:
             self._level = 0.0
             self._elapsed = 0
             self._blink_on = True
-            self._label_text = "로컬 받아쓰기 중"
+            self._label_text = "듣는 중"
             self._corner_radius = BAR_CORNER_RADIUS
             return self
 
@@ -132,17 +139,30 @@ if _APPKIT_OK:
             bounds = self.bounds()
             cy = bounds.size.height / 2.0
             heights = jelly_bar_heights(self._level)
-            bar_w = 11.0
-            gap = 7.0
-            start_x = (bounds.size.width - ((bar_w * 3.0) + (gap * 2.0))) / 2.0
+            bar_w = 4.0
+            gap = 4.0
+            start_x = 18.0
 
             for index, height in enumerate(heights):
                 x = start_x + (index * (bar_w + gap))
                 y = cy - (height / 2.0)
                 self._draw_jelly_rect(x, y, bar_w, height)
+            self._draw_label()
+
+        def _draw_label(self):
+            text = self._label_text or "듣는 중"
+            attrs = {
+                NSForegroundColorAttributeName: _rgb(*TEXT_RGBA),
+                NSFontAttributeName: NSFont.systemFontOfSize_weight_(13.0, 0.42),
+            }
+            # Plain Python str does not expose the AppKit drawing category; wrap
+            # it in an NSString so drawAtPoint_withAttributes_ is available.
+            NSString.stringWithString_(text).drawAtPoint_withAttributes_(
+                NSMakePoint(52.0, 11.0), attrs
+            )
 
         def _draw_jelly_rect(self, x, y, width, height, alpha=0.94):
-            halo = 4.0
+            halo = 2.0
             _rgb(*JELLY_HALO_RGBA).setFill()
             NSBezierPath.bezierPathWithRoundedRect_xRadius_yRadius_(
                 NSMakeRect(x - halo, y - halo, width + (halo * 2.0), height + (halo * 2.0)),
@@ -156,7 +176,7 @@ if _APPKIT_OK:
             highlight_width = max(3.0, width - 4.0)
             _rgb(*JELLY_HIGHLIGHT_RGBA).setFill()
             NSBezierPath.bezierPathWithRoundedRect_xRadius_yRadius_(
-                NSMakeRect(x + 2.0, y + height - 5.0, highlight_width, 2.5), 1.25, 1.25
+                NSMakeRect(x + 0.8, y + height - 3.4, highlight_width, 1.4), 0.7, 0.7
             ).fill()
 
 

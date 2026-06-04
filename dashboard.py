@@ -64,6 +64,7 @@ def get_config():
         "toggle_key": getattr(app_instance, 'toggle_key', 'alt_r'),
         "min_volume": getattr(app_instance, 'min_volume', 35),
         "edit_interrupt_mode": getattr(app_instance, 'edit_interrupt_mode', 'continue'),
+        "hold_send_enter": bool(getattr(app_instance, 'hold_send_enter', True)),
     })
 
 @flask_app.route('/api/config', methods=['POST'])
@@ -92,6 +93,8 @@ def post_config():
         if 'edit_interrupt_mode' in data:
             mode = str(data['edit_interrupt_mode'])
             app_instance.edit_interrupt_mode = mode if mode in ("continue", "stop") else "continue"
+        if 'hold_send_enter' in data:
+            app_instance.hold_send_enter = bool(data['hold_send_enter'])
         if hotkey_changed:
             hold = data.get("hold_key", getattr(app_instance, "hold_key", "cmd_r"))
             toggle = data.get("toggle_key", getattr(app_instance, "toggle_key", "alt_r"))

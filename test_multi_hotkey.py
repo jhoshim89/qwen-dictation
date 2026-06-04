@@ -13,15 +13,16 @@ def _load():
 class FakeApp:
     def __init__(self):
         self.started = False
+        self.hold_send_enter = False
         self.log = []
 
     def start_app(self, _):
         self.started = True
         self.log.append(("start", True))
 
-    def stop_app(self, _, finalize=True):
+    def stop_app(self, _, finalize=True, send_enter=False):
         self.started = False
-        self.log.append(("stop", finalize))
+        self.log.append(("stop", finalize, send_enter))
 
 
 class FakeRecorder:
@@ -59,7 +60,7 @@ def test_manual_edit_stop_ends_session_without_final_tick():
     lis.on_key_press(keyboard.KeyCode(char="x"))
     assert app.started is False
     assert app.recorder.rebaselined == 0
-    assert app.log == [("start", True), ("stop", False)]
+    assert app.log == [("start", True), ("stop", False, False)]
 
 
 def test_manual_edit_ignored_during_self_typing_guard():
@@ -91,7 +92,7 @@ def test_enter_not_treated_as_manual_edit():
     lis.on_key_press(keyboard.Key.enter)  # Enter 는 기존 토글 종료 동작
     assert app.recorder.rebaselined == 0
     assert app.started is False
-    assert app.log == [("start", True), ("stop", False)]
+    assert app.log == [("start", True), ("stop", False, False)]
 
 
 def test_hold_cmd_starts_streaming_and_release_stops():
@@ -102,7 +103,7 @@ def test_hold_cmd_starts_streaming_and_release_stops():
     assert app.started is True
     lis.on_key_release(keyboard.Key.cmd_r)
     assert app.started is False
-    assert app.log == [("start", True), ("stop", True)]
+    assert app.log == [("start", True), ("stop", True, False)]
 
 
 def test_hold_autorepeat_does_not_restart():
@@ -124,7 +125,7 @@ def test_toggle_alt_starts_streaming_and_repress_stops():
     assert app.started is True  # 토글은 release로 멈추지 않음
     lis.on_key_press(keyboard.Key.alt_r)
     assert app.started is False
-    assert app.log == [("start", True), ("stop", True)]
+    assert app.log == [("start", True), ("stop", True, False)]
 
 
 def test_toggle_enter_stops_without_final_tick_and_enter_keeps_flowing():
@@ -134,7 +135,7 @@ def test_toggle_enter_stops_without_final_tick_and_enter_keeps_flowing():
     lis.on_key_press(keyboard.Key.alt_r)
     lis.on_key_press(keyboard.Key.enter)
     assert app.started is False
-    assert app.log == [("start", True), ("stop", False)]
+    assert app.log == [("start", True), ("stop", False, False)]
 
 
 def test_other_key_ignored_while_recording():
@@ -174,7 +175,7 @@ def test_hold_combo_starts_after_last_key_and_stops_on_release():
     lis.on_key_press(keyboard.Key.space)
     assert app.started is True
     lis.on_key_release(keyboard.Key.space)
-    assert app.log == [("start", True), ("stop", True)]
+    assert app.log == [("start", True), ("stop", True, False)]
 
 
 def test_toggle_combo_fires_once_until_released():
@@ -187,4 +188,45 @@ def test_toggle_combo_fires_once_until_released():
     assert app.log == [("start", True)]
     lis.on_key_release(keyboard.Key.space)
     lis.on_key_press(keyboard.Key.space)
-    assert app.log == [("start", True), ("stop", True)]
+    assert app.log == [("start", True), ("stop", True, False)]
+
+
+def test_hold_release_sends_enter_when_enabled():
+    wd = _load()
+    app = FakeApp()
+    app.hold_send_enter = True
+    lis = wd.MultiHotkeyListener(app)
+    lis.on_key_press(keyboard.Key.cmd_r)
+    lis.on_key_release(keyboard.Key.cmd_r)
+    assert app.log == [("start", True), ("stop", True, True)]
+
+
+def test_hold_release_no_enter_when_disabled():
+    wd = _load()
+    app = FakeApp()
+    app.hold_send_enter = False
+    lis = wd.MultiHotkeyListener(app)
+    lis.on_key_press(keyboard.Key.cmd_r)
+    lis.on_key_release(keyboard.Key.cmd_r)
+    assert app.log == [("start", True), ("stop", True, False)]
+
+
+def test_toggle_stop_never_sends_enter_even_when_enabled():
+    wd = _load()
+    app = FakeApp()
+    app.hold_send_enter = True
+    lis = wd.MultiHotkeyListener(app)
+    lis.on_key_press(keyboard.Key.alt_r)
+    lis.on_key_release(keyboard.Key.alt_r)
+    lis.on_key_press(keyboard.Key.alt_r)  # 다시 눌러 종료
+    assert app.log == [("start", True), ("stop", True, False)]
+
+
+def test_manual_edit_stop_never_sends_enter_even_when_enabled():
+    wd = _load()
+    app = EditApp("stop")
+    app.hold_send_enter = True
+    lis = wd.MultiHotkeyListener(app)
+    lis.on_key_press(keyboard.Key.cmd_r)            # 홀드 시작
+    lis.on_key_press(keyboard.KeyCode(char="x"))    # 수동 편집 → 종료
+    assert app.log == [("start", True), ("stop", False, False)]

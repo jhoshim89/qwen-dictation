@@ -280,3 +280,70 @@ def test_stream_loop_keeps_final_tick_for_regular_stop():
     rec._stream_tick = lambda language, allow_stopped=False: rec.ticks.append(allow_stopped)
     wd.Recorder._stream_loop(rec, language="Korean")
     assert rec.ticks == [True]
+
+
+class _FakeKeyboard:
+    def __init__(self):
+        self.events = []
+
+    def press(self, key):
+        self.events.append(("press", key))
+
+    def release(self, key):
+        self.events.append(("release", key))
+
+
+class _FakeTranscriber:
+    def __init__(self):
+        self.pykeyboard = _FakeKeyboard()
+
+
+def _kbd_recorder(wd):
+    return wd.Recorder(_FakeTranscriber(), app=None)
+
+
+def test_stop_sets_send_enter_only_when_finalize_and_send_enter():
+    wd = _load()
+    rec = _kbd_recorder(wd)
+    rec.stop(finalize=True, send_enter=True)
+    assert rec.send_enter_on_stop is True
+    rec.stop(finalize=False, send_enter=True)
+    assert rec.send_enter_on_stop is False
+    rec.stop(finalize=True, send_enter=False)
+    assert rec.send_enter_on_stop is False
+
+
+def test_stream_loop_sends_enter_when_flag_set(monkeypatch):
+    wd = _load()
+    from pynput import keyboard
+    rec = _kbd_recorder(wd)
+    rec.recording = False
+    rec.finalize_on_stop = True
+    rec.send_enter_on_stop = True
+    monkeypatch.setattr(rec, "_stream_tick", lambda *a, **k: None)
+    monkeypatch.setattr(wd.dictation_history, "add_history", lambda *_: None)
+    rec._stream_loop("ko")
+    kb = rec.transcriber.pykeyboard
+    assert ("press", keyboard.Key.enter) in kb.events
+    assert ("release", keyboard.Key.enter) in kb.events
+
+
+def test_stream_loop_no_enter_when_flag_unset(monkeypatch):
+    wd = _load()
+    rec = _kbd_recorder(wd)
+    rec.recording = False
+    rec.finalize_on_stop = True
+    rec.send_enter_on_stop = False
+    monkeypatch.setattr(rec, "_stream_tick", lambda *a, **k: None)
+    monkeypatch.setattr(wd.dictation_history, "add_history", lambda *_: None)
+    rec._stream_loop("ko")
+    assert rec.transcriber.pykeyboard.events == []
+
+
+def test_streaming_timing_defaults_measured_on_this_machine():
+    wd = _load()
+    # Measured Qwen inference ~0.1s/pass (mps) -> poll faster than generic 0.8s default.
+    # See docs/superpowers/plans/2026-06-04-streaming-dictation-defaults.md
+    assert wd.STREAM_INTERVAL == 0.4
+    assert wd.PAUSE_SILENCE_SEC == 0.4
+    assert wd.MAX_WINDOW_SEC == 12.0

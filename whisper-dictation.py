@@ -26,6 +26,7 @@ import audio_level
 import hud_overlay
 import hotkeys
 import settings_window
+import text_normalize
 
 try:
     from Foundation import NSOperationQueue, NSThread
@@ -66,9 +67,14 @@ LANGUAGE_MAP = {
 SILENCE_PEAK_THRESHOLD = 1000.0
 SPEECH_START_PEAK_THRESHOLD = 3500.0
 DEFAULT_MIN_VOLUME = 35
-STREAM_INTERVAL = 0.8        # 초: 스트리밍 갱신 주기
-PAUSE_SILENCE_SEC = 0.8      # 초: 끝이 이만큼 조용하면 쉼 → 확정
-MAX_WINDOW_SEC = 12.0        # 초: 창이 이보다 길면 강제 확정(느려짐 방지)
+# 이 맥에서 한 번 받아쓰는 데 약 0.1초밖에 안 걸린다(길이 1~8초 측정, mps). 그래서
+# 끝의 기다림은 모델 속도가 아니라 '확인 간격'이 좌우한다. 간격을 짧게 둬 말끝이 빨리
+# 들어오게 한다. (일반 권장값 0.8초는 모델이 느릴 때 얘기라 우리엔 과하게 보수적)
+STREAM_INTERVAL = 0.4        # 초: 스트리밍 갱신 주기(추론 ~0.1초라 여유 충분)
+PAUSE_SILENCE_SEC = 0.4      # 초: 끝이 이만큼 조용하면 쉼 → 확정(말끝 지연의 핵심 손잡이)
+# 매 틱마다 '확정 이후의 창 전체'를 다시 받아쓴다. 보통은 쉼(PAUSE_SILENCE_SEC)에서 먼저
+# 확정되므로 이 상한은 거의 안 걸린다. Whisper 계열 30초 한계보다 한참 아래로 두는 안전망.
+MAX_WINDOW_SEC = 12.0        # 초: 창이 이보다 길면 강제 확정(드물게 걸리는 안전망)
 NOISE_FILLER_TEXTS = {"어", "응", "음", "네", "예"}
 
 
@@ -138,18 +144,26 @@ def should_commit(window_secs, paused, max_secs):
 def looks_like_vocab_echo(text, vocab):
     """결과가 등록 단어들로만(2개 이상) 이뤄졌으면 context 환각(echo)으로 본다.
 
-    Qwen 은 음향 증거가 약하면 시스템 프롬프트의 등록 단어를 그대로 뱉는다.
-    실제 발화는 등록 안 된 말(조사·서술어 등)을 포함하므로, 토큰이 모두 등록
-    단어이고 2개 이상이면 echo 로 판정한다(단어 1개는 실제 발화일 수 있어 제외).
+    Qwen 은 음향 증거가 약하면 시스템 프롬프트의 등록 단어를 그대로 뱉는다. 여러
+    단어로 된 등록어('corneal ulcer')도 잡으려고 토큰이 아니라 '구(phrase)' 단위로,
+    긴 것부터 지워 나간다. 등록어 2개 이상이 출력의 사실상 전부를 차지하면 echo.
     """
-    if not vocab:
+    if not vocab or not text:
         return False
-    cleaned = text.replace(",", " ").replace(".", " ").replace("·", " ")
-    tokens = [t for t in cleaned.split() if t]
-    if len(tokens) < 2:
-        return False
-    vset = set(vocab)
-    return all(t in vset for t in tokens)
+    norm = " " + re.sub(r"[\s,.;!?·]+", " ", text).strip().lower() + " "
+    phrases = sorted(
+        {str(v).strip().lower() for v in vocab if str(v).strip()},
+        key=len,
+        reverse=True,
+    )
+    matched = 0
+    for phrase in phrases:
+        token = " " + phrase + " "
+        while token in norm:
+            norm = norm.replace(token, "  ", 1)
+            matched += 1
+    leftover = re.sub(r"\s+", "", norm)
+    return matched >= 2 and leftover == ""
 
 
 def looks_like_repetition_hallucination(text):
@@ -313,24 +327,26 @@ class SpeechTranscriber:
             return self.model_1_7b
 
     def transcribe_file(self, audio_path, language=None):
-        # 무음/잡음만 있는 버퍼는 건너뛴다. context(등록 단어)를 주면 모델이
-        # 음향 증거가 없을 때 그 단어들을 그대로 환각으로 뱉으므로(echo), 말소리가
-        # 없을 땐 아예 받아쓰지 않는다. peak 진폭 기준(짧은 단어도 peak 는 큼).
-        silence_threshold, _ = volume_peak_thresholds(
+        # 무음/잡음만 있는 버퍼는 건너뛴다. 또 음향 증거가 약하면(분명한 말소리
+        # 임계 미만) context(등록 단어)를 빼서, 모델이 그 단어들을 통째로 뱉는
+        # echo 를 막는다. peak 진폭 기준(짧은 단어도 peak 는 큼).
+        silence_threshold, speech_threshold = volume_peak_thresholds(
             getattr(self, "min_volume", DEFAULT_MIN_VOLUME)
         )
-        if audio_peak(audio_path) < silence_threshold:
+        peak = audio_peak(audio_path)
+        if peak < silence_threshold:
             return ""
         model = self.get_model()
         language = normalize_language(language)
         vocab = vocabulary.load_vocabulary()
-        context = vocabulary.build_context(vocab)
+        # 분명한 말소리일 때만 등록 단어로 편향한다(약하면 context 비워 echo 차단).
+        context = vocabulary.build_context(vocab) if peak >= speech_threshold else ""
         results = model.transcribe(audio_path, context=context, language=language)
         if not results:
             return ""
         text = results[0].text.strip()
         # context 환각(등록 단어만 나옴) 의심 시 → context 없이 다시 받아써 실제 들린 것 우선.
-        if looks_like_vocab_echo(text, vocab):
+        if context and looks_like_vocab_echo(text, vocab):
             plain = model.transcribe(audio_path, context="", language=language)
             text = plain[0].text.strip() if plain else ""
         return text
@@ -355,6 +371,8 @@ class Recorder:
         # 우리가 type_diff 로 타이핑하는 동안 발생하는 합성 키 이벤트를 사용자의 수동
         # 입력으로 오인하지 않도록, 이 시각 전까지는 들어오는 키를 합성으로 간주한다.
         self.self_type_guard_until = 0.0
+        # 홀드 키를 떼서 정상 종료할 때만, 마지막 글자 입력 뒤 Enter 를 보낼지.
+        self.send_enter_on_stop = False
 
     def rebaseline(self):
         """입력창 글자에 대한 소유권을 내려놓는다. 다음 발화는 빈 기준에서 시작해
@@ -366,6 +384,7 @@ class Recorder:
             return
         self.audio_frames = []
         self.finalize_on_stop = True
+        self.send_enter_on_stop = False
         self.rebaseline_pending = False
         self.recording = True
         self.record_thread = threading.Thread(target=self._record_impl, args=(language,), daemon=True)
@@ -373,9 +392,11 @@ class Recorder:
         self.stream_thread = threading.Thread(target=self._stream_loop, args=(language,), daemon=True)
         self.stream_thread.start()
 
-    def stop(self, finalize=True):
+    def stop(self, finalize=True, send_enter=False):
         # 녹음 루프(_record_impl)가 self.recording=False 를 보고 스스로 종료/정리한다.
         self.finalize_on_stop = bool(finalize)
+        # 홀드 해제로 정상 종료할 때만 마지막 글자 입력 뒤 Enter 를 보낸다.
+        self.send_enter_on_stop = bool(send_enter and finalize)
         self.recording = False
         audio_level.clear_level()
 
@@ -482,7 +503,9 @@ class Recorder:
         paused = trailing_silence(window, 16000, silence_threshold, PAUSE_SILENCE_SEC)
         if paused and looks_like_pause_noise_filler(hypo):
             hypo = ""
-        target = self.committed_text + hypo
+        # 단위가 붙은 한국어 수사만 아라비아 숫자로 바꾼다('삼 밀리'->3밀리). 변환은
+        # idempotent 라 확정 텍스트에 다시 적용해도 안전하다.
+        target = text_normalize.normalize_numbers(self.committed_text + hypo)
         # 타이핑 중과 직후 0.2초는 우리가 만든 합성 키 이벤트가 들어오므로, 그 사이
         # 리스너가 키를 사용자 수동 편집으로 오인하지 않도록 가드 시각을 세운다.
         self.self_type_guard_until = time.time() + 30.0
@@ -495,6 +518,18 @@ class Recorder:
             self.committed_text = target
             with self.audio_lock:
                 self.window_start = frame_count
+
+    def _send_enter(self):
+        """마지막 글자까지 입력된 뒤 Enter 를 보낸다(홀드 떼면 자동 전송)."""
+        # 합성 Enter 가 수동 편집으로 오인되지 않도록 가드 시각을 잠깐 세운다.
+        self.self_type_guard_until = time.time() + 0.5
+        try:
+            time.sleep(0.05)  # 직전 타이핑 합성 이벤트 flush
+            kb = self.transcriber.pykeyboard
+            kb.press(keyboard.Key.enter)
+            kb.release(keyboard.Key.enter)
+        except Exception as exc:
+            print(f"send enter error: {exc}")
 
     def _stream_loop(self, language):
         self.window_start = 0
@@ -514,6 +549,8 @@ class Recorder:
             except Exception as exc:
                 print(f"Streaming final tick error: {exc}")
         dictation_history.add_history(self.last_typed)
+        if getattr(self, "send_enter_on_stop", False):
+            self._send_enter()
 
 
 class MultiHotkeyListener:
@@ -544,7 +581,14 @@ class MultiHotkeyListener:
     def _end(self, trigger, finalize=True):
         if self.active_trigger != trigger:
             return
-        dispatch_app(self.app, self.app.stop_app, None, finalize)
+        # 홀드 키를 떼서 정상 종료할 때만, 설정이 켜져 있으면 마지막 글자 입력 뒤
+        # Enter 를 보낸다. 토글 종료·수동 편집 종료(finalize=False)에는 보내지 않는다.
+        send_enter = (
+            trigger == "hold"
+            and finalize
+            and bool(getattr(self.app, "hold_send_enter", False))
+        )
+        dispatch_app(self.app, self.app.stop_app, None, finalize, send_enter)
         self.active_trigger = None
 
     def _is_manual_edit(self, token):
@@ -653,10 +697,10 @@ class StatusBarApp(rumps.App):
                 minutes, seconds = divmod(elapsed, 60)
                 self.title = f"({minutes:02d}:{seconds:02d}) 🔴"
                 ov.update(audio_level.read_level(), elapsed)
-                ov.show_status("로컬 받아쓰기 중")
+                ov.show_status("듣는 중")
             elif self.processing_active:
                 ov.update(0.0, 0)
-                ov.show_status("받아쓰기 변환 중")
+                ov.show_status("변환 중")
             else:
                 ov.hide()
         except Exception as exc:
@@ -671,6 +715,7 @@ class StatusBarApp(rumps.App):
             "toggle_key": getattr(self, "toggle_key", "alt_r"),
             "min_volume": getattr(self, "min_volume", DEFAULT_MIN_VOLUME),
             "edit_interrupt_mode": getattr(self, "edit_interrupt_mode", "stop"),
+            "hold_send_enter": getattr(self, "hold_send_enter", True),
         }
 
     def dispatch_to_main(self, callback, *args, wait=False):
@@ -710,6 +755,7 @@ class StatusBarApp(rumps.App):
         self.min_volume = normalize_min_volume(cfg.get("min_volume", DEFAULT_MIN_VOLUME))
         mode = cfg.get("edit_interrupt_mode", "stop")
         self.edit_interrupt_mode = mode if mode in ("continue", "stop") else "stop"
+        self.hold_send_enter = bool(cfg.get("hold_send_enter", True))
         if getattr(self, "recorder", None) is not None:
             self.recorder.transcriber.min_volume = self.min_volume
         self.sync_menu_state()
@@ -745,7 +791,7 @@ class StatusBarApp(rumps.App):
         self.update_title()
 
     @rumps.clicked("Stop Recording")
-    def stop_app(self, _, finalize=True):
+    def stop_app(self, _, finalize=True, send_enter=False):
         if not self.started:
             return
         if self.timer is not None:
@@ -755,7 +801,7 @@ class StatusBarApp(rumps.App):
         self.started = False
         self.menu["Stop Recording"].set_callback(None)
         self.menu["Start Recording"].set_callback(self.start_app)
-        self.recorder.stop(finalize=finalize)
+        self.recorder.stop(finalize=finalize, send_enter=send_enter)
         print("Stopped.")
 
     def handle_recording_error(self, message):
