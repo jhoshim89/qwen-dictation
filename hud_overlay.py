@@ -39,6 +39,37 @@ def jelly_bar_heights(level):
     return side, center, side
 
 
+# 표시 모드와 아이콘(컴팩트) 사양. AppKit 없이도 import/테스트되도록 모듈 상단에 둔다.
+HUD_MODES = ("pill", "pinned", "cursor")
+ICON_SIZE = 36.0
+ICON_BAR_WIDTH = 3.5
+ICON_BAR_GAP = 2.5
+PIN_DEFAULT_MARGIN = 24.0
+CURSOR_OFFSET_X = 14.0
+CURSOR_OFFSET_Y = 6.0
+
+
+def normalize_hud_mode(value):
+    """알 수 없는 값은 안전하게 'pill'로 떨어뜨린다."""
+    return value if value in HUD_MODES else "pill"
+
+
+def clamp_to_visible(x, y, width, height, screen_boxes):
+    """저장된 (x, y)가 어느 화면 박스 안에 들어가면 그대로, 아니면 첫 화면(주 모니터)
+    오른쪽 아래 기본 자리를 돌려준다.
+
+    screen_boxes: (origin_x, origin_y, width, height) 튜플 리스트(visibleFrame).
+    좌표계는 AppKit(좌하단 원점)."""
+    if x is not None and y is not None:
+        for ox, oy, sw, sh in screen_boxes:
+            if ox <= x <= ox + sw - width and oy <= y <= oy + sh - height:
+                return float(x), float(y)
+    if screen_boxes:
+        ox, oy, sw, sh = screen_boxes[0]
+        return (ox + sw - width - PIN_DEFAULT_MARGIN, oy + PIN_DEFAULT_MARGIN)
+    return 0.0, 0.0
+
+
 # Importing AppKit at module load is safe (no window is built). Guard anyway so
 # an import failure never kills the host app.
 try:

@@ -80,3 +80,35 @@ def test_jelly_bar_heights_expand_with_level_clamp_and_stay_symmetric():
     assert hud_overlay.jelly_bar_heights(-1.0) == (5.0, 8.0, 5.0)
     assert hud_overlay.jelly_bar_heights(0.5) == (9.0, 16.0, 9.0)
     assert hud_overlay.jelly_bar_heights(2.0) == (13.0, 24.0, 13.0)
+
+
+def test_normalize_hud_mode_accepts_known_and_falls_back():
+    assert hud_overlay.normalize_hud_mode("pill") == "pill"
+    assert hud_overlay.normalize_hud_mode("pinned") == "pinned"
+    assert hud_overlay.normalize_hud_mode("cursor") == "cursor"
+    assert hud_overlay.normalize_hud_mode("bogus") == "pill"
+    assert hud_overlay.normalize_hud_mode(None) == "pill"
+
+
+def test_icon_size_is_36():
+    assert hud_overlay.ICON_SIZE == 36.0
+
+
+def test_clamp_to_visible_keeps_point_inside_a_screen():
+    screens = [(0.0, 0.0, 1440.0, 900.0)]
+    assert hud_overlay.clamp_to_visible(100.0, 100.0, 36.0, 36.0, screens) == (100.0, 100.0)
+
+
+def test_clamp_to_visible_offscreen_returns_default_bottom_right():
+    screens = [(0.0, 0.0, 1440.0, 900.0)]
+    # 1440-36-24 = 1380, 0+24 = 24
+    assert hud_overlay.clamp_to_visible(5000.0, 5000.0, 36.0, 36.0, screens) == (1380.0, 24.0)
+
+
+def test_clamp_to_visible_none_returns_default():
+    screens = [(0.0, 0.0, 1440.0, 900.0)]
+    assert hud_overlay.clamp_to_visible(None, None, 36.0, 36.0, screens) == (1380.0, 24.0)
+
+
+def test_clamp_to_visible_no_screens_returns_origin():
+    assert hud_overlay.clamp_to_visible(None, None, 36.0, 36.0, []) == (0.0, 0.0)
