@@ -556,7 +556,7 @@ class MultiHotkeyListener:
         return True
 
     def _handle_manual_edit(self):
-        mode = getattr(self.app, "edit_interrupt_mode", "continue")
+        mode = getattr(self.app, "edit_interrupt_mode", "stop")
         if mode == "stop":
             # 마지막 틱 없이 종료 — 사용자가 방금 친 글자를 다시 건드리지 않는다.
             trigger = self.active_trigger
@@ -670,7 +670,7 @@ class StatusBarApp(rumps.App):
             "hold_key": getattr(self, "hold_key", "cmd_r"),
             "toggle_key": getattr(self, "toggle_key", "alt_r"),
             "min_volume": getattr(self, "min_volume", DEFAULT_MIN_VOLUME),
-            "edit_interrupt_mode": getattr(self, "edit_interrupt_mode", "continue"),
+            "edit_interrupt_mode": getattr(self, "edit_interrupt_mode", "stop"),
         }
 
     def dispatch_to_main(self, callback, *args, wait=False):
@@ -708,8 +708,8 @@ class StatusBarApp(rumps.App):
         self.hold_key = cfg["hold_key"]
         self.toggle_key = cfg["toggle_key"]
         self.min_volume = normalize_min_volume(cfg.get("min_volume", DEFAULT_MIN_VOLUME))
-        mode = cfg.get("edit_interrupt_mode", "continue")
-        self.edit_interrupt_mode = mode if mode in ("continue", "stop") else "continue"
+        mode = cfg.get("edit_interrupt_mode", "stop")
+        self.edit_interrupt_mode = mode if mode in ("continue", "stop") else "stop"
         if getattr(self, "recorder", None) is not None:
             self.recorder.transcriber.min_volume = self.min_volume
         self.sync_menu_state()

@@ -20,17 +20,22 @@ LAYOUT:
 - Three small raspberry jelly bars gently expand with microphone level while recording.
 """
 
-PANEL_WIDTH = 76.0
-PANEL_HEIGHT = 76.0
+PANEL_WIDTH = 56.0
+PANEL_HEIGHT = 56.0
 BOTTOM_OFFSET = 96.0
 BAR_CORNER_RADIUS = PANEL_HEIGHT / 2.0
 
 
 def jelly_bar_heights(level):
-    """Clamp microphone level and return symmetric (left, center, right) bar heights."""
+    """Clamp microphone level and return symmetric (left, center, right) bar heights.
+
+    Resting bars are deliberately short so the difference between silence and
+    speech is obvious: at level 0 they sit near-flat, and they grow several-fold
+    as the microphone picks up the voice.
+    """
     level = min(1.0, max(0.0, float(level)))
-    side = 20.0 + (10.0 * level)
-    center = 30.0 + (25.0 * level)
+    side = 7.0 + (17.0 * level)
+    center = 10.0 + (32.0 * level)
     return side, center, side
 
 
@@ -105,8 +110,9 @@ if _APPKIT_OK:
 
         def setValues_(self, values):
             # values = (level, elapsed_seconds, blink_on)
-            # Smooth abrupt microphone changes so the orb breathes instead of jittering.
-            self._level = (self._level * 0.55) + (float(values[0]) * 0.45)
+            # Smooth abrupt microphone changes so the orb breathes instead of
+            # jittering, but lean toward the new sample so it visibly reacts.
+            self._level = (self._level * 0.4) + (float(values[0]) * 0.6)
             self._elapsed = values[1]
             self._blink_on = values[2]
             self.setNeedsDisplay_(True)

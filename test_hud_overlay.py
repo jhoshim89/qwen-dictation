@@ -69,12 +69,14 @@ def test_contains_point_selects_monitor_bounds():
 
 
 def test_recording_overlay_is_lifted_bottom_center_jelly_bars():
-    assert hud_overlay.PANEL_WIDTH == 76.0
-    assert hud_overlay.PANEL_HEIGHT == 76.0
+    assert hud_overlay.PANEL_WIDTH == 56.0
+    assert hud_overlay.PANEL_HEIGHT == 56.0
     assert hud_overlay.BOTTOM_OFFSET == 96.0
 
 
 def test_jelly_bar_heights_expand_with_level_clamp_and_stay_symmetric():
-    assert hud_overlay.jelly_bar_heights(-1.0) == (20.0, 30.0, 20.0)
-    assert hud_overlay.jelly_bar_heights(0.5) == (25.0, 42.5, 25.0)
-    assert hud_overlay.jelly_bar_heights(2.0) == (30.0, 55.0, 30.0)
+    # Resting bars are short; speaking grows them several-fold so the meter
+    # visibly reacts to the voice.
+    assert hud_overlay.jelly_bar_heights(-1.0) == (7.0, 10.0, 7.0)
+    assert hud_overlay.jelly_bar_heights(0.5) == (15.5, 26.0, 15.5)
+    assert hud_overlay.jelly_bar_heights(2.0) == (24.0, 42.0, 24.0)

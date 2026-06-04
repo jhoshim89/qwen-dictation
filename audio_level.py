@@ -12,7 +12,7 @@ import numpy as np
 # 16-bit PCM 최대 진폭. 사람이 보통 말할 때의 RMS를 막대가 꽉 차게 보이도록
 # 전체 범위(32768)가 아니라 더 낮은 기준으로 정규화한다.
 _FULL_SCALE = 32768.0
-_NORMALIZE_REF = 3000.0  # 이 RMS 정도면 막대가 가득 찬다(체감 보정값)
+_NORMALIZE_REF = 2100.0  # 이 RMS 정도면 막대가 가득 찬다(보통 말소리에 잘 반응하도록 낮춤)
 
 
 def level_file_path():
