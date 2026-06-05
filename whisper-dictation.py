@@ -56,6 +56,31 @@ except Exception:
     kCGHIDEventTap = None
 
 
+def _safe_keyboard_listener_class():
+    """Caps Lock(한/영) 입력소스 전환 충돌을 막은 키 리스너 클래스를 만든다.
+
+    pynput 의 키 리스너는 NSSystemDefined(미디어/시스템 정의) 이벤트를
+    NSEvent.eventWithCGEvent_ 로 변환한다. 그런데 Caps Lock 을 한/영 토글로 쓰는
+    환경에서 그 변환이 백그라운드 탭 스레드에서 TSM 입력소스 전환을 호출하고, TSM 이
+    메인 디스패치 큐를 강제(assert)해 앱이 EXC_BREAKPOINT(SIGTRAP)로 즉사한다
+    (크래시 리포트로 확인). 이 앱은 미디어 키를 단축키로 쓰지 않으므로, 그 이벤트
+    종류를 리스너 mask 에서 빼 변환 자체가 일어나지 않게 한다.
+    """
+    base = keyboard.Listener
+    try:
+        from pynput.keyboard._darwin import CGEventMaskBit, NSSystemDefined
+    except Exception:
+        return base  # 비-macOS 또는 pynput 내부 변경 시: 원본 그대로 사용
+
+    class _SafeKeyboardListener(base):
+        _EVENTS = base._EVENTS & ~CGEventMaskBit(NSSystemDefined)
+
+    return _SafeKeyboardListener
+
+
+SafeKeyboardListener = _safe_keyboard_listener_class()
+
+
 MODEL_1_7B = os.environ.get("QWEN_ASR_1_7B_PATH", "Qwen/Qwen3-ASR-1.7B")
 LANGUAGE_MAP = {
     "auto": None,
@@ -1046,7 +1071,7 @@ class StatusBarApp(rumps.App):
                     key_listener.on_key_release(HOTKEY_FN)
             return event
 
-        self._global_listener = keyboard.Listener(
+        self._global_listener = SafeKeyboardListener(
             on_press=on_hotkey,
             on_release=key_listener.on_key_release,
             darwin_intercept=intercept_fn_key,
