@@ -22,6 +22,7 @@ import dashboard
 import app_paths
 import app_config
 import vocabulary
+import term_correct
 import dictation_history
 import audio_level
 import hud_overlay
@@ -645,6 +646,8 @@ class Recorder:
         paused = trailing_silence(window, 16000, silence_threshold, PAUSE_SILENCE_SEC)
         if paused and looks_like_pause_noise_filler(hypo):
             hypo = ""
+        # 등록 용어로 사후 교정한다(모델엔 용어를 안 줬으므로 여기서만 반영).
+        hypo = term_correct.correct_terms(hypo, getattr(self, "session_vocab", None) or [])
         # 단위가 붙은 한국어 수사만 아라비아 숫자로 바꾼다('삼 밀리'->3밀리). 변환은
         # idempotent 라 확정 텍스트에 다시 적용해도 안전하다.
         target = text_normalize.normalize_numbers(self.committed_text + hypo)
@@ -682,6 +685,7 @@ class Recorder:
         self.window_start = 0
         self.committed_text = ""
         self.last_typed = ""
+        self.session_vocab = vocabulary.load_vocabulary()
         while self.recording:
             # 주기마다 한 번씩 틱. 단, 도중에 정지 신호가 오면 즉시 깨어나
             # 남은 대기 없이 곧장 마지막 틱으로 넘어간다(키 떼고 Enter 지연 최소화).

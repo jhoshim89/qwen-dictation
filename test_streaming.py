@@ -546,3 +546,27 @@ def test_capture_loop_appends_to_audio_frames_while_recording():
     rec.recording = True       # 녹음 중 → audio_frames 에도 쌓임
     rec._capture_loop()
     assert len(rec.audio_frames) >= 1
+
+
+def test_stream_tick_corrects_misheard_term_before_typing(monkeypatch):
+    wd = _load()
+    import numpy as np
+    rec = _make_recorder(wd, None, ["각막계양 입니다"])   # 모델이 잘못 들은 결과
+    rec.session_vocab = ["각막궤양"]                       # 등록 용어
+    loud = (np.random.RandomState(0).randn(16000) * 6000).astype(np.int16).tobytes()
+    with rec.audio_lock:
+        rec.audio_frames = [loud]
+    wd.Recorder._stream_tick(rec, language="Korean")
+    assert rec.last_typed == "각막궤양 입니다"            # 타이핑 전에 교정됨
+
+
+def test_stream_tick_without_session_vocab_is_unchanged(monkeypatch):
+    wd = _load()
+    import numpy as np
+    rec = _make_recorder(wd, None, ["각막계양 입니다"])
+    # session_vocab 미설정 → 교정 없이 그대로
+    loud = (np.random.RandomState(0).randn(16000) * 6000).astype(np.int16).tobytes()
+    with rec.audio_lock:
+        rec.audio_frames = [loud]
+    wd.Recorder._stream_tick(rec, language="Korean")
+    assert rec.last_typed == "각막계양 입니다"
