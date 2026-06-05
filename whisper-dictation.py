@@ -290,6 +290,20 @@ def looks_like_punctuation_only(text):
     return bool(text and not compact)
 
 
+def agreed_word_prefix(prev, curr):
+    """직전 결과(prev)와 현재 결과(curr)가 앞에서부터 연속으로 같은 '단어'만 이어 돌려준다.
+
+    LocalAgreement-2: 두 번 연속 같게 들린 앞부분만 확정해 화면에 보여주면, 진행 중에
+    뒷말 때문에 앞말이 바뀌는 흔들림('왔다갔다')이 사라진다. 부분문자열이 아니라 공백
+    기준 단어 단위로 비교한다('안녕'≠'안녕하세요').
+    """
+    pw, cw = (prev or "").split(), (curr or "").split()
+    n = 0
+    while n < len(pw) and n < len(cw) and pw[n] == cw[n]:
+        n += 1
+    return " ".join(cw[:n])
+
+
 def safe_notify(title, subtitle, message):
     try:
         rumps.notification(title, subtitle, message)
@@ -673,9 +687,27 @@ class Recorder:
             hypo = ""
         # 등록 용어로 사후 교정한다(모델엔 용어를 안 줬으므로 여기서만 반영).
         hypo = term_correct.correct_terms(hypo, getattr(self, "session_vocab", None) or [])
+        window_secs = len(window) / 2.0 / 16000.0
+        committing = bool(hypo and should_commit(window_secs, paused, MAX_WINDOW_SEC))
+        if committing:
+            # 확정 시점(쉼/최대창)에서는 마지막 말까지 전부 흘려보낸다.
+            shown = hypo
+        else:
+            # LocalAgreement-2: 직전 결과와 '연속 두 번 같은' 앞부분만 보여준다. 확정된
+            # 앞부분은 단조 증가만 하므로(이미 친 글자를 지우거나 바꾸지 않는다), 진행
+            # 중 흔들림('왔다갔다')과 '앞 글자 사라짐'이 사라진다.
+            prev = getattr(self, "_la_prev_hypo", "")
+            confirmed = getattr(self, "_la_confirmed", "")
+            agreed = agreed_word_prefix(prev, hypo)
+            cw, aw = confirmed.split(), agreed.split()
+            if len(aw) > len(cw) and aw[: len(cw)] == cw:
+                confirmed = agreed  # 합의된 앞부분이 더 늘면 확정 연장
+            shown = confirmed
+            self._la_confirmed = confirmed
+        self._la_prev_hypo = hypo
         # 단위가 붙은 한국어 수사만 아라비아 숫자로 바꾼다('삼 밀리'->3밀리). 변환은
         # idempotent 라 확정 텍스트에 다시 적용해도 안전하다.
-        target = text_normalize.normalize_numbers(self.committed_text + hypo)
+        target = text_normalize.normalize_numbers(self.committed_text + shown)
         # 타이핑 중과 직후 0.2초는 우리가 만든 합성 키 이벤트가 들어오므로, 그 사이
         # 리스너가 키를 사용자 수동 편집으로 오인하지 않도록 가드 시각을 세운다.
         self.self_type_guard_until = time.time() + 30.0
@@ -683,9 +715,10 @@ class Recorder:
             self.last_typed = self._type(self.last_typed, target)
         finally:
             self.self_type_guard_until = time.time() + 0.2
-        window_secs = len(window) / 2.0 / 16000.0
-        if hypo and should_commit(window_secs, paused, MAX_WINDOW_SEC):
+        if committing:
             self.committed_text = target
+            self._la_prev_hypo = ""
+            self._la_confirmed = ""
             with self.audio_lock:
                 self.window_start = frame_count
 
@@ -710,6 +743,8 @@ class Recorder:
         self.window_start = 0
         self.committed_text = ""
         self.last_typed = ""
+        self._la_prev_hypo = ""
+        self._la_confirmed = ""
         self.session_vocab = vocabulary.load_vocabulary()
         while self.recording:
             # 주기마다 한 번씩 틱. 단, 도중에 정지 신호가 오면 즉시 깨어나

@@ -115,15 +115,18 @@ def _make_recorder(wd, monkeypatch, hypo_by_call):
 
 def test_stream_tick_types_committed_plus_hypothesis(monkeypatch):
     wd = _load()
-    rec = _make_recorder(wd, monkeypatch, ["안녕"])
-    # 시끄러운 1초(확정 안 됨: 끝이 시끄러움)
+    # LocalAgreement-2: 같은 결과가 연속 두 번 나와야 화면에 확정되므로 틱을 두 번 돈다.
+    rec = _make_recorder(wd, monkeypatch, ["안녕", "안녕"])
+    # 시끄러운 1초(끝이 시끄러워 쉼 아님 → 확정/커밋 안 됨)
     import numpy as np
     loud = (np.random.RandomState(0).randn(16000) * 6000).astype(np.int16).tobytes()
     with rec.audio_lock:
         rec.audio_frames = [loud]
     wd.Recorder._stream_tick(rec, language="Korean")
-    assert rec.last_typed == "안녕"
-    assert rec.committed_text == ""          # 안 쉬었으니 확정 안 됨
+    assert rec.last_typed == ""               # 첫 틱: 아직 한 번뿐 → 확정 안 됨
+    wd.Recorder._stream_tick(rec, language="Korean")
+    assert rec.last_typed == "안녕"            # 두 번째 틱: 두 번 같음 → 확정 표시
+    assert rec.committed_text == ""          # 안 쉬었으니 커밋 안 됨
     assert rec.window_start == 0
 
 
@@ -143,13 +146,15 @@ def test_stream_tick_discards_quiet_window_before_transcribing():
 
 def test_stream_tick_low_min_volume_allows_quiet_window():
     wd = _load()
-    rec = _make_recorder(wd, None, ["작게 말함"])
+    # 작은 말소리가 게이트를 통과하는지 확인. LA-2 라 같은 결과 두 틱 뒤 표시.
+    rec = _make_recorder(wd, None, ["작게 말함", "작게 말함"])
     rec.app = type("App", (), {"min_volume": 10})()
     rec.transcriber = type("Transcriber", (), {})()
     quiet_speech = (np.ones(16000, dtype=np.int16) * 2200).tobytes()
     with rec.audio_lock:
         rec.audio_frames = [quiet_speech]
-    wd.Recorder._stream_tick(rec, language="Korean")
+    wd.Recorder._stream_tick(rec, language="Korean")   # 1회: 아직 확정 전
+    wd.Recorder._stream_tick(rec, language="Korean")   # 2회: 두 번 같음 → 표시
     assert rec.last_typed == "작게 말함"
     assert rec.transcriber.min_volume == 10
 
@@ -554,8 +559,9 @@ def test_stream_tick_corrects_misheard_term_before_typing(monkeypatch):
     rec = _make_recorder(wd, None, ["각막계양 입니다"])   # 모델이 잘못 들은 결과
     rec.session_vocab = ["각막궤양"]                       # 등록 용어
     loud = (np.random.RandomState(0).randn(16000) * 6000).astype(np.int16).tobytes()
+    quiet = (np.zeros(16000, dtype=np.int16)).tobytes()   # 끝 무음 → 쉼 → 확정(전체 출력)
     with rec.audio_lock:
-        rec.audio_frames = [loud]
+        rec.audio_frames = [loud, quiet]
     wd.Recorder._stream_tick(rec, language="Korean")
     assert rec.last_typed == "각막궤양 입니다"            # 타이핑 전에 교정됨
 
@@ -566,7 +572,39 @@ def test_stream_tick_without_session_vocab_is_unchanged(monkeypatch):
     rec = _make_recorder(wd, None, ["각막계양 입니다"])
     # session_vocab 미설정 → 교정 없이 그대로
     loud = (np.random.RandomState(0).randn(16000) * 6000).astype(np.int16).tobytes()
+    quiet = (np.zeros(16000, dtype=np.int16)).tobytes()   # 끝 무음 → 쉼 → 확정(전체 출력)
     with rec.audio_lock:
-        rec.audio_frames = [loud]
+        rec.audio_frames = [loud, quiet]
     wd.Recorder._stream_tick(rec, language="Korean")
     assert rec.last_typed == "각막계양 입니다"
+
+
+def test_local_agreement_does_not_show_a_word_that_keeps_changing():
+    wd = _load()
+    import numpy as np
+    # 모델이 같은 자리를 '구두'→'구두점이'로 고치는 동안엔 화면에 안 뜬다(흔들림 차단).
+    rec = _make_recorder(wd, None, ["구두", "구두점이", "구두점이"])
+    loud = (np.random.RandomState(0).randn(16000) * 6000).astype(np.int16).tobytes()
+    with rec.audio_lock:
+        rec.audio_frames = [loud]   # 끝이 시끄러워 쉼 아님 → 진행 중(LA-2 적용)
+    wd.Recorder._stream_tick(rec, language="Korean")
+    assert rec.last_typed == ""       # 1틱: 처음 본 말 → 확정 안 함
+    wd.Recorder._stream_tick(rec, language="Korean")
+    assert rec.last_typed == ""       # 2틱: 직전과 다름(구두↔구두점이) → 아직 확정 안 함
+    wd.Recorder._stream_tick(rec, language="Korean")
+    assert rec.last_typed == "구두점이"  # 3틱: 두 번 연속 같음 → 그제서야 확정 표시
+
+
+def test_local_agreement_never_untypes_a_confirmed_word():
+    wd = _load()
+    import numpy as np
+    # 한번 확정(두 번 같음)된 '안녕 반갑'은 뒤가 바뀌어도 지우거나 고치지 않는다.
+    rec = _make_recorder(wd, None, ["안녕 반갑", "안녕 반갑", "안녕 잘가"])
+    loud = (np.random.RandomState(0).randn(16000) * 6000).astype(np.int16).tobytes()
+    with rec.audio_lock:
+        rec.audio_frames = [loud]
+    wd.Recorder._stream_tick(rec, language="Korean")   # 1틱: ""
+    wd.Recorder._stream_tick(rec, language="Korean")   # 2틱: '안녕 반갑' 확정
+    assert rec.last_typed == "안녕 반갑"
+    wd.Recorder._stream_tick(rec, language="Korean")   # 3틱: 뒤가 '잘가'로 바뀜
+    assert rec.last_typed == "안녕 반갑"               # 확정분은 그대로(안 사라짐)
