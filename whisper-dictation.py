@@ -425,52 +425,19 @@ class SpeechTranscriber:
             return self.model_1_7b
 
     def transcribe_file(self, audio_path, language=None):
-        # 무음/잡음만 있는 버퍼는 건너뛴다. 또 음향 증거가 약하면(분명한 말소리
-        # 임계 미만) context(등록 단어)를 빼서, 모델이 그 단어들을 통째로 뱉는
-        # echo 를 막는다. peak 진폭 기준(짧은 단어도 peak 는 큼).
-        silence_threshold, speech_threshold = volume_peak_thresholds(
+        # 무음/잡음만 있는 버퍼는 건너뛴다. 용어/분야는 모델에 주지 않는다(context 가
+        # 출력에 새는 echo 를 원천 차단). 등록 용어 반영은 받아쓴 뒤 term_correct 가 한다.
+        silence_threshold, _ = volume_peak_thresholds(
             getattr(self, "min_volume", DEFAULT_MIN_VOLUME)
         )
-        peak = audio_peak(audio_path)
-        if peak < silence_threshold:
+        if audio_peak(audio_path) < silence_threshold:
             return ""
         model = self.get_model()
         language = normalize_language(language)
-        vocab = vocabulary.load_vocabulary()
-        domain = getattr(self, "domain_context", "")
-        # 분명한 말소리일 때만 등록 단어/분야 머리말로 편향한다(약하면 context 비워 echo 차단).
-        context = vocabulary.build_context(vocab, domain) if peak >= speech_threshold else ""
-        results = model.transcribe(audio_path, context=context, language=language)
+        results = model.transcribe(audio_path, context="", language=language)
         if not results:
             return ""
-        text = results[0].text.strip()
-        # context 환각 의심 시 재전사한다. 등록 단어만 새면 context 를 통째로 비우고,
-        # 분야 문장이 샜으면(실제 단어와 섞여서라도) 분야 문장만 빼고 단어 biasing 은
-        # 유지해 재전사한다 — 단어 인식 정확도는 지키면서 새는 문장만 제거한다.
-        if context:
-            if looks_like_context_label_echo(text):
-                # 머리표('전문 용어')가 새면 통째 echo — context 전부 빼고 재전사한다.
-                plain = model.transcribe(audio_path, context="", language=language)
-                text = plain[0].text.strip() if plain else ""
-            elif looks_like_vocab_echo(text, vocab):
-                plain = model.transcribe(audio_path, context="", language=language)
-                text = plain[0].text.strip() if plain else ""
-            elif domain and looks_like_domain_echo(text, domain):
-                vocab_context = vocabulary.build_context(vocab, "")
-                plain = model.transcribe(audio_path, context=vocab_context, language=language)
-                text = plain[0].text.strip() if plain else ""
-            else:
-                # 등록 단어가 실제 말에 섞이거나 단독으로 끼어든 경우(가장 흔한 leakage).
-                # 편향(context)을 끈 결과와 대조해, 음향이 뒷받침하지 않는(편향이 지어낸)
-                # 단어가 있으면 음향 결과로 대체한다 — "확실할 때만 등록 단어를 남긴다".
-                present = vocab_terms_in_text(text, vocab)
-                if present:
-                    plain = model.transcribe(audio_path, context="", language=language)
-                    plain_text = plain[0].text.strip() if plain else ""
-                    confirmed = set(vocab_terms_in_text(plain_text, present))
-                    if any(term not in confirmed for term in present):
-                        text = plain_text
-        return text
+        return results[0].text.strip()
 
 
 class Recorder:

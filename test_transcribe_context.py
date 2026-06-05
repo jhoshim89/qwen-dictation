@@ -31,26 +31,6 @@ def _write_wav(path, samples):
     sf.write(str(path), np.asarray(samples, dtype="int16"), 16000)
 
 
-def test_transcribe_passes_vocabulary_context(tmp_path, monkeypatch):
-    import numpy as np
-    wd = _load()
-    vp = tmp_path / "vocabulary.json"
-    monkeypatch.setattr(app_paths, "vocabulary_path", lambda: str(vp))
-    vocabulary.save_vocabulary(["각막", "궤양"])
-
-    # 말소리 수준 에너지의 wav (게이트 통과해야 함)
-    wav = tmp_path / "speech.wav"
-    _write_wav(wav, (np.random.RandomState(1).randn(16000) * 5000))
-
-    tr = wd.SpeechTranscriber("cpu", None)
-    fake = _FakeModel()
-    monkeypatch.setattr(tr, "get_model", lambda: fake)
-
-    out = tr.transcribe_file(str(wav), language="Korean")
-    assert out == "녹음 결과"
-    assert fake.calls[0]["context"] == "전문 용어: 각막, 궤양"
-
-
 def test_transcribe_skips_silent_audio(tmp_path, monkeypatch):
     import numpy as np
     wd = _load()
@@ -81,33 +61,6 @@ def test_looks_like_vocab_echo():
     assert wd.looks_like_vocab_echo("각막", vocab) is False
     # vocab 없으면 항상 False
     assert wd.looks_like_vocab_echo("각막 염색", []) is False
-
-
-def test_echo_result_retranscribes_without_context(tmp_path, monkeypatch):
-    import numpy as np
-    wd = _load()
-    vp = tmp_path / "vocabulary.json"
-    monkeypatch.setattr(app_paths, "vocabulary_path", lambda: str(vp))
-    vocabulary.save_vocabulary(["궤양", "각막", "염색"])
-    wav = tmp_path / "speech.wav"
-    _write_wav(wav, (np.random.RandomState(2).randn(16000) * 5000))
-
-    class EchoThenRealModel:
-        def __init__(self):
-            self.calls = []
-
-        def transcribe(self, audio, context="", language=None, **kw):
-            self.calls.append(context)
-            # context 있으면 echo, 없으면 진짜
-            text = "궤양, 각막, 염색." if context else "각막궤양 관찰 결과입니다."
-            return [_FakeResult(text)]
-
-    tr = wd.SpeechTranscriber("cpu", None)
-    fake = EchoThenRealModel()
-    monkeypatch.setattr(tr, "get_model", lambda: fake)
-    out = tr.transcribe_file(str(wav), language="Korean")
-    assert out == "각막궤양 관찰 결과입니다."   # echo 감지 후 context 없이 재전사 결과
-    assert fake.calls[0] != "" and fake.calls[1] == ""  # 1차 context, 2차 무context
 
 
 def test_transcribe_does_not_apply_dictionary_replacements(tmp_path, monkeypatch):
@@ -142,45 +95,6 @@ def test_looks_like_vocab_echo_handles_multiword():
     assert wd.looks_like_vocab_echo("the corneal ulcer healed well", vocab) is False
 
 
-def test_transcribe_drops_context_on_weak_audio(tmp_path, monkeypatch):
-    import numpy as np
-    import soundfile as sf
-    wd = _load()
-    vp = tmp_path / "vocabulary.json"
-    monkeypatch.setattr(app_paths, "vocabulary_path", lambda: str(vp))
-    vocabulary.save_vocabulary(["각막", "궤양"])
-    # 무음은 아니지만(>silence) 분명한 말소리 임계 미만(<speech)인 약한 신호
-    t = np.arange(16000)
-    weak = (2000 * np.sin(2 * np.pi * 220 * t / 16000)).astype("int16")
-    wav = tmp_path / "weak.wav"
-    sf.write(str(wav), weak, 16000)
-    tr = wd.SpeechTranscriber("cpu", None)
-    fake = _FakeModel()
-    monkeypatch.setattr(tr, "get_model", lambda: fake)
-    out = tr.transcribe_file(str(wav), language="Korean")
-    assert out == "녹음 결과"
-    assert fake.calls[0]["context"] == ""   # 약한 소리 → context 비움(echo 차단)
-
-
-def test_transcribe_prepends_domain_context(tmp_path, monkeypatch):
-    import numpy as np
-    wd = _load()
-    vp = tmp_path / "vocabulary.json"
-    monkeypatch.setattr(app_paths, "vocabulary_path", lambda: str(vp))
-    vocabulary.save_vocabulary(["녹내장"])
-    wav = tmp_path / "speech.wav"
-    _write_wav(wav, (np.random.RandomState(7).randn(16000) * 5000))
-
-    tr = wd.SpeechTranscriber("cpu", None)
-    tr.domain_context = "수의안과 진료"
-    fake = _FakeModel()
-    monkeypatch.setattr(tr, "get_model", lambda: fake)
-
-    out = tr.transcribe_file(str(wav), language="Korean")
-    assert out == "녹음 결과"
-    assert fake.calls[0]["context"] == "수의안과 진료. 전문 용어: 녹내장"
-
-
 def test_looks_like_domain_echo():
     wd = _load()
     assert wd.looks_like_domain_echo("수의안과 진료", "수의안과 진료.") is True
@@ -211,67 +125,6 @@ def test_looks_like_domain_echo_partial_and_dash():
     assert wd.looks_like_domain_echo("오늘 점심 뭐 먹지", DOM) is False
 
 
-def test_domain_echo_retranscribes_without_context(tmp_path, monkeypatch):
-    import numpy as np
-    wd = _load()
-    vp = tmp_path / "vocabulary.json"
-    monkeypatch.setattr(app_paths, "vocabulary_path", lambda: str(vp))
-    vocabulary.save_vocabulary(["녹내장"])
-    wav = tmp_path / "speech.wav"
-    _write_wav(wav, (np.random.RandomState(8).randn(16000) * 5000))
-
-    class EchoDomainModel:
-        def __init__(self):
-            self.calls = []
-
-        def transcribe(self, audio, context="", language=None, **kw):
-            self.calls.append(context)
-            # 분야 문장이 system 지시문에 들어가면 흘림(leakage), 없으면 진짜.
-            if "수의안과" in context:
-                return [_FakeResult("수의안과 진료")]
-            return [_FakeResult("녹내장입니다")]
-
-    tr = wd.SpeechTranscriber("cpu", None)
-    tr.domain_context = "수의안과 진료"
-    fake = EchoDomainModel()
-    monkeypatch.setattr(tr, "get_model", lambda: fake)
-
-    out = tr.transcribe_file(str(wav), language="Korean")
-    assert out == "녹내장입니다"
-    assert "수의안과" in fake.calls[0]            # 1차는 분야 문장 포함
-    assert fake.calls[1] == "전문 용어: 녹내장"   # 2차는 분야 문장만 빼고 단어장 라벨 유지
-
-
-def test_domain_leakage_mixed_keeps_vocab(tmp_path, monkeypatch):
-    import numpy as np
-    wd = _load()
-    vp = tmp_path / "vocabulary.json"
-    monkeypatch.setattr(app_paths, "vocabulary_path", lambda: str(vp))
-    vocabulary.save_vocabulary(["녹내장"])
-    wav = tmp_path / "speech.wav"
-    _write_wav(wav, (np.random.RandomState(9).randn(16000) * 5000))
-
-    class MixedLeakModel:
-        def __init__(self):
-            self.calls = []
-
-        def transcribe(self, audio, context="", language=None, **kw):
-            self.calls.append(context)
-            # 실제 단어 + 분야 문장을 섞어 흘림. 분야 문장 없으면 깨끗한 단어만.
-            if "수의안과" in context:
-                return [_FakeResult("녹내장 수의안과 진료. 안과 검사 용어 위주")]
-            return [_FakeResult("녹내장")]
-
-    tr = wd.SpeechTranscriber("cpu", None)
-    tr.domain_context = "수의안과 진료. 안과 검사 용어 위주"
-    fake = MixedLeakModel()
-    monkeypatch.setattr(tr, "get_model", lambda: fake)
-
-    out = tr.transcribe_file(str(wav), language="Korean")
-    assert out == "녹내장"                        # 분야 문장 leakage 제거, 실제 단어만 남음
-    assert fake.calls[1] == "전문 용어: 녹내장"   # 단어장 biasing(라벨) 은 유지된 채 재전사
-
-
 def test_current_config_includes_domain_context():
     import types
     wd = _load()
@@ -295,59 +148,6 @@ def test_vocab_terms_in_text_finds_mixed_and_glued():
     assert wd.vocab_terms_in_text("녹내장", []) == []
 
 
-def test_unconfirmed_vocab_term_replaced_by_plain(tmp_path, monkeypatch):
-    # 편향(context) 켜면 환각으로 녹내장이 끼고, 끄면 깨끗 → 음향이 뒷받침 안 하므로 제거.
-    import numpy as np
-    wd = _load()
-    vp = tmp_path / "vocabulary.json"
-    monkeypatch.setattr(app_paths, "vocabulary_path", lambda: str(vp))
-    vocabulary.save_vocabulary(["녹내장"])
-    wav = tmp_path / "speech.wav"
-    _write_wav(wav, (np.random.RandomState(11).randn(16000) * 5000))
-
-    class HallucinatedMixModel:
-        def __init__(self):
-            self.calls = []
-
-        def transcribe(self, audio, context="", language=None, **kw):
-            self.calls.append(context)
-            text = "오늘 환자 녹내장 봤어요" if context else "오늘 환자 봤어요"
-            return [_FakeResult(text)]
-
-    tr = wd.SpeechTranscriber("cpu", None)
-    fake = HallucinatedMixModel()
-    monkeypatch.setattr(tr, "get_model", lambda: fake)
-    out = tr.transcribe_file(str(wav), language="Korean")
-    assert out == "오늘 환자 봤어요"                # 환각 등록 단어 제거(음향 결과로 대체)
-    assert fake.calls[0] != "" and fake.calls[1] == ""   # 1차 편향, 2차 교차확인용 plain
-
-
-def test_confirmed_vocab_term_is_kept(tmp_path, monkeypatch):
-    # 힌트를 끄든 켜든 녹내장이 나오면(흔한 말) 진짜 발화 → 살린다.
-    import numpy as np
-    wd = _load()
-    vp = tmp_path / "vocabulary.json"
-    monkeypatch.setattr(app_paths, "vocabulary_path", lambda: str(vp))
-    vocabulary.save_vocabulary(["녹내장"])
-    wav = tmp_path / "speech.wav"
-    _write_wav(wav, (np.random.RandomState(12).randn(16000) * 5000))
-
-    class RealWordModel:
-        def __init__(self):
-            self.calls = []
-
-        def transcribe(self, audio, context="", language=None, **kw):
-            self.calls.append(context)
-            return [_FakeResult("녹내장 소견입니다")]
-
-    tr = wd.SpeechTranscriber("cpu", None)
-    fake = RealWordModel()
-    monkeypatch.setattr(tr, "get_model", lambda: fake)
-    out = tr.transcribe_file(str(wav), language="Korean")
-    assert out == "녹내장 소견입니다"     # plain 도 같은 단어 → 확인됨 → 유지
-    assert fake.calls[1] == ""            # 교차확인 plain 패스는 돌았음
-
-
 def test_looks_like_context_label_echo():
     wd = _load()
     # context 머리표가 출력에 들어오면 echo (사용자가 말하는 내용이 아님)
@@ -358,32 +158,20 @@ def test_looks_like_context_label_echo():
     assert wd.looks_like_context_label_echo("") is False
 
 
-def test_labeled_context_echo_dropped_even_with_unknown_terms(tmp_path, monkeypatch):
-    # 라이브 버그 재현: 모델이 vocab 에 없는 분야 용어를 '전문 용어:' 라벨째 환각.
-    # 기존 단어/분야 echo 가드는 (vocab 매칭이 안 돼) 못 잡는다 → 라벨로 잡아야 함.
+def test_transcribe_passes_no_context(tmp_path, monkeypatch):
     import numpy as np
     wd = _load()
     vp = tmp_path / "vocabulary.json"
     monkeypatch.setattr(app_paths, "vocabulary_path", lambda: str(vp))
-    vocabulary.save_vocabulary(["Qwen"])  # 실제 vocab 엔 녹내장/안압 없음
+    vocabulary.save_vocabulary(["각막", "궤양"])
     wav = tmp_path / "speech.wav"
-    _write_wav(wav, (np.random.RandomState(21).randn(16000) * 5000))
-
-    class LabelEchoModel:
-        def __init__(self):
-            self.calls = []
-
-        def transcribe(self, audio, context="", language=None, **kw):
-            self.calls.append(context)
-            if context:
-                return [_FakeResult("전문 용어: 녹내장, 안압")]
-            return [_FakeResult("하나")]
+    _write_wav(wav, (np.random.RandomState(1).randn(16000) * 5000))
 
     tr = wd.SpeechTranscriber("cpu", None)
     tr.domain_context = "수의안과 진료"
-    fake = LabelEchoModel()
+    fake = _FakeModel()
     monkeypatch.setattr(tr, "get_model", lambda: fake)
+
     out = tr.transcribe_file(str(wav), language="Korean")
-    assert "전문 용어" not in out      # 머리표가 출력에 남으면 안 됨
-    assert out == "하나"               # context 빼고 재전사한 진짜 결과
-    assert fake.calls[0] != "" and fake.calls[-1] == ""  # 1차 context, 마지막 무context
+    assert out == "녹음 결과"
+    assert fake.calls[0]["context"] == ""   # 용어/분야를 모델에 주지 않는다(누출 0)
