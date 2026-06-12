@@ -17,6 +17,9 @@
 
 - Confirm the installer works from `main` on this Mac or a fresh install directory.
 - Confirm Right Cmd hold types into one real text field.
+
+## Completed release prep
+
 - Launch-prep changes are committed and pushed to `main`.
 
 ## Launch day
@@ -30,7 +33,7 @@
 ## Show HN day
 
 - [ ] Confirm README explains the workflow without needing demo media.
-- [ ] Confirm install command still points at `main`.
+- [ ] Confirm install command uses the commit-pinned script that clones `main`.
 - [ ] Submit the Show HN title from `promo/posts.yaml`.
 - [ ] Post the prepared first comment.
 - [ ] Monitor comments for 6-8 hours.
