@@ -3,7 +3,7 @@
 ## Before posting
 
 - [x] README first screen explains the product in one sentence.
-- [x] Install command points at `main`.
+- [x] Install command uses a commit-pinned script that clones `main`.
 - [x] GitHub description and topics are set.
 - [x] README has a clear "How it works" section.
 - [x] Demo media is either attached or explicitly deferred.
@@ -17,7 +17,7 @@
 
 - Confirm the installer works from `main` on this Mac or a fresh install directory.
 - Confirm Right Cmd hold types into one real text field.
-- Commit and push the launch-prep changes before posting public links.
+- Launch-prep changes are committed and pushed to `main`.
 
 ## Launch day
 
