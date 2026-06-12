@@ -41,7 +41,7 @@ Right Option can be used as a toggle instead of a hold key.
 One-line install for a new Mac:
 
 ```bash
-curl -fsSL https://raw.githubusercontent.com/jhoshim89/qwen-dictation/main/install.sh | bash
+curl -fsSL https://raw.githubusercontent.com/jhoshim89/qwen-dictation/912491d75039847a95c6d673e1fd77c8d4bd4a87/install.sh | bash
 ```
 
 This installs PortAudio with Homebrew, clones the app into
