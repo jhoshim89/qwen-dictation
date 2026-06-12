@@ -1,6 +1,36 @@
 # Qwen Dictation
 
-Local macOS dictation MVP powered by Qwen3-ASR. It runs from the menu bar, opens a small settings dashboard, and types into the currently focused input field.
+> Local-first Mac dictation powered by Qwen3-ASR. Hold Right Cmd, speak, and it
+> types into any app.
+
+Qwen Dictation runs from the macOS menu bar, records only while you trigger it,
+and types into the currently focused input field. Qwen3-ASR is the default local
+engine.
+
+Why it is useful:
+
+- **Works anywhere you can type**: Cursor, ChatGPT, Slack, mail, browsers, and editors.
+- **Local by default**: audio is processed on your Mac, not sent to a cloud API.
+- **Fast push-to-talk flow**: hold Right Cmd to dictate, or toggle with Right Option.
+- **Vocabulary-aware**: register names and specialist terms for better recognition.
+
+<p align="center">
+  <img src="docs/hud-current-preview.svg" alt="Qwen Dictation HUD preview" width="560">
+</p>
+
+## Status
+
+This is a developer MVP. The core dictation loop works, but the install flow is
+still terminal-based and a polished signed macOS app is not ready yet.
+
+## How it works
+
+1. Focus any text field.
+2. Hold Right Cmd and speak.
+3. Qwen Dictation transcribes locally and types into the focused app.
+4. Release Right Cmd to stop.
+
+Right Option can be used as a toggle instead of a hold key.
 
 ## 받아쓰기 방식 (실시간 스트리밍)
 
@@ -11,7 +41,7 @@ Local macOS dictation MVP powered by Qwen3-ASR. It runs from the menu bar, opens
 One-line install for a new Mac:
 
 ```bash
-curl -fsSL https://raw.githubusercontent.com/jhoshim89/qwen-dictation/feat/bottom-overlay/install.sh | bash
+curl -fsSL https://raw.githubusercontent.com/jhoshim89/qwen-dictation/main/install.sh | bash
 ```
 
 This installs PortAudio with Homebrew, clones the app into
@@ -98,6 +128,28 @@ after 300 seconds by default; set `max_time = 0` in advanced settings for no
 limit.
 The only model is **Qwen3-ASR 1.7B** (loads once on first dictation, then ~0.5s
 per utterance).
+
+## Known limitations
+
+- macOS only.
+- Current install flow is developer-oriented and terminal-based.
+- Accuracy depends on microphone quality, noise, language, and vocabulary.
+- This is not intended for regulated medical, legal, or compliance transcription.
+- A signed `.app`, auto-updater, and model manager are future packaging work.
+
+## Roadmap
+
+- Add a short README demo GIF/video when available.
+- Package a signed and notarized macOS app.
+- Add a model manager for downloading, switching, and removing local ASR models.
+- Improve install diagnostics and permission onboarding.
+- Collect real microphone benchmarks across languages and Mac hardware.
+
+## Contributing
+
+Bug reports, install feedback, real microphone accuracy notes, and focused pull
+requests are welcome. See [CONTRIBUTING.md](CONTRIBUTING.md) for the current
+priorities and bug report details.
 
 ## Brand system
 

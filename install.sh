@@ -2,7 +2,7 @@
 set -euo pipefail
 
 REPO_URL="${QWEN_DICTATION_REPO:-https://github.com/jhoshim89/qwen-dictation.git}"
-BRANCH="${QWEN_DICTATION_BRANCH:-feat/bottom-overlay}"
+BRANCH="${QWEN_DICTATION_BRANCH:-main}"
 INSTALL_DIR="${QWEN_DICTATION_INSTALL_DIR:-$HOME/.qwen-dictation/source}"
 MODEL_ID="${QWEN_DICTATION_MODEL:-Qwen/Qwen3-ASR-1.7B}"
 
