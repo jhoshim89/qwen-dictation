@@ -4,6 +4,15 @@
   <meta charset="utf-8">
   <meta name="viewport" content="width=device-width, initial-scale=1">
   <meta name="description" content="Local-first macOS dictation powered by Qwen3-ASR. Hold Right Ctrl, speak, and type into any app.">
+  <meta property="og:title" content="Qwen Dictation">
+  <meta property="og:description" content="Local-first macOS dictation powered by Qwen3-ASR. Hold Right Ctrl, speak, and type into any app.">
+  <meta property="og:type" content="website">
+  <meta property="og:url" content="https://jhoshim89.github.io/qwen-dictation/">
+  <meta property="og:image" content="https://jhoshim89.github.io/qwen-dictation/menubar-current-preview.png">
+  <meta name="twitter:card" content="summary">
+  <meta name="twitter:title" content="Qwen Dictation">
+  <meta name="twitter:description" content="Local-first macOS dictation powered by Qwen3-ASR. Hold Right Ctrl, speak, and type into any app.">
+  <meta name="twitter:image" content="https://jhoshim89.github.io/qwen-dictation/menubar-current-preview.png">
   <title>Qwen Dictation</title>
   <style>
     :root {
@@ -110,6 +119,11 @@
       background: var(--night);
       color: #fff;
     }
+    .star-note {
+      margin-top: 14px;
+      font-size: 14px;
+      color: var(--muted);
+    }
     main section {
       padding: 72px clamp(20px, 5vw, 72px);
     }
@@ -191,6 +205,12 @@
       white-space: nowrap;
     }
     .commands div:first-child { border-top: 0; }
+    .status-note {
+      max-width: 760px;
+      margin-top: 16px;
+      font-size: 14px;
+      color: var(--muted);
+    }
     footer {
       padding: 36px clamp(20px, 5vw, 72px);
       color: var(--muted);
@@ -235,9 +255,10 @@
         <h1>Qwen Dictation</h1>
         <p class="lead">Hold Right Ctrl, speak, and Qwen Dictation types into the app you are already using.</p>
         <div class="actions">
-          <a class="button primary" href="https://github.com/jhoshim89/qwen-dictation">View on GitHub</a>
+          <a class="button primary" href="https://github.com/jhoshim89/qwen-dictation">Star on GitHub</a>
           <a class="button" href="#install">Install</a>
         </div>
+        <p class="star-note">Developer MVP. A GitHub star helps other local-ASR Mac users find it.</p>
       </div>
     </div>
   </header>
@@ -276,12 +297,9 @@
           <h2>Developer install</h2>
           <p>The current build is a developer MVP for macOS. Install from source, grant Microphone and Accessibility permissions, then run the menu-bar app.</p>
           <div class="commands" aria-label="Install commands">
-            <div>brew install portaudio</div>
-            <div>python3 -m venv venv</div>
-            <div>source venv/bin/activate</div>
-            <div>pip install -r requirements.txt</div>
-            <div>./run.sh</div>
+            <div>curl -fsSL https://raw.githubusercontent.com/jhoshim89/qwen-dictation/main/install.sh | bash</div>
           </div>
+          <p class="status-note">The installer uses Homebrew, Python, PortAudio, and a local Hugging Face model download.</p>
         </div>
         <div>
           <h2>Built for daily typing</h2>
