@@ -12,6 +12,7 @@ This folder keeps launch and promotion work separate from product code.
 - `reply-bank.md`: reusable manual reply candidates.
 - `metrics.md`: manual campaign tracking.
 - `github-metadata.md`: repository description/topics.
+- `apply-github-metadata.sh`: one-command repo metadata update after `gh auth login`.
 - `automation-scope.md`: safe automation boundary for promotion work.
 
 ## Operating rule
