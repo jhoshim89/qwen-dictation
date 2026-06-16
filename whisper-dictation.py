@@ -131,7 +131,7 @@ BIAS_MIN_WINDOW_SEC = 1.0
 # 들어온 키는 사용자의 수동 편집으로 보지 않아 세션이 중간에 끊기는 것을 막는다.
 SELF_TYPE_GUARD_SETTLE_SEC = 1.25
 MAC_BACKSPACE_KEYCODE = 51
-NOISE_FILLER_TEXTS = {"어", "응", "음", "네", "예"}
+NOISE_FILLER_TEXTS = {"어", "응", "음", "네", "예", "그", "그렇죠", "그쵸", "그렇지"}
 
 
 def audio_peak(audio_path):
@@ -294,8 +294,8 @@ def looks_like_repetition_hallucination(text):
 
 def looks_like_pause_noise_filler(text):
     """쉼 끝에서 주변 잡음 때문에 자주 생기는 짧은 단독 응답인지."""
-    compact = re.sub(r"[\s,.;!?·]+", "", text or "")
-    return compact in NOISE_FILLER_TEXTS
+    tokens = [t for t in re.split(r"[\s,.;!?·]+", (text or "").strip()) if t]
+    return bool(tokens) and all(t in NOISE_FILLER_TEXTS for t in tokens)
 
 
 def looks_like_punctuation_only(text):
@@ -1114,10 +1114,10 @@ class Recorder:
         if looks_like_punctuation_only(hypo):
             hypo = ""
         paused = trailing_silence(window, 16000, silence_threshold, PAUSE_SILENCE_SEC)
-        if paused and looks_like_pause_noise_filler(hypo):
-            hypo = ""
         window_secs = len(window) / 2.0 / 16000.0
         finalizing = bool(allow_stopped and not self.recording)
+        if (paused or finalizing) and looks_like_pause_noise_filler(hypo):
+            hypo = ""
         # 한국어(한글)도 영어도 아닌 언어로 새면(짧은 라이브 창에서 auto 감지가 흔들려
         # 중국어·일본어·러시아어 등으로 빠짐): 확정 직전이면 한국어로 다시 받아써서
         # 외국어 확정을 막고, 아직 말하는 중이면 화면에 안 띄우고 직전 글자를 유지한다

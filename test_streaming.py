@@ -379,7 +379,23 @@ def test_pause_noise_filler_filter_rejects_short_response_only():
     wd = _load()
     assert wd.looks_like_pause_noise_filler("어.") is True
     assert wd.looks_like_pause_noise_filler("네") is True
+    assert wd.looks_like_pause_noise_filler("그렇죠.") is True
+    assert wd.looks_like_pause_noise_filler("그렇죠.그.그렇죠.") is True
     assert wd.looks_like_pause_noise_filler("네 알겠습니다") is False
+
+
+def test_stream_tick_removes_short_filler_when_stopping_without_pause():
+    wd = _load()
+    rec = _make_recorder(wd, None, ["그렇죠."])
+    rec.app = type("App", (), {"min_volume": 35, "asr_engine": "qwen_original"})()
+    rec.recording = False
+    loud = (np.random.RandomState(0).randn(16000) * 6000).astype(np.int16).tobytes()
+    with rec.audio_lock:
+        rec.audio_frames = [loud]
+    wd.Recorder._stream_tick(rec, language="Korean", allow_stopped=True)
+    assert rec.last_typed == ""
+    assert rec.committed_text == ""
+    assert rec.typed_log == [""]
 
 
 def test_punctuation_only_filter_keeps_contextual_punctuation():
