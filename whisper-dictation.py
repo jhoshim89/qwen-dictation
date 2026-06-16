@@ -1089,6 +1089,9 @@ class Recorder:
         engine = asr_engines.normalize_asr_engine(
             getattr(self.app, "asr_engine", asr_engines.DEFAULT_ASR_ENGINE)
         )
+        qwen_original_live = (
+            engine == getattr(asr_engines, "ASR_ENGINE_QWEN_ORIGINAL", "qwen_original")
+        )
         set_engine = getattr(self.transcriber, "set_engine", None)
         if set_engine is not None:
             set_engine(engine)
@@ -1153,16 +1156,21 @@ class Recorder:
             shown = hypo
         else:
             hypo = unbiased
-            # LocalAgreement-2: '연속 두 번 같은' 앞부분만 화면에 표시한다. 확정
-            # 앞부분은 단조 증가만 하므로 이미 친 글자를 지우거나 바꾸지 않는다.
-            prev = getattr(self, "_la_prev_hypo", "")
-            confirmed = getattr(self, "_la_confirmed", "")
-            agreed = agreed_word_prefix(prev, hypo)
-            cw, aw = confirmed.split(), agreed.split()
-            if len(aw) > len(cw) and aw[: len(cw)] == cw:
-                confirmed = agreed  # 합의된 앞부분이 더 늘면 확정 연장
-            shown = confirmed
-            self._la_confirmed = confirmed
+            if qwen_original_live:
+                # Qwen Original: rolling WAV 재인식 결과를 바로 표시한다. 이 모드는
+                # 원래처럼 중간 hypothesis를 backspace rewrite 하며 따라간다.
+                shown = hypo
+            else:
+                # LocalAgreement-2: '연속 두 번 같은' 앞부분만 화면에 표시한다. 확정
+                # 앞부분은 단조 증가만 하므로 이미 친 글자를 지우거나 바꾸지 않는다.
+                prev = getattr(self, "_la_prev_hypo", "")
+                confirmed = getattr(self, "_la_confirmed", "")
+                agreed = agreed_word_prefix(prev, hypo)
+                cw, aw = confirmed.split(), agreed.split()
+                if len(aw) > len(cw) and aw[: len(cw)] == cw:
+                    confirmed = agreed  # 합의된 앞부분이 더 늘면 확정 연장
+                shown = confirmed
+                self._la_confirmed = confirmed
         self._la_prev_hypo = hypo
         # 단위가 붙은 한국어 수사만 아라비아 숫자로 바꾼다('삼 밀리'->3밀리). 변환은
         # idempotent 라 확정 텍스트에 다시 적용해도 안전하다.
@@ -1177,8 +1185,9 @@ class Recorder:
             append_only = (
                 self.recording
                 and not allow_stopped
+                and not qwen_original_live
             )
-            # 타이핑 중과 직후 0.2초는 우리가 만든 합성 키 이벤트가 들어오므로, 그 사이
+            # 타이핑 중과 직후 짧은 보호 시간에는 우리가 만든 합성 키 이벤트가 들어오므로, 그 사이
             # 리스너가 키를 사용자 수동 편집으로 오인하지 않도록 가드 시각을 세운다.
             self.self_type_guard_until = time.time() + 30.0
             try:

@@ -180,6 +180,32 @@ def test_stream_tick_hold_live_waits_for_stable_text_until_release(monkeypatch):
     assert rec.last_typed == "abcY"
 
 
+def test_qwen_original_live_types_immediate_hypothesis_and_allows_rewrite(monkeypatch):
+    wd = _load()
+    rec = _make_recorder(wd, monkeypatch, ["abcX", "abcY"])
+    rec.app = type("App", (), {"min_volume": 35, "asr_engine": "qwen_original"})()
+    calls = []
+
+    def type_live(old, new, append_only=False):
+        calls.append((old, new, append_only))
+        return wd.type_diff(old, new, _FakeKeyboard(), insert=lambda _text: None, append_only=append_only)
+
+    rec._type = type_live
+    loud = (np.random.RandomState(0).randn(16000) * 6000).astype(np.int16).tobytes()
+    with rec.audio_lock:
+        rec.audio_frames = [loud]
+
+    wd.Recorder._stream_tick(rec, language="English")
+    assert rec.last_typed == "abcX"
+    assert calls[-1] == ("", "abcX", False)
+
+    with rec.audio_lock:
+        rec.audio_frames = [loud, loud]
+    wd.Recorder._stream_tick(rec, language="English")
+    assert rec.last_typed == "abcY"
+    assert calls[-1] == ("abcX", "abcY", False)
+
+
 def test_final_tick_flushes_full_hypothesis_without_pause(monkeypatch):
     wd = _load()
     rec = _make_recorder(wd, monkeypatch, ["앞말", "앞말 뒤말"])
