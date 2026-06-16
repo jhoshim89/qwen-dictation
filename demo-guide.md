@@ -2,7 +2,7 @@
 
 When demo media is added later, it should prove the core promise:
 
-> Hold Right Cmd, speak, and Qwen Dictation types into the app you are already using.
+> Hold Right Ctrl, speak, and Qwen Dictation types into the app you are already using.
 
 ## Target output
 
@@ -19,13 +19,13 @@ plain text field because it makes the typing behavior obvious.
 Suggested spoken line:
 
 ```text
-Qwen Dictation is a local Mac dictation app. Hold Right Command, speak, and it types into any app.
+Qwen Dictation is a local Mac dictation app. Hold Right Ctrl, speak, and it types into any app.
 ```
 
 Korean variant:
 
 ```text
-오른쪽 커맨드를 누르고 말하면 지금 열려 있는 앱에 바로 입력됩니다.
+오른쪽 Ctrl을 누르고 말하면 지금 열려 있는 앱에 바로 입력됩니다.
 ```
 
 ## Recording steps
@@ -34,9 +34,9 @@ Korean variant:
 2. Open a blank text field in Cursor, ChatGPT, TextEdit, or a browser.
 3. Launch Qwen Dictation.
 4. Start screen recording.
-5. Hold Right Cmd.
+5. Hold Right Ctrl.
 6. Speak the chosen line once.
-7. Release Right Cmd.
+7. Release Right Ctrl.
 8. Stop recording immediately after the final text appears.
 
 ## Crop and export
