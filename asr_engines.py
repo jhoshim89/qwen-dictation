@@ -2,6 +2,7 @@ import os
 
 
 ASR_ENGINE_QWEN = "qwen"
+ASR_ENGINE_QWEN_ORIGINAL = "qwen_original"
 ASR_ENGINE_NEMOTRON_MLX = "nemotron_mlx"
 ASR_ENGINE_GOOGLE_STT = "google_stt"
 ASR_ENGINE_SHERPA_ONNX_KO = "sherpa_onnx_ko"
@@ -25,6 +26,14 @@ ENGINE_DEFINITIONS = {
         "label": "Qwen3-ASR 1.7B",
         "short_label": "Qwen",
         "detail": "context bias",
+        "model": QWEN_MODEL_ID,
+        "supports_context": True,
+    },
+    ASR_ENGINE_QWEN_ORIGINAL: {
+        "id": ASR_ENGINE_QWEN_ORIGINAL,
+        "label": "Qwen3-ASR 1.7B Original",
+        "short_label": "Qwen Original",
+        "detail": "rolling WAV transcribe",
         "model": QWEN_MODEL_ID,
         "supports_context": True,
     },
@@ -66,6 +75,10 @@ _ENGINE_ALIASES = {
     "qwen3_asr": ASR_ENGINE_QWEN,
     "qwen_1_7b": ASR_ENGINE_QWEN,
     "qn": ASR_ENGINE_QWEN,
+    "qwen_original": ASR_ENGINE_QWEN_ORIGINAL,
+    "qwen_orig": ASR_ENGINE_QWEN_ORIGINAL,
+    "qwen_rolling": ASR_ENGINE_QWEN_ORIGINAL,
+    "qwen_windowed": ASR_ENGINE_QWEN_ORIGINAL,
     "nemotron": ASR_ENGINE_NEMOTRON_MLX,
     "nemotron_mlx": ASR_ENGINE_NEMOTRON_MLX,
     "nemotron_3_5": ASR_ENGINE_NEMOTRON_MLX,
@@ -149,6 +162,7 @@ def available_asr_engines():
         dict(ENGINE_DEFINITIONS[key])
         for key in (
             ASR_ENGINE_QWEN,
+            ASR_ENGINE_QWEN_ORIGINAL,
             ASR_ENGINE_NEMOTRON_MLX,
             ASR_ENGINE_GOOGLE_STT,
             ASR_ENGINE_SHERPA_ONNX_KO,

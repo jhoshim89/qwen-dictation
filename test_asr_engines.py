@@ -4,6 +4,7 @@ import asr_engines
 def test_normalize_asr_engine_aliases():
     assert asr_engines.normalize_asr_engine("qwen") == "qwen"
     assert asr_engines.normalize_asr_engine("QN") == "qwen"
+    assert asr_engines.normalize_asr_engine("qwen-original") == "qwen_original"
     assert asr_engines.normalize_asr_engine("nemotron") == "nemotron_mlx"
     assert asr_engines.normalize_asr_engine("nemotron-mlx") == "nemotron_mlx"
     assert asr_engines.normalize_asr_engine("unknown") == "qwen"
@@ -11,11 +12,12 @@ def test_normalize_asr_engine_aliases():
 
 def test_engine_metadata_marks_context_support():
     assert asr_engines.asr_engine_supports_context("qwen") is True
+    assert asr_engines.asr_engine_supports_context("qwen_original") is True
     assert asr_engines.asr_engine_supports_context("nemotron") is False
     assert asr_engines.asr_engine_supports_context("google_stt") is False
     assert asr_engines.asr_engine_supports_context("sherpa_onnx_ko") is False
     ids = [item["id"] for item in asr_engines.available_asr_engines()]
-    assert ids == ["qwen", "nemotron_mlx", "google_stt", "sherpa_onnx_ko"]
+    assert ids == ["qwen", "qwen_original", "nemotron_mlx", "google_stt", "sherpa_onnx_ko"]
 
 
 def test_optional_engine_aliases():

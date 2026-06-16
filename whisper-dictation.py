@@ -123,6 +123,9 @@ MAX_WINDOW_SEC = 12.0        # 초: 창이 이보다 길면 강제 확정(드물
 # 확정 시점 편향(context)을 적용할 최소 창 길이(초). 이보다 짧은 확정 창은 음향 증거가
 # 약해 누출 위험이 커지므로 편향하지 않고 무편향 결과를 그대로 쓴다.
 BIAS_MIN_WINDOW_SEC = 1.0
+# pynput/Quartz 합성 키 이벤트가 type_diff 반환 뒤 늦게 도착할 수 있다. 이 시간 안에
+# 들어온 키는 사용자의 수동 편집으로 보지 않아 세션이 중간에 끊기는 것을 막는다.
+SELF_TYPE_GUARD_SETTLE_SEC = 1.25
 MAC_BACKSPACE_KEYCODE = 51
 NOISE_FILLER_TEXTS = {"어", "응", "음", "네", "예"}
 
@@ -1021,9 +1024,13 @@ class Recorder:
         # build: it can report success internally without inserting text.
         inserter = None
         deleter = plain_backspace if CGEventCreateKeyboardEvent is not None else None
-        return type_diff(old, new, self.transcriber.pykeyboard,
-                         allow_empty=True, insert=inserter, append_only=append_only,
-                         delete_backward=deleter)
+        self.self_type_guard_until = time.time() + 30.0
+        try:
+            return type_diff(old, new, self.transcriber.pykeyboard,
+                             allow_empty=True, insert=inserter, append_only=append_only,
+                             delete_backward=deleter)
+        finally:
+            self.self_type_guard_until = time.time() + SELF_TYPE_GUARD_SETTLE_SEC
 
     def _transcribe_window(self, window_bytes, language, context=""):
         path = "/tmp/qwen_dictation_stream.wav"
@@ -1177,7 +1184,7 @@ class Recorder:
             try:
                 self.last_typed = self._type(self.last_typed, target, append_only=append_only)
             finally:
-                self.self_type_guard_until = time.time() + 0.2
+                self.self_type_guard_until = time.time() + SELF_TYPE_GUARD_SETTLE_SEC
             self.deferred_text = ""
         elif target:
             self.deferred_text = target
@@ -1240,7 +1247,7 @@ class Recorder:
             try:
                 self.last_typed = self._type(self.last_typed, deferred)
             finally:
-                self.self_type_guard_until = time.time() + 0.2
+                self.self_type_guard_until = time.time() + SELF_TYPE_GUARD_SETTLE_SEC
             self.deferred_text = ""
         # Enter 를 먼저 보내고(사용자가 체감하는 지연), 기록 저장은 그 뒤로 미룬다.
         # 마지막 틱에서 새로 친 글자가 있으면 짧은 반영 대기를, 없으면 곧장 보낸다.

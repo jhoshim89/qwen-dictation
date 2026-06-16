@@ -667,6 +667,25 @@ def test_recorder_type_uses_keyboard_controller_inserter(monkeypatch):
         assert captured["delete_backward"] is wd.plain_backspace
 
 
+def test_recorder_type_keeps_synthetic_key_guard_after_typing(monkeypatch):
+    wd = _load()
+    now = [100.0]
+
+    def fake_type_diff(
+        old, new, kb, allow_empty=False, insert=None, append_only=False, delete_backward=None
+    ):
+        now[0] += 0.02
+        return new
+
+    monkeypatch.setattr(wd, "type_diff", fake_type_diff)
+    monkeypatch.setattr(wd.time, "time", lambda: now[0])
+    rec = _kbd_recorder(wd)
+
+    rec._type("", "hello")
+
+    assert rec.self_type_guard_until >= now[0] + 1.0
+
+
 def test_start_seeds_audio_frames_from_preroll(monkeypatch):
     wd = _load()
     rec = _kbd_recorder(wd)
