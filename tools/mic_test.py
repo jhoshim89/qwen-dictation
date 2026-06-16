@@ -1,7 +1,7 @@
 #!/usr/bin/env python3
 """마이크 입력이 실제로 들어오는지 확인하는 진단 도구.
 
-사용법: ./venv/bin/python mic_test.py [녹음초]
+사용법: ./venv/bin/python tools/mic_test.py [녹음초]
 녹음하는 동안 말을 하세요. peak/rms 가 크면 마이크 캡처 정상,
 peak 가 0/아주 작으면 마이크 권한 또는 입력 장치 문제.
 """
