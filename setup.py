@@ -8,6 +8,7 @@
 기존 Qwen3-ASR 캐시를 그대로 참조한다.
 """
 import sys
+import importlib.util
 
 from setuptools import setup
 
@@ -24,8 +25,29 @@ DATA_FILES = [
         "assets/fonts/PretendardVariable.woff2",
         "assets/fonts/LICENSE.txt",
     ]),
-    ("", ["app_paths.py", "dashboard.py", "dictation_history.py", "hotkeys.py", "audio_level.py"]),
+    ("", ["app_paths.py", "asr_engines.py", "dashboard.py", "dictation_history.py", "hotkeys.py", "audio_level.py"]),
 ]
+
+PACKAGES = [
+    "rumps",
+    "flask",
+    "pynput",
+    "soundfile",
+    "sounddevice",
+    "numpy",
+    "qwen_asr",
+    "pkg_resources",
+]
+if importlib.util.find_spec("mlx_audio") is not None:
+    PACKAGES.append("mlx_audio")
+if importlib.util.find_spec("mlx_lm") is not None:
+    PACKAGES.append("mlx_lm")
+if importlib.util.find_spec("mlx") is not None:
+    PACKAGES.append("mlx")
+if importlib.util.find_spec("google.cloud.speech") is not None:
+    PACKAGES.append("google.cloud.speech")
+if importlib.util.find_spec("sherpa_onnx") is not None:
+    PACKAGES.append("sherpa_onnx")
 
 OPTIONS = {
     "argv_emulation": False,
@@ -39,16 +61,7 @@ OPTIONS = {
         "NSMicrophoneUsageDescription": "받아쓰기를 위해 마이크로 음성을 녹음합니다.",
         "NSAppleEventsUsageDescription": "받아쓴 텍스트를 현재 앱에 붙여넣기 위해 시스템 이벤트를 사용합니다.",
     },
-    "packages": [
-        "rumps",
-        "flask",
-        "pynput",
-        "soundfile",
-        "sounddevice",
-        "numpy",
-        "qwen_asr",
-        "pkg_resources",
-    ],
+    "packages": PACKAGES,
     "includes": ["torch", "torchaudio", "transformers"],
     # 아래 패키지는 앱 실행에 필요 없는데 transformers/qwen_asr 가 optional 로
     # 끌어와서 빌드를 깨뜨린다(PyInstaller 의 GTK/Qt hook, numba 의 CUDA hook 등).

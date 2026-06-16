@@ -5,6 +5,8 @@ import threading
 from flask import Flask, jsonify, request, render_template_string, send_from_directory
 
 import app_paths
+import app_config
+import asr_engines
 import dictation_history
 import hotkeys
 import vocabulary
@@ -60,10 +62,14 @@ def get_config():
         "max_time": getattr(app_instance, 'max_time', 300),
         "input_device": getattr(app_instance, 'input_device', ''),
         "input_devices": list_input_devices(),
-        "hold_key": getattr(app_instance, 'hold_key', 'cmd_r'),
+        "hold_key": getattr(app_instance, 'hold_key', 'ctrl_r'),
         "toggle_key": getattr(app_instance, 'toggle_key', 'alt_r'),
-        "min_volume": getattr(app_instance, 'min_volume', 35),
-        "edit_interrupt_mode": getattr(app_instance, 'edit_interrupt_mode', 'continue'),
+        "min_volume": getattr(app_instance, 'min_volume', app_config.DEFAULTS["min_volume"]),
+        "asr_engine": asr_engines.normalize_asr_engine(
+            getattr(app_instance, 'asr_engine', asr_engines.DEFAULT_ASR_ENGINE)
+        ),
+        "asr_engines": asr_engines.available_asr_engines(),
+        "edit_interrupt_mode": getattr(app_instance, 'edit_interrupt_mode', app_config.DEFAULTS["edit_interrupt_mode"]),
         "hold_send_enter": bool(getattr(app_instance, 'hold_send_enter', True)),
         "domain_context": getattr(app_instance, 'domain_context', ''),
         "hud_mode": getattr(app_instance, 'hud_mode', 'pill'),
@@ -94,6 +100,14 @@ def post_config():
             app_instance.min_volume = max(1, min(100, int(float(data['min_volume']))))
             if getattr(app_instance, "recorder", None) is not None:
                 app_instance.recorder.transcriber.min_volume = app_instance.min_volume
+        if 'asr_engine' in data:
+            if hasattr(app_instance, "set_asr_engine"):
+                app_instance.set_asr_engine(data['asr_engine'])
+            else:
+                app_instance.asr_engine = asr_engines.normalize_asr_engine(data['asr_engine'])
+                if getattr(app_instance, "recorder", None) is not None:
+                    app_instance.recorder.transcriber.set_engine(app_instance.asr_engine)
+                app_instance.sync_menu_state()
         if 'domain_context' in data:
             app_instance.domain_context = str(data['domain_context'] or "")
             if getattr(app_instance, "recorder", None) is not None:
@@ -103,11 +117,11 @@ def post_config():
             app_instance.hud_mode = m if m in ("pill", "pinned") else "pill"
         if 'edit_interrupt_mode' in data:
             mode = str(data['edit_interrupt_mode'])
-            app_instance.edit_interrupt_mode = mode if mode in ("continue", "stop") else "continue"
+            app_instance.edit_interrupt_mode = mode if mode in ("continue", "stop") else app_config.DEFAULTS["edit_interrupt_mode"]
         if 'hold_send_enter' in data:
             app_instance.hold_send_enter = bool(data['hold_send_enter'])
         if hotkey_changed:
-            hold = data.get("hold_key", getattr(app_instance, "hold_key", "cmd_r"))
+            hold = data.get("hold_key", getattr(app_instance, "hold_key", "ctrl_r"))
             toggle = data.get("toggle_key", getattr(app_instance, "toggle_key", "alt_r"))
             ok, error = hotkeys.validate_hotkey_pair(hold, toggle)
             if not ok:
@@ -181,7 +195,9 @@ def selftest():
         return jsonify({"ok": True, "device": dev.get("name"), "seconds": seconds,
                         "peak": peak, "rms": rms, "text": text,
                         "language": app_instance.current_language,
-                        "model": "Qwen3-ASR 1.7B"})
+                        "model": asr_engines.asr_engine_label(
+                            getattr(app_instance, "asr_engine", asr_engines.DEFAULT_ASR_ENGINE)
+                        )})
     except Exception as e:
         return jsonify({"ok": False, "error": repr(e)}), 500
 

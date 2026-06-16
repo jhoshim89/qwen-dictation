@@ -1,5 +1,7 @@
 import importlib.util
 
+import pytest
+
 import app_paths
 import vocabulary
 
@@ -61,6 +63,21 @@ def test_looks_like_vocab_echo():
     assert wd.looks_like_vocab_echo("각막", vocab) is False
     # vocab 없으면 항상 False
     assert wd.looks_like_vocab_echo("각막 염색", []) is False
+
+
+def test_looks_like_foreign_language():
+    wd = _load()
+    # 한글/영어/혼합/숫자·기호 → 외국어 아님(진짜 발화로 본다)
+    assert wd.looks_like_foreign_language("녹내장 안압 측정") is False
+    assert wd.looks_like_foreign_language("commit and push") is False
+    assert wd.looks_like_foreign_language("이거 commit 해줘") is False
+    assert wd.looks_like_foreign_language("") is False
+    assert wd.looks_like_foreign_language("123 mmHg 95%.") is False
+    # 한글·영어가 한 글자도 없고 전부 외국 문자 → 외국어
+    assert wd.looks_like_foreign_language("你好世界") is True        # 중국어
+    assert wd.looks_like_foreign_language("こんにちは") is True       # 일본어
+    assert wd.looks_like_foreign_language("Привет мир") is True      # 러시아어
+    assert wd.looks_like_foreign_language("สวัสดีครับ") is True      # 태국어
 
 
 def test_transcribe_does_not_apply_dictionary_replacements(tmp_path, monkeypatch):
@@ -175,3 +192,386 @@ def test_transcribe_passes_no_context(tmp_path, monkeypatch):
     out = tr.transcribe_file(str(wav), language="Korean")
     assert out == "녹음 결과"
     assert fake.calls[0]["context"] == ""   # 용어/분야를 모델에 주지 않는다(누출 0)
+
+
+def test_transcribe_file_forwards_context(tmp_path, monkeypatch):
+    import numpy as np
+    wd = _load()
+    vp = tmp_path / "vocabulary.json"
+    monkeypatch.setattr(app_paths, "vocabulary_path", lambda: str(vp))
+    vocabulary.save_vocabulary(["커밋"])
+    wav = tmp_path / "speech.wav"
+    _write_wav(wav, (np.random.RandomState(2).randn(16000) * 5000))
+
+    tr = wd.SpeechTranscriber("cpu", None)
+    fake = _FakeModel()
+    monkeypatch.setattr(tr, "get_model", lambda: fake)
+
+    out = tr.transcribe_file(str(wav), language="Korean", context="전문 용어: 커밋")
+    assert out == "녹음 결과"
+    assert fake.calls[0]["context"] == "전문 용어: 커밋"  # 확정 시점엔 context 를 모델에 넘긴다
+
+
+def test_transcribe_file_uses_nemotron_mlx_stream_generate(tmp_path, monkeypatch):
+    import numpy as np
+    wd = _load()
+    wav = tmp_path / "speech.wav"
+    _write_wav(wav, (np.random.RandomState(4).randn(16000) * 5000))
+
+    class FakeNemotron:
+        def __init__(self):
+            self.calls = []
+
+        def generate(self, audio, language=None, **kw):
+            raise AssertionError("Nemotron native path must use stream_generate")
+
+        def stream_generate(self, audio, language=None, **kw):
+            self.calls.append({"audio": audio, "language": language, "kw": kw})
+            yield type("Result", (), {"text": "네모트론 중간"})()
+            yield type("Result", (), {"text": "네모트론 결과"})()
+
+    fake = FakeNemotron()
+    tr = wd.SpeechTranscriber("cpu", None, asr_engine="nemotron")
+    monkeypatch.setattr(tr, "get_nemotron_model", lambda: fake)
+
+    out = tr.transcribe_file(str(wav), language="ko", context="전문 용어: 커밋")
+    assert out == "네모트론 결과"
+    assert fake.calls[0]["language"] == "ko-KR"
+    assert not isinstance(fake.calls[0]["audio"], str)
+    assert "context" not in fake.calls[0]["kw"]
+
+
+def test_transcribe_file_uses_google_stt_client(tmp_path, monkeypatch):
+    import numpy as np
+    wd = _load()
+    wav = tmp_path / "speech.wav"
+    _write_wav(wav, (np.random.RandomState(5).randn(16000) * 5000))
+    calls = {}
+
+    class FakeEncoding:
+        LINEAR16 = "LINEAR16"
+
+    class FakeRecognitionConfig:
+        AudioEncoding = FakeEncoding
+
+        def __init__(self, **kwargs):
+            calls["config"] = kwargs
+
+    class FakeRecognitionAudio:
+        def __init__(self, **kwargs):
+            calls["audio"] = kwargs
+
+    class FakeAlternative:
+        transcript = "구글 테스트"
+
+    class FakeResult:
+        alternatives = [FakeAlternative()]
+
+    class FakeResponse:
+        results = [FakeResult()]
+
+    class FakeSpeechClient:
+        def recognize(self, config, audio):
+            calls["recognize"] = (config, audio)
+            return FakeResponse()
+
+    class FakeSpeechModule:
+        SpeechClient = lambda self=None: FakeSpeechClient()
+        RecognitionConfig = FakeRecognitionConfig
+        RecognitionAudio = FakeRecognitionAudio
+
+    tr = wd.SpeechTranscriber("cpu", None, asr_engine="google")
+    monkeypatch.setattr(tr, "_load_google_speech_module", lambda: FakeSpeechModule)
+    monkeypatch.setattr(tr, "_load_google_stt_credentials", lambda: None)
+
+    out = tr.transcribe_file(str(wav), language="ko")
+
+    assert out == "구글 테스트"
+    assert calls["config"]["language_code"] == "ko-KR"
+    assert calls["config"]["encoding"] == "LINEAR16"
+    assert calls["config"]["sample_rate_hertz"] == 16000
+    assert calls["config"]["enable_automatic_punctuation"] is True
+    assert calls["config"]["model"] == "latest_long"
+    assert calls["audio"]["content"]
+
+
+def test_google_stt_missing_package_has_clear_error(tmp_path, monkeypatch):
+    import numpy as np
+    wd = _load()
+    wav = tmp_path / "speech.wav"
+    _write_wav(wav, (np.random.RandomState(6).randn(16000) * 5000))
+    tr = wd.SpeechTranscriber("cpu", None, asr_engine="google")
+
+    def fail():
+        raise RuntimeError("Google STT 엔진을 쓰려면 google-cloud-speech 패키지가 필요합니다.")
+
+    monkeypatch.setattr(tr, "_load_google_speech_module", fail)
+
+    with pytest.raises(RuntimeError, match="google-cloud-speech"):
+        tr.transcribe_file(str(wav), language="ko")
+
+
+def test_google_stt_client_uses_configured_authorized_user_credentials(tmp_path, monkeypatch):
+    import json
+    wd = _load()
+    token = tmp_path / "token.json"
+    token.write_text(
+        json.dumps(
+            {
+                "client_id": "client-id",
+                "client_secret": "client-secret",
+                "refresh_token": "refresh-token",
+                "token_uri": "https://oauth2.googleapis.com/token",
+                "scopes": ["https://www.googleapis.com/auth/cloud-platform"],
+            }
+        ),
+        encoding="utf-8",
+    )
+    calls = {}
+
+    class FakeSpeechModule:
+        class SpeechClient:
+            def __init__(self, **kwargs):
+                calls["client_kwargs"] = kwargs
+
+    class FakeCredentials:
+        @classmethod
+        def from_authorized_user_file(cls, path, scopes=None):
+            calls["credential_path"] = path
+            calls["credential_scopes"] = scopes
+            return "authorized-user-creds"
+
+    monkeypatch.setenv("QWEN_GOOGLE_STT_CREDENTIALS", str(token))
+    monkeypatch.setattr(wd, "_GOOGLE_AUTHORIZED_USER_CREDENTIALS", FakeCredentials)
+
+    tr = wd.SpeechTranscriber("cpu", None, asr_engine="google")
+    monkeypatch.setattr(tr, "_load_google_speech_module", lambda: FakeSpeechModule)
+
+    client = tr.get_google_speech_client()
+
+    assert isinstance(client, FakeSpeechModule.SpeechClient)
+    assert calls["credential_path"] == str(token)
+    assert calls["credential_scopes"] == ["https://www.googleapis.com/auth/cloud-platform"]
+    assert calls["client_kwargs"] == {"credentials": "authorized-user-creds"}
+
+
+def test_google_stt_skips_default_sheets_token_without_speech_scope(tmp_path, monkeypatch):
+    import json
+    wd = _load()
+    token = tmp_path / "token.json"
+    token.write_text(
+        json.dumps(
+            {
+                "client_id": "client-id",
+                "client_secret": "client-secret",
+                "refresh_token": "refresh-token",
+                "token_uri": "https://oauth2.googleapis.com/token",
+                "scopes": [
+                    "https://www.googleapis.com/auth/spreadsheets",
+                    "https://www.googleapis.com/auth/drive",
+                ],
+            }
+        ),
+        encoding="utf-8",
+    )
+    tr = wd.SpeechTranscriber("cpu", None, asr_engine="google")
+    monkeypatch.setattr(tr, "_google_stt_credential_candidates", lambda: [(str(token), False)])
+
+    assert tr._load_google_stt_credentials() is None
+
+
+def test_google_stt_explicit_sheets_token_reports_scope_error(tmp_path, monkeypatch):
+    import json
+    wd = _load()
+    token = tmp_path / "token.json"
+    token.write_text(
+        json.dumps(
+            {
+                "client_id": "client-id",
+                "client_secret": "client-secret",
+                "refresh_token": "refresh-token",
+                "token_uri": "https://oauth2.googleapis.com/token",
+                "scopes": ["https://www.googleapis.com/auth/spreadsheets"],
+            }
+        ),
+        encoding="utf-8",
+    )
+    tr = wd.SpeechTranscriber("cpu", None, asr_engine="google")
+    monkeypatch.setenv("QWEN_GOOGLE_STT_CREDENTIALS", str(token))
+
+    with pytest.raises(RuntimeError, match="Speech-to-Text 권한 범위"):
+        tr._load_google_stt_credentials()
+
+
+def test_google_stt_client_preserves_explicit_scope_error(monkeypatch):
+    wd = _load()
+
+    class FakeSpeechModule:
+        class SpeechClient:
+            pass
+
+    tr = wd.SpeechTranscriber("cpu", None, asr_engine="google")
+    monkeypatch.setattr(tr, "_load_google_speech_module", lambda: FakeSpeechModule)
+    monkeypatch.setattr(
+        tr,
+        "_load_google_stt_credentials",
+        lambda: (_ for _ in ()).throw(RuntimeError("Speech-to-Text 권한 범위가 없습니다.")),
+    )
+
+    with pytest.raises(RuntimeError, match="Speech-to-Text 권한 범위"):
+        tr.get_google_speech_client()
+
+
+def test_transcribe_file_uses_sherpa_onnx(tmp_path, monkeypatch):
+    import numpy as np
+    wd = _load()
+    wav = tmp_path / "speech.wav"
+    _write_wav(wav, (np.random.RandomState(7).randn(16000) * 5000))
+    calls = {}
+
+    class FakeStream:
+        def accept_waveform(self, sample_rate, samples):
+            calls["waveform"] = (sample_rate, len(samples))
+
+        def input_finished(self):
+            calls["finished"] = True
+
+    class FakeRecognizer:
+        def __init__(self):
+            self.ready_checks = 0
+
+        def create_stream(self):
+            return FakeStream()
+
+        def is_ready(self, stream):
+            self.ready_checks += 1
+            return self.ready_checks == 1
+
+        def decode_stream(self, stream):
+            calls["decoded"] = calls.get("decoded", 0) + 1
+
+        def get_result(self, stream):
+            return "셔파 테스트"
+
+    fake_recognizer = FakeRecognizer()
+    tr = wd.SpeechTranscriber("cpu", None, asr_engine="sherpa")
+    monkeypatch.setattr(tr, "_load_sherpa_onnx_module", lambda: object())
+    monkeypatch.setattr(tr, "get_sherpa_onnx_recognizer", lambda: fake_recognizer)
+
+    out = tr.transcribe_file(str(wav), language="ko")
+
+    assert out == "셔파 테스트"
+    assert calls["waveform"][0] == 16000
+    assert calls["finished"] is True
+    assert fake_recognizer.ready_checks == 2
+    assert calls["decoded"] == 1
+
+
+def test_sherpa_onnx_missing_model_has_clear_error(tmp_path, monkeypatch):
+    import numpy as np
+    wd = _load()
+    wav = tmp_path / "speech.wav"
+    _write_wav(wav, (np.random.RandomState(8).randn(16000) * 5000))
+    tr = wd.SpeechTranscriber("cpu", None, asr_engine="sherpa")
+    monkeypatch.setattr(tr, "_load_sherpa_onnx_module", lambda: object())
+
+    def fail():
+        raise RuntimeError("sherpa-onnx Korean 모델 파일이 없습니다.")
+
+    monkeypatch.setattr(tr, "_locate_sherpa_onnx_model", fail)
+
+    with pytest.raises(RuntimeError, match="sherpa-onnx Korean"):
+        tr.transcribe_file(str(wav), language="ko")
+
+
+def test_preload_current_model_uses_optional_engine_loaders(monkeypatch):
+    wd = _load()
+
+    google = wd.SpeechTranscriber("cpu", None, asr_engine="google")
+    google_calls = []
+    monkeypatch.setattr(google, "get_google_speech_client", lambda: google_calls.append(True) or "google")
+    assert google.preload_current_model() == "google"
+    assert google_calls == [True]
+
+    sherpa = wd.SpeechTranscriber("cpu", None, asr_engine="sherpa")
+    sherpa_calls = []
+    monkeypatch.setattr(sherpa, "get_sherpa_onnx_recognizer", lambda: sherpa_calls.append(True) or "sherpa")
+    assert sherpa.preload_current_model() == "sherpa"
+    assert sherpa_calls == [True]
+
+
+def test_biased_commit_skips_context_for_nemotron(monkeypatch):
+    wd = _load()
+    rec = wd.Recorder.__new__(wd.Recorder)
+    rec.transcriber = type("Transcriber", (), {"asr_engine": "nemotron_mlx"})()
+    rec.session_vocab = ["커밋"]
+    rec.app = type("App", (), {"domain_context": "개발"})()
+    called = []
+    rec._transcribe_window = lambda *a, **k: called.append((a, k)) or "biased"
+
+    assert wd.Recorder._biased_commit_hypo(rec, b"1234", "Korean", "커밋", 2.0) == "커밋"
+    assert called == []
+
+
+# --- 모델 로딩 표시(HUD '불러오는 중') ---
+
+def test_model_loading_reflects_transcriber_flag():
+    import types
+    wd = _load()
+    tr = types.SimpleNamespace(loading=False)
+    app = types.SimpleNamespace(recorder=types.SimpleNamespace(transcriber=tr))
+    assert wd.StatusBarApp._model_loading(app) is False
+    tr.loading = True
+    assert wd.StatusBarApp._model_loading(app) is True
+
+
+def test_model_loading_false_without_recorder():
+    import types
+    wd = _load()
+    app = types.SimpleNamespace(recorder=None)
+    assert wd.StatusBarApp._model_loading(app) is False
+
+
+def test_loading_pulse_in_unit_range():
+    wd = _load()
+    for _ in range(20):
+        v = wd.StatusBarApp._loading_pulse()
+        assert 0.0 <= v <= 1.0
+
+
+def test_get_model_clears_loading_flag_on_success(monkeypatch):
+    import types
+    wd = _load()
+    tr = wd.SpeechTranscriber("cpu", None)
+
+    class FakeModel:
+        def __init__(self):
+            self.model = types.SimpleNamespace(to=lambda dev: None)
+
+        @classmethod
+        def from_pretrained(cls, name, dtype=None):
+            assert tr.loading is True   # 로드가 진행되는 동안엔 플래그가 켜져 있어야 한다
+            return cls()
+
+    monkeypatch.setattr(wd, "Qwen3ASRModel", FakeModel)
+    monkeypatch.setattr(wd, "safe_notify", lambda *a, **k: None)
+    tr.get_model()
+    assert tr.loading is False           # 끝나면 내려간다
+    assert tr.model_1_7b is not None
+
+
+def test_get_model_clears_loading_flag_on_failure(monkeypatch):
+    import pytest
+    wd = _load()
+    tr = wd.SpeechTranscriber("cpu", None)
+
+    class BoomModel:
+        @classmethod
+        def from_pretrained(cls, name, dtype=None):
+            raise RuntimeError("boom")
+
+    monkeypatch.setattr(wd, "Qwen3ASRModel", BoomModel)
+    monkeypatch.setattr(wd, "safe_notify", lambda *a, **k: None)
+    with pytest.raises(RuntimeError):
+        tr.get_model()
+    assert tr.loading is False           # 실패해도 표시가 영원히 남지 않게 내려간다

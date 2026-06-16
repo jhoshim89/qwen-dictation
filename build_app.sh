@@ -23,6 +23,22 @@ cd "$(dirname "$0")"
 cp whisper-dictation.py app_main.py
 
 NAGISA_DIR="$(./venv/bin/python -c 'import os, nagisa; print(os.path.dirname(nagisa.__file__))')"
+EXTRA_COLLECT_ARGS=()
+if ./venv/bin/python -c 'import mlx_audio' >/dev/null 2>&1; then
+  EXTRA_COLLECT_ARGS+=(--collect-all mlx_audio)
+fi
+if ./venv/bin/python -c 'import mlx_lm' >/dev/null 2>&1; then
+  EXTRA_COLLECT_ARGS+=(--collect-all mlx_lm)
+fi
+if ./venv/bin/python -c 'import mlx' >/dev/null 2>&1; then
+  EXTRA_COLLECT_ARGS+=(--collect-all mlx)
+fi
+if ./venv/bin/python -c 'from google.cloud import speech' >/dev/null 2>&1; then
+  EXTRA_COLLECT_ARGS+=(--collect-all google.cloud.speech)
+fi
+if ./venv/bin/python -c 'import sherpa_onnx' >/dev/null 2>&1; then
+  EXTRA_COLLECT_ARGS+=(--collect-all sherpa_onnx)
+fi
 
 rm -rf build dist
 ./venv/bin/pyinstaller --noconfirm --windowed --name "Qwen Dictation" \
@@ -33,6 +49,7 @@ rm -rf build dist
   --add-data "assets/fonts:assets/fonts" \
   --add-data "templates/dashboard.html:templates" \
   --add-data "dashboard.py:." \
+  --add-data "asr_engines.py:." \
   --add-data "dictation_history.py:." \
   --add-data "hotkeys.py:." \
   --add-data "audio_level.py:." \
@@ -44,6 +61,7 @@ rm -rf build dist
   --add-data "${NAGISA_DIR}/prepro.py:nagisa" \
   --add-data "${NAGISA_DIR}/mecab_system_eval.py:nagisa" \
   --collect-all qwen_asr \
+  "${EXTRA_COLLECT_ARGS[@]}" \
   --collect-all transformers \
   --collect-all nagisa \
   --collect-all librosa \
@@ -65,6 +83,7 @@ rm -rf build dist
   --hidden-import pynput.mouse \
   --hidden-import soundfile \
   --hidden-import pyaudio \
+  --hidden-import miniaudio \
   --hidden-import lazy_loader \
   --hidden-import soxr \
   --hidden-import audioread \

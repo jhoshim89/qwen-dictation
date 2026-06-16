@@ -1,5 +1,6 @@
 import argparse
 import collections
+import json
 import multiprocessing
 import os
 import re
@@ -19,6 +20,7 @@ from pynput import keyboard
 from qwen_asr import Qwen3ASRModel
 
 import dashboard
+import asr_engines
 import app_paths
 import app_config
 import vocabulary
@@ -44,6 +46,7 @@ try:
         CGEventCreateKeyboardEvent,
         CGEventKeyboardSetUnicodeString,
         CGEventPost,
+        CGEventSetFlags,
         kCGHIDEventTap,
     )
 except Exception:
@@ -53,6 +56,7 @@ except Exception:
     CGEventCreateKeyboardEvent = None
     CGEventKeyboardSetUnicodeString = None
     CGEventPost = None
+    CGEventSetFlags = None
     kCGHIDEventTap = None
 
 
@@ -81,20 +85,13 @@ def _safe_keyboard_listener_class():
 SafeKeyboardListener = _safe_keyboard_listener_class()
 
 
-MODEL_1_7B = os.environ.get("QWEN_ASR_1_7B_PATH", "Qwen/Qwen3-ASR-1.7B")
-LANGUAGE_MAP = {
-    "auto": None,
-    "ko": "Korean",
-    "kr": "Korean",
-    "korean": "Korean",
-    "en": "English",
-    "english": "English",
-    "zh": "Chinese",
-    "chinese": "Chinese",
-    "ja": "Japanese",
-    "jp": "Japanese",
-    "japanese": "Japanese",
-}
+MODEL_1_7B = asr_engines.QWEN_MODEL_ID
+NEMOTRON_MLX_MODEL = asr_engines.NEMOTRON_MLX_MODEL_ID
+SHERPA_ONNX_KO_MODEL = asr_engines.SHERPA_ONNX_KO_MODEL_ID
+GOOGLE_STT_CREDENTIAL_ENV = "QWEN_GOOGLE_STT_CREDENTIALS"
+GOOGLE_STT_SCOPES = ["https://www.googleapis.com/auth/cloud-platform"]
+_GOOGLE_AUTHORIZED_USER_CREDENTIALS = None
+_GOOGLE_SERVICE_ACCOUNT_CREDENTIALS = None
 
 # int16 진폭(최대 32767). 이 값보다 peak 가 작으면 말소리가 없는 버퍼로 보고
 # 받아쓰기를 건너뛴다. 무음/작은 잡음(peak 수백 이하) vs 실제 말(peak 1만 이상)
@@ -105,18 +102,28 @@ DEFAULT_MIN_VOLUME = 35
 # 마이크 한 번 읽을 때 샘플 수(~64ms @16kHz). 마이크는 앱 시작부터 계속 열어두고
 # 읽어, 키 누르는 순간 바로 잡히게 한다(누를 때마다 새로 여는 ~1초 지연 제거).
 FRAMES_PER_BUFFER = 1024
-# 키 누르기 직전 이만큼을 미리 들고 있다가 받아쓰기에 포함한다(누르자마자, 혹은
-# 살짝 먼저 말해도 첫 단어가 안 잘림).
-PREROLL_SEC = 0.5
+# 키 누르기 직전 이만큼을 미리 들고 있다가 받아쓰기에 포함한다. 토글을 누른 직후
+# 바로 말하는 습관에서는 첫 음절이 버튼 타이밍보다 살짝 앞서거나, 시작 직후 작게
+# 들어오는 경우가 있어 1초 정도를 붙여 첫 단어가 잘리지 않게 한다.
+PREROLL_SEC = 1.0
 PREROLL_CHUNKS = max(1, round(PREROLL_SEC * 16000 / FRAMES_PER_BUFFER))
+SPEECH_START_LOOKBACK_SEC = 0.8
+SPEECH_START_LOOKBACK_CHUNKS = max(1, round(SPEECH_START_LOOKBACK_SEC * 16000 / FRAMES_PER_BUFFER))
 # 이 맥에서 한 번 받아쓰는 데 약 0.1초밖에 안 걸린다(길이 1~8초 측정, mps). 그래서
 # 끝의 기다림은 모델 속도가 아니라 '확인 간격'이 좌우한다. 간격을 짧게 둬 말끝이 빨리
 # 들어오게 한다. (일반 권장값 0.8초는 모델이 느릴 때 얘기라 우리엔 과하게 보수적)
 STREAM_INTERVAL = 0.25       # 초: 스트리밍 갱신 주기(추론 ~0.1초라 자주 확인해도 안 밀림 → 마지막 말이 빨리 뜸)
 PAUSE_SILENCE_SEC = 0.3      # 초: 끝이 이만큼 조용하면 쉼 → 확정(단어 사이 멈춤과 구분되는 바닥값)
+# 배경음 때문에 쉼 판정이 계속 실패해도, 같은 인식 결과가 연속으로 고정되면 커밋한다.
+# 3틱은 현재 STREAM_INTERVAL 기준 약 0.75초다.
+STABLE_COMMIT_TICKS = 3
 # 매 틱마다 '확정 이후의 창 전체'를 다시 받아쓴다. 보통은 쉼(PAUSE_SILENCE_SEC)에서 먼저
 # 확정되므로 이 상한은 거의 안 걸린다. Whisper 계열 30초 한계보다 한참 아래로 두는 안전망.
 MAX_WINDOW_SEC = 12.0        # 초: 창이 이보다 길면 강제 확정(드물게 걸리는 안전망)
+# 확정 시점 편향(context)을 적용할 최소 창 길이(초). 이보다 짧은 확정 창은 음향 증거가
+# 약해 누출 위험이 커지므로 편향하지 않고 무편향 결과를 그대로 쓴다.
+BIAS_MIN_WINDOW_SEC = 1.0
+MAC_BACKSPACE_KEYCODE = 51
 NOISE_FILLER_TEXTS = {"어", "응", "음", "네", "예"}
 
 
@@ -290,6 +297,32 @@ def looks_like_punctuation_only(text):
     return bool(text and not compact)
 
 
+# 한글(자모 포함)과 라틴 문자(악센트 포함) — '허용' 글자. 사용자 콘텐츠는 한국어
+# 아니면 영어뿐이라, 짧은 라이브 창에서 auto 감지가 흔들려 중국어·일본어·러시아어
+# 등으로 새는 경우만 골라낸다.
+_KO_EN_LETTER_RE = re.compile(
+    "[A-Za-z"            # 영어(라틴 기본)
+    "À-ɏ"      # 라틴 악센트(café 등)
+    "ᄀ-ᇿ"      # 한글 자모
+    "㄰-㆏"      # 한글 호환 자모
+    "가-힣"      # 한글 음절
+    "ﾠ-ￜ]"     # 반각 한글
+)
+_ANY_LETTER_RE = re.compile(r"[^\W\d_]", re.UNICODE)
+
+
+def looks_like_foreign_language(text):
+    """한국어(한글)도 영어(라틴)도 아닌 언어로 받아써졌는지. 글자가 하나라도 있고
+    그 글자들 중 한글·라틴이 하나도 없으면(전부 외국 문자면) True. 숫자·기호만
+    있거나 한글/영어가 한 글자라도 섞이면 False — 진짜 발화를 지우지 않으려는
+    보수적 기준이다(드물게 한자가 섞인 한국어 등은 일부러 건드리지 않는다)."""
+    if not text:
+        return False
+    if _KO_EN_LETTER_RE.search(text):
+        return False
+    return bool(_ANY_LETTER_RE.search(text))
+
+
 def agreed_word_prefix(prev, curr):
     """직전 결과(prev)와 현재 결과(curr)가 앞에서부터 연속으로 같은 '단어'만 이어 돌려준다.
 
@@ -312,14 +345,7 @@ def safe_notify(title, subtitle, message):
 
 
 def normalize_language(language):
-    if not language:
-        return None
-    if isinstance(language, list):
-        language = language[0] if language else None
-    language = str(language).strip()
-    if not language:
-        return None
-    return LANGUAGE_MAP.get(language.lower(), language)
+    return asr_engines.normalize_qwen_language(language)
 
 
 def dispatch_app(app, callback, *args):
@@ -402,26 +428,56 @@ def unicode_type(text, _post=None):
     post = _post or CGEventPost
     for ch in text:
         down = CGEventCreateKeyboardEvent(None, 0, True)
+        if CGEventSetFlags is not None:
+            CGEventSetFlags(down, 0)
         CGEventKeyboardSetUnicodeString(down, 1, ch)
         post(kCGHIDEventTap, down)
         up = CGEventCreateKeyboardEvent(None, 0, False)
+        if CGEventSetFlags is not None:
+            CGEventSetFlags(up, 0)
         CGEventKeyboardSetUnicodeString(up, 1, ch)
         post(kCGHIDEventTap, up)
 
 
-def type_diff(old_text, new_text, keyboard_controller, allow_empty=False, insert=None):
+def plain_backspace(_post=None):
+    """Send a plain Backspace key event with modifier flags cleared."""
+    post = _post or CGEventPost
+    down = CGEventCreateKeyboardEvent(None, MAC_BACKSPACE_KEYCODE, True)
+    if CGEventSetFlags is not None:
+        CGEventSetFlags(down, 0)
+    post(kCGHIDEventTap, down)
+    up = CGEventCreateKeyboardEvent(None, MAC_BACKSPACE_KEYCODE, False)
+    if CGEventSetFlags is not None:
+        CGEventSetFlags(up, 0)
+    post(kCGHIDEventTap, up)
+
+
+def type_diff(
+    old_text,
+    new_text,
+    keyboard_controller,
+    allow_empty=False,
+    insert=None,
+    append_only=False,
+    delete_backward=None,
+):
     # `insert(text)` performs the actual character insertion. Default is the
     # pynput controller's keystroke typing, but the streaming path injects an
     # IME-immune Unicode inserter so Latin text isn't remapped to Hangul.
     if insert is None:
         insert = keyboard_controller.type
+    if delete_backward is None:
+        def delete_backward():
+            keyboard_controller.press(keyboard.Key.backspace)
+            keyboard_controller.release(keyboard.Key.backspace)
     old_text = old_text.strip()
     new_text = new_text.strip()
     if not new_text:
+        if append_only:
+            return old_text
         if allow_empty:
             for _ in range(len(old_text)):
-                keyboard_controller.press(keyboard.Key.backspace)
-                keyboard_controller.release(keyboard.Key.backspace)
+                delete_backward()
             return ""
         return old_text
     if not old_text:
@@ -434,11 +490,13 @@ def type_diff(old_text, new_text, keyboard_controller, allow_empty=False, insert
             return new_text
         return old_text
 
+    if append_only:
+        return old_text
+
     common_prefix = os.path.commonprefix([old_text, new_text])
     backspaces = len(old_text) - len(common_prefix)
     for _ in range(backspaces):
-        keyboard_controller.press(keyboard.Key.backspace)
-        keyboard_controller.release(keyboard.Key.backspace)
+        delete_backward()
         time.sleep(0.001)
     diff = new_text[len(common_prefix):]
     if diff:
@@ -448,33 +506,346 @@ def type_diff(old_text, new_text, keyboard_controller, allow_empty=False, insert
 
 
 class SpeechTranscriber:
-    def __init__(self, device, dtype):
+    def __init__(self, device, dtype, asr_engine=asr_engines.DEFAULT_ASR_ENGINE):
         self.device = device
         self.dtype = dtype
         self.pykeyboard = keyboard.Controller()
+        self.asr_engine = asr_engines.normalize_asr_engine(asr_engine)
         self.model_1_7b = None
+        self.nemotron_mlx_model = None
+        self.google_speech_client = None
+        self.sherpa_onnx_recognizer = None
         self.model_lock = threading.Lock()
+        # 모델을 실제로 올리는 중인지(HUD 가 '불러오는 중'을 보여줄 신호). 성공/실패 모두
+        # finally 에서 내려, 로드 실패 시 표시가 영원히 남지 않게 한다.
+        self.loading = False
+
+    def set_engine(self, asr_engine):
+        self.asr_engine = asr_engines.normalize_asr_engine(asr_engine)
+
+    def current_engine_label(self):
+        return asr_engines.asr_engine_label(self.asr_engine)
 
     def get_model(self):
         with self.model_lock:
             if self.model_1_7b is None:
-                safe_notify("Qwen Dictation", "Loading model", "Qwen3-ASR-1.7B 모델을 불러옵니다.")
-                self.model_1_7b = Qwen3ASRModel.from_pretrained(MODEL_1_7B, dtype=self.dtype)
-                self.model_1_7b.model.to(self.device)
-                self.model_1_7b.device = self.device
+                self.loading = True
+                try:
+                    safe_notify("Qwen Dictation", "Loading model", "Qwen3-ASR-1.7B 모델을 불러옵니다.")
+                    self.model_1_7b = Qwen3ASRModel.from_pretrained(MODEL_1_7B, dtype=self.dtype)
+                    self.model_1_7b.model.to(self.device)
+                    self.model_1_7b.device = self.device
+                finally:
+                    self.loading = False
             return self.model_1_7b
 
-    def transcribe_file(self, audio_path, language=None):
-        # 무음/잡음만 있는 버퍼는 건너뛴다. 용어/분야는 모델에 주지 않는다(context 가
-        # 출력에 새는 echo 를 원천 차단). 등록 용어 반영은 받아쓴 뒤 term_correct 가 한다.
+    def get_nemotron_model(self):
+        with self.model_lock:
+            if self.nemotron_mlx_model is None:
+                self.loading = True
+                try:
+                    safe_notify(
+                        "Qwen Dictation",
+                        "Loading model",
+                        "Nemotron 3.5 ASR MLX 모델을 불러옵니다.",
+                    )
+                    try:
+                        from mlx_audio.stt import load as load_stt_model
+                    except Exception as exc:
+                        raise RuntimeError(
+                            "Nemotron MLX 엔진을 쓰려면 mlx-audio optional runtime이 필요합니다. "
+                            "README의 Nemotron 설치 안내를 먼저 실행하세요."
+                        ) from exc
+
+                    self.nemotron_mlx_model = load_stt_model(NEMOTRON_MLX_MODEL)
+                finally:
+                    self.loading = False
+            return self.nemotron_mlx_model
+
+    def _load_google_speech_module(self):
+        try:
+            from google.cloud import speech
+        except Exception as exc:
+            raise RuntimeError(
+                "Google STT 엔진을 쓰려면 google-cloud-speech 패키지가 필요합니다. "
+                "`./venv/bin/python -m pip install google-cloud-speech` 후 다시 시도하세요."
+            ) from exc
+        return speech
+
+    def _google_stt_credential_candidates(self):
+        explicit = os.environ.get(GOOGLE_STT_CREDENTIAL_ENV, "").strip()
+        if explicit:
+            return [(os.path.expanduser(explicit), True)]
+        return [
+            (os.path.expanduser("~/.config/mcp-gsheets/token.json"), False),
+        ]
+
+    def _google_stt_credentials_from_file(self, path):
+        try:
+            with open(path, "r", encoding="utf-8") as f:
+                data = json.load(f)
+        except Exception as exc:
+            raise RuntimeError(f"Google STT credential 파일을 읽을 수 없습니다: {path}") from exc
+
+        if data.get("type") == "service_account":
+            global _GOOGLE_SERVICE_ACCOUNT_CREDENTIALS
+            if _GOOGLE_SERVICE_ACCOUNT_CREDENTIALS is None:
+                from google.oauth2 import service_account
+                _GOOGLE_SERVICE_ACCOUNT_CREDENTIALS = service_account.Credentials
+            return _GOOGLE_SERVICE_ACCOUNT_CREDENTIALS.from_service_account_file(
+                path,
+                scopes=GOOGLE_STT_SCOPES,
+            )
+
+        if all(data.get(key) for key in ("client_id", "client_secret", "refresh_token")):
+            existing_scopes = data.get("scopes") or data.get("scope") or []
+            if isinstance(existing_scopes, str):
+                existing_scopes = existing_scopes.split()
+            if existing_scopes and GOOGLE_STT_SCOPES[0] not in existing_scopes:
+                raise RuntimeError(
+                    "Google OAuth 토큰에 Speech-to-Text 권한 범위가 없습니다. "
+                    "`gcloud auth application-default login --scopes=https://www.googleapis.com/auth/cloud-platform`으로 "
+                    "Speech 권한이 있는 ADC를 다시 만들거나 서비스 계정 JSON을 사용하세요."
+                )
+            global _GOOGLE_AUTHORIZED_USER_CREDENTIALS
+            if _GOOGLE_AUTHORIZED_USER_CREDENTIALS is None:
+                from google.oauth2.credentials import Credentials
+                _GOOGLE_AUTHORIZED_USER_CREDENTIALS = Credentials
+            return _GOOGLE_AUTHORIZED_USER_CREDENTIALS.from_authorized_user_file(
+                path,
+                scopes=GOOGLE_STT_SCOPES,
+            )
+
+        raise RuntimeError(
+            "Google STT credential 파일 형식이 지원되지 않습니다. "
+            "service_account JSON 또는 refresh_token 이 있는 authorized-user JSON이 필요합니다."
+        )
+
+    def _load_google_stt_credentials(self):
+        for path, required in self._google_stt_credential_candidates():
+            if not path or not os.path.exists(path):
+                if required:
+                    raise RuntimeError(f"Google STT credential 파일이 없습니다: {path}")
+                continue
+            try:
+                return self._google_stt_credentials_from_file(path)
+            except RuntimeError:
+                if required:
+                    raise
+        return None
+
+    def get_google_speech_client(self):
+        with self.model_lock:
+            if self.google_speech_client is None:
+                self.loading = True
+                try:
+                    speech = self._load_google_speech_module()
+                    try:
+                        credentials = self._load_google_stt_credentials()
+                        if credentials is None:
+                            self.google_speech_client = speech.SpeechClient()
+                        else:
+                            self.google_speech_client = speech.SpeechClient(credentials=credentials)
+                    except RuntimeError:
+                        raise
+                    except Exception as exc:
+                        raise RuntimeError(
+                            "Google STT 인증이 필요합니다. "
+                            "`gcloud auth application-default login --scopes=https://www.googleapis.com/auth/cloud-platform`을 실행하거나 "
+                            f"Speech 권한이 있는 서비스 계정/authorized-user JSON 경로를 {GOOGLE_STT_CREDENTIAL_ENV}에 설정하세요."
+                        ) from exc
+                finally:
+                    self.loading = False
+            return self.google_speech_client
+
+    def _sherpa_model_root(self):
+        override = os.environ.get("SHERPA_ONNX_KO_MODEL_PATH", "")
+        if override:
+            return os.path.expanduser(override)
+        return os.path.expanduser(
+            "~/.qwen-dictation/models/sherpa-onnx-streaming-zipformer-korean-2024-06-16"
+        )
+
+    def _load_sherpa_onnx_module(self):
+        try:
+            import sherpa_onnx
+        except Exception as exc:
+            raise RuntimeError(
+                "sherpa-onnx Korean 엔진을 쓰려면 sherpa-onnx 패키지가 필요합니다. "
+                "`./venv/bin/python -m pip install sherpa-onnx` 후 다시 시도하세요."
+            ) from exc
+        return sherpa_onnx
+
+    def _first_existing(self, root, names):
+        for name in names:
+            path = os.path.join(root, name)
+            if os.path.exists(path):
+                return path
+        return ""
+
+    def _locate_sherpa_onnx_model(self):
+        root = self._sherpa_model_root()
+        tokens = self._first_existing(root, ["tokens.txt"])
+        encoder = self._first_existing(
+            root,
+            [
+                "encoder-epoch-99-avg-1.int8.onnx",
+                "encoder-epoch-99-avg-1.onnx",
+                "encoder.int8.onnx",
+                "encoder.onnx",
+            ],
+        )
+        decoder = self._first_existing(
+            root,
+            [
+                "decoder-epoch-99-avg-1.int8.onnx",
+                "decoder-epoch-99-avg-1.onnx",
+                "decoder.int8.onnx",
+                "decoder.onnx",
+            ],
+        )
+        joiner = self._first_existing(
+            root,
+            [
+                "joiner-epoch-99-avg-1.int8.onnx",
+                "joiner-epoch-99-avg-1.onnx",
+                "joiner.int8.onnx",
+                "joiner.onnx",
+            ],
+        )
+        if not all([tokens, encoder, decoder, joiner]):
+            raise RuntimeError(
+                "sherpa-onnx Korean 모델 파일이 없습니다. "
+                f"{root} 아래에 tokens.txt, encoder*.onnx, decoder*.onnx, joiner*.onnx를 두세요."
+            )
+        return {
+            "root": root,
+            "tokens": tokens,
+            "encoder": encoder,
+            "decoder": decoder,
+            "joiner": joiner,
+        }
+
+    def get_sherpa_onnx_recognizer(self):
+        with self.model_lock:
+            if self.sherpa_onnx_recognizer is None:
+                self.loading = True
+                try:
+                    sherpa_onnx = self._load_sherpa_onnx_module()
+                    model = self._locate_sherpa_onnx_model()
+                    self.sherpa_onnx_recognizer = sherpa_onnx.OnlineRecognizer.from_transducer(
+                        tokens=model["tokens"],
+                        encoder=model["encoder"],
+                        decoder=model["decoder"],
+                        joiner=model["joiner"],
+                        num_threads=2,
+                        sample_rate=16000,
+                        feature_dim=80,
+                        decoding_method="greedy_search",
+                        provider="cpu",
+                    )
+                finally:
+                    self.loading = False
+            return self.sherpa_onnx_recognizer
+
+    def _transcribe_google_stt(self, audio_path, language):
+        speech = self._load_google_speech_module()
+        client = self.get_google_speech_client()
+        with open(audio_path, "rb") as f:
+            content = f.read()
+        config = speech.RecognitionConfig(
+            encoding=speech.RecognitionConfig.AudioEncoding.LINEAR16,
+            sample_rate_hertz=16000,
+            language_code=asr_engines.normalize_google_language(language),
+            enable_automatic_punctuation=True,
+            model=asr_engines.GOOGLE_STT_MODEL_ID,
+        )
+        audio = speech.RecognitionAudio(content=content)
+        response = client.recognize(config=config, audio=audio)
+        parts = []
+        for result in getattr(response, "results", []) or []:
+            alternatives = getattr(result, "alternatives", []) or []
+            if alternatives:
+                parts.append(getattr(alternatives[0], "transcript", "") or "")
+        return " ".join(part.strip() for part in parts if part.strip()).strip()
+
+    def _transcribe_sherpa_onnx(self, audio_path):
+        recognizer = self.get_sherpa_onnx_recognizer()
+        samples, sample_rate = sf.read(audio_path, dtype="float32")
+        if getattr(samples, "ndim", 1) > 1:
+            samples = np.mean(samples, axis=1).astype(np.float32)
+        stream = recognizer.create_stream()
+        stream.accept_waveform(int(sample_rate), samples)
+        if hasattr(stream, "input_finished"):
+            stream.input_finished()
+        is_ready = getattr(recognizer, "is_ready", None)
+        if callable(is_ready):
+            while recognizer.is_ready(stream):
+                recognizer.decode_stream(stream)
+        else:
+            recognizer.decode_stream(stream)
+        result = recognizer.get_result(stream)
+        if isinstance(result, str):
+            return result.strip()
+        return (getattr(result, "text", "") or "").strip()
+
+    def _result_text(self, result):
+        if isinstance(result, str):
+            return result.strip()
+        return (getattr(result, "text", "") or "").strip()
+
+    def _transcribe_nemotron_stream(self, audio_path, language):
+        model = self.get_nemotron_model()
+        stream_generate = getattr(model, "stream_generate", None)
+        if not callable(stream_generate):
+            raise RuntimeError("Nemotron MLX 모델이 stream_generate 네이티브 스트리밍 API를 제공하지 않습니다.")
+        samples, sample_rate = sf.read(audio_path, dtype="float32")
+        if getattr(samples, "ndim", 1) > 1:
+            samples = np.mean(samples, axis=1).astype(np.float32)
+        if int(sample_rate) != 16000:
+            raise RuntimeError(f"Nemotron MLX stream_generate는 16000 Hz 오디오가 필요합니다: {sample_rate}")
+        import mlx.core as mx
+
+        audio = mx.array(np.asarray(samples, dtype=np.float32))
+        latest = ""
+        for result in stream_generate(
+            audio,
+            language=asr_engines.normalize_nemotron_language(language),
+        ):
+            text = self._result_text(result)
+            if text:
+                latest = text
+        return latest
+
+    def preload_current_model(self):
+        engine = asr_engines.normalize_asr_engine(self.asr_engine)
+        if engine == asr_engines.ASR_ENGINE_NEMOTRON_MLX:
+            return self.get_nemotron_model()
+        if engine == asr_engines.ASR_ENGINE_GOOGLE_STT:
+            return self.get_google_speech_client()
+        if engine == asr_engines.ASR_ENGINE_SHERPA_ONNX_KO:
+            return self.get_sherpa_onnx_recognizer()
+        return self.get_model()
+
+    def transcribe_file(self, audio_path, language=None, context=""):
+        # 무음/잡음만 있는 버퍼는 건너뛴다. 라이브 틱은 context="" 로 호출해 누출을 원천
+        # 차단하고, 확정 시점에만 등록 용어 context 를 받아 모델에 귀띔한다(누출 가드 동반).
         silence_threshold, _ = volume_peak_thresholds(
             getattr(self, "min_volume", DEFAULT_MIN_VOLUME)
         )
         if audio_peak(audio_path) < silence_threshold:
             return ""
+        engine = asr_engines.normalize_asr_engine(self.asr_engine)
+        if engine == asr_engines.ASR_ENGINE_NEMOTRON_MLX:
+            return self._transcribe_nemotron_stream(audio_path, language)
+        if engine == asr_engines.ASR_ENGINE_GOOGLE_STT:
+            return self._transcribe_google_stt(audio_path, language)
+        if engine == asr_engines.ASR_ENGINE_SHERPA_ONNX_KO:
+            return self._transcribe_sherpa_onnx(audio_path)
+
         model = self.get_model()
         language = normalize_language(language)
-        results = model.transcribe(audio_path, context="", language=language)
+        results = model.transcribe(audio_path, context=context, language=language)
         if not results:
             return ""
         return results[0].text.strip()
@@ -509,6 +880,13 @@ class Recorder:
         self.self_type_guard_until = 0.0
         # 홀드 키를 떼서 정상 종료할 때만, 마지막 글자 입력 뒤 Enter 를 보낼지.
         self.send_enter_on_stop = False
+        # Ctrl/Cmd 같은 modifier 를 홀드 키로 쓰는 동안 합성 backspace 가 섞이지
+        # 않도록 Recorder._type 은 modifier flags 를 지운 CGEvent backspace 를 쓴다.
+        self.defer_typing_until_stop = False
+        self.deferred_text = ""
+        self.append_only_until_stop = False
+        self._stable_hypo = ""
+        self._stable_ticks = 0
         # 스트리밍 루프의 주기 대기를 즉시 깨우는 정지 신호. 키를 떼면 set 되어
         # 다음 확인 주기를 기다리지 않고 곧장 마지막 틱(+Enter)으로 넘어간다.
         self._wake = threading.Event()
@@ -518,11 +896,14 @@ class Recorder:
         백스페이스 없이 커서 위치에 새 글자만 덧붙는다(사용자 수정 보존)."""
         self.rebaseline_pending = True
 
-    def start(self, language=None):
+    def start(self, language=None, live_typing=True, append_only_live=False):
         if self.recording:
             return
         self.finalize_on_stop = True
         self.send_enter_on_stop = False
+        self.defer_typing_until_stop = not bool(live_typing)
+        self.append_only_until_stop = bool(append_only_live and live_typing)
+        self.deferred_text = ""
         self.rebaseline_pending = False
         self._wake.clear()
         # 마이크는 이미 계속 열려 있으니 여는 지연이 없다. 직전 0.5초(preroll)를 앞에
@@ -634,19 +1015,44 @@ class Recorder:
         sf.write(path, audio_data_fp32, 16000)
         return True
 
-    def _type(self, old, new):
-        # Insert via IME-immune Unicode CGEvents so Latin text isn't remapped to
-        # Hangul under a Korean input source; fall back to keystrokes if Quartz
-        # CGEvents are unavailable. Backspaces stay as keycodes either way.
-        inserter = unicode_type if CGEventCreateKeyboardEvent is not None else None
+    def _type(self, old, new, append_only=False):
+        # Let pynput choose the platform text insertion path. The local Quartz
+        # Unicode inserter is unreliable in some focused apps on this macOS
+        # build: it can report success internally without inserting text.
+        inserter = None
+        deleter = plain_backspace if CGEventCreateKeyboardEvent is not None else None
         return type_diff(old, new, self.transcriber.pykeyboard,
-                         allow_empty=True, insert=inserter)
+                         allow_empty=True, insert=inserter, append_only=append_only,
+                         delete_backward=deleter)
 
-    def _transcribe_window(self, window_bytes, language):
+    def _transcribe_window(self, window_bytes, language, context=""):
         path = "/tmp/qwen_dictation_stream.wav"
         audio = np.frombuffer(window_bytes, dtype=np.int16).astype(np.float32) / 32768.0
         sf.write(path, audio, 16000)
-        return self.transcriber.transcribe_file(path, language=language)
+        return self.transcriber.transcribe_file(path, language=language, context=context)
+
+    def _biased_commit_hypo(self, window, language, unbiased, window_secs):
+        """확정 시점에만, 충분히 긴 창에 한해 등록 용어를 모델에 귀띔해 다시 받아쓴다.
+        누출 가드(머리표 echo 금지 + 근거 없는 등록어 금지)를 통과할 때만 편향본을 쓰고,
+        아니면 무편향본을 그대로 돌려준다. 라이브 틱은 호출하지 않는다(누출 0 유지)."""
+        if not asr_engines.asr_engine_supports_context(
+            getattr(getattr(self, "transcriber", None), "asr_engine", asr_engines.DEFAULT_ASR_ENGINE)
+        ):
+            return unbiased
+        vocab = getattr(self, "session_vocab", None) or []
+        if not vocab or window_secs < BIAS_MIN_WINDOW_SEC:
+            return unbiased
+        domain = getattr(self.app, "domain_context", "")
+        context = vocabulary.build_context(vocab, domain)
+        if not context:
+            return unbiased
+        biased = self._transcribe_window(window, language, context=context)
+        if looks_like_context_label_echo(biased):
+            return unbiased  # context 머리표 자체가 새어나옴 → 거부
+        biased = term_correct.correct_terms(biased, vocab)
+        if not term_correct.context_bias_is_safe(unbiased, biased, vocab):
+            return unbiased  # 근거 없는 등록어가 튀어나옴(누출) → 거부
+        return biased
 
     def _stream_tick(self, language, allow_stopped=False):
         # 사용자가 직접 고친 직후라면 기준점을 현재로 리셋한다. 리스너 스레드와의
@@ -656,6 +1062,8 @@ class Recorder:
                 self.window_start = len(self.audio_frames)
             self.committed_text = ""
             self.last_typed = ""
+            self._stable_hypo = ""
+            self._stable_ticks = 0
             self.rebaseline_pending = False
         with self.audio_lock:
             window = b"".join(self.audio_frames[self.window_start:])
@@ -671,9 +1079,17 @@ class Recorder:
             getattr(self.app, "min_volume", DEFAULT_MIN_VOLUME)
         )
         self.transcriber.domain_context = getattr(self.app, "domain_context", "")
+        engine = asr_engines.normalize_asr_engine(
+            getattr(self.app, "asr_engine", asr_engines.DEFAULT_ASR_ENGINE)
+        )
+        set_engine = getattr(self.transcriber, "set_engine", None)
+        if set_engine is not None:
+            set_engine(engine)
+        else:
+            self.transcriber.asr_engine = engine
         if pcm_peak(window) < start_threshold:
             with self.audio_lock:
-                self.window_start = frame_count
+                self.window_start = max(0, frame_count - SPEECH_START_LOOKBACK_CHUNKS)
             return
         hypo = self._transcribe_window(window, language)
         if not self.recording and not allow_stopped:
@@ -685,17 +1101,53 @@ class Recorder:
         paused = trailing_silence(window, 16000, silence_threshold, PAUSE_SILENCE_SEC)
         if paused and looks_like_pause_noise_filler(hypo):
             hypo = ""
-        # 등록 용어로 사후 교정한다(모델엔 용어를 안 줬으므로 여기서만 반영).
-        hypo = term_correct.correct_terms(hypo, getattr(self, "session_vocab", None) or [])
         window_secs = len(window) / 2.0 / 16000.0
-        committing = bool(hypo and should_commit(window_secs, paused, MAX_WINDOW_SEC))
+        finalizing = bool(allow_stopped and not self.recording)
+        # 한국어(한글)도 영어도 아닌 언어로 새면(짧은 라이브 창에서 auto 감지가 흔들려
+        # 중국어·일본어·러시아어 등으로 빠짐): 확정 직전이면 한국어로 다시 받아써서
+        # 외국어 확정을 막고, 아직 말하는 중이면 화면에 안 띄우고 직전 글자를 유지한다
+        # (빈 토막처럼 처리 → '깜빡임' 없이 직전 한국어 유지).
+        if hypo and looks_like_foreign_language(hypo):
+            if finalizing or should_commit(window_secs, paused, MAX_WINDOW_SEC):
+                forced = self._transcribe_window(window, "Korean")
+                hypo = forced if not looks_like_foreign_language(forced) else ""
+            else:
+                hypo = ""
+        # 등록 용어로 사후 교정한다(라이브 틱은 모델에 용어를 안 줬으므로 여기서만 반영).
+        unbiased = term_correct.correct_terms(hypo, getattr(self, "session_vocab", None) or [])
+        if unbiased:
+            if unbiased == getattr(self, "_stable_hypo", ""):
+                self._stable_ticks = getattr(self, "_stable_ticks", 0) + 1
+            else:
+                self._stable_hypo = unbiased
+                self._stable_ticks = 1
+        else:
+            self._stable_hypo = ""
+            self._stable_ticks = 0
+        stable_commit = bool(
+            unbiased
+            and self.recording
+            and not allow_stopped
+            and getattr(self, "_stable_ticks", 0) >= STABLE_COMMIT_TICKS
+        )
+        committing = bool(
+            unbiased and (
+                finalizing
+                or stable_commit
+                or should_commit(window_secs, paused, MAX_WINDOW_SEC)
+            )
+        )
         if committing:
-            # 확정 시점(쉼/최대창)에서는 마지막 말까지 전부 흘려보낸다.
+            # 확정 시점엔 등록 용어를 모델에 귀띔해 다시 받아쓴다(증거가 강해 누출이 적다).
+            # 누출 가드를 통과하면 편향본을, 아니면 무편향본을 확정한다. 마지막 말까지 전부.
+            hypo = self._biased_commit_hypo(window, language, unbiased, window_secs)
+            if looks_like_foreign_language(hypo):
+                hypo = unbiased  # 편향 재받아쓰기가 외국어로 새면 무편향(한국어) 유지
             shown = hypo
         else:
-            # LocalAgreement-2: 직전 결과와 '연속 두 번 같은' 앞부분만 보여준다. 확정된
-            # 앞부분은 단조 증가만 하므로(이미 친 글자를 지우거나 바꾸지 않는다), 진행
-            # 중 흔들림('왔다갔다')과 '앞 글자 사라짐'이 사라진다.
+            hypo = unbiased
+            # LocalAgreement-2: '연속 두 번 같은' 앞부분만 화면에 표시한다. 확정
+            # 앞부분은 단조 증가만 하므로 이미 친 글자를 지우거나 바꾸지 않는다.
             prev = getattr(self, "_la_prev_hypo", "")
             confirmed = getattr(self, "_la_confirmed", "")
             agreed = agreed_word_prefix(prev, hypo)
@@ -708,17 +1160,33 @@ class Recorder:
         # 단위가 붙은 한국어 수사만 아라비아 숫자로 바꾼다('삼 밀리'->3밀리). 변환은
         # idempotent 라 확정 텍스트에 다시 적용해도 안전하다.
         target = text_normalize.normalize_numbers(self.committed_text + shown)
-        # 타이핑 중과 직후 0.2초는 우리가 만든 합성 키 이벤트가 들어오므로, 그 사이
-        # 리스너가 키를 사용자 수동 편집으로 오인하지 않도록 가드 시각을 세운다.
-        self.self_type_guard_until = time.time() + 30.0
-        try:
-            self.last_typed = self._type(self.last_typed, target)
-        finally:
-            self.self_type_guard_until = time.time() + 0.2
+        defer_typing = (
+            getattr(self, "defer_typing_until_stop", False)
+            and self.recording
+            and not allow_stopped
+        )
+        append_only = False
+        if not defer_typing:
+            append_only = (
+                self.recording
+                and not allow_stopped
+            )
+            # 타이핑 중과 직후 0.2초는 우리가 만든 합성 키 이벤트가 들어오므로, 그 사이
+            # 리스너가 키를 사용자 수동 편집으로 오인하지 않도록 가드 시각을 세운다.
+            self.self_type_guard_until = time.time() + 30.0
+            try:
+                self.last_typed = self._type(self.last_typed, target, append_only=append_only)
+            finally:
+                self.self_type_guard_until = time.time() + 0.2
+            self.deferred_text = ""
+        elif target:
+            self.deferred_text = target
         if committing:
-            self.committed_text = target
+            self.committed_text = self.last_typed if append_only else target
             self._la_prev_hypo = ""
             self._la_confirmed = ""
+            self._stable_hypo = ""
+            self._stable_ticks = 0
             with self.audio_lock:
                 self.window_start = frame_count
 
@@ -743,8 +1211,11 @@ class Recorder:
         self.window_start = 0
         self.committed_text = ""
         self.last_typed = ""
+        self.deferred_text = ""
         self._la_prev_hypo = ""
         self._la_confirmed = ""
+        self._stable_hypo = ""
+        self._stable_ticks = 0
         self.session_vocab = vocabulary.load_vocabulary()
         while self.recording:
             # 주기마다 한 번씩 틱. 단, 도중에 정지 신호가 오면 즉시 깨어나
@@ -763,9 +1234,17 @@ class Recorder:
                 self._stream_tick(language, allow_stopped=True)
             except Exception as exc:
                 print(f"Streaming final tick error: {exc}")
+        deferred = getattr(self, "deferred_text", "")
+        if deferred and self.last_typed != deferred:
+            self.self_type_guard_until = time.time() + 30.0
+            try:
+                self.last_typed = self._type(self.last_typed, deferred)
+            finally:
+                self.self_type_guard_until = time.time() + 0.2
+            self.deferred_text = ""
         # Enter 를 먼저 보내고(사용자가 체감하는 지연), 기록 저장은 그 뒤로 미룬다.
         # 마지막 틱에서 새로 친 글자가 있으면 짧은 반영 대기를, 없으면 곧장 보낸다.
-        if getattr(self, "send_enter_on_stop", False):
+        if getattr(self, "send_enter_on_stop", False) and self.last_typed.strip():
             self._send_enter(settle=0.03 if self.last_typed != typed_before else 0.0)
         dictation_history.add_history(self.last_typed)
 
@@ -773,13 +1252,13 @@ class Recorder:
 class MultiHotkeyListener:
     """사용자 지정 단일키 또는 조합키 2개로 실시간 받아쓰기를 구동한다.
 
-    - 오른쪽 Cmd(cmd_r): 홀드 — 누르는 동안 녹음, 떼면 정지.
+    - 오른쪽 Ctrl(ctrl_r): 홀드 — 누르는 동안 녹음, 떼면 정지.
     - 토글키: 눌러 시작, 다시 눌러 정지. fn도 설정 가능.
     둘 다 streaming: 말하는 대로 입력창에 실시간 타이핑(문맥 보정 포함).
     동시에 하나의 트리거만 활성(active_trigger).
     """
 
-    def __init__(self, app, hold_key="cmd_r", toggle_key="alt_r"):
+    def __init__(self, app, hold_key="ctrl_r", toggle_key="alt_r"):
         self.app = app
         self.hold_key = hotkeys.normalize_hotkey(hold_key)
         self.toggle_key = hotkeys.normalize_hotkey(toggle_key)
@@ -789,10 +1268,28 @@ class MultiHotkeyListener:
         self.toggle_latched = False
         self.active_trigger = None  # None | "hold" | "toggle"
 
+    def _release_tokens(self, token):
+        if token in hotkeys.MODIFIERS:
+            base = token.removesuffix("_r")
+            return {base, f"{base}_r"}
+        return {token}
+
+    def _press_tokens(self, token):
+        return {token}
+
     def _begin(self, trigger):
         if self.app.started:
             return
         self.active_trigger = trigger
+        try:
+            self.app._live_typing_for_next_start = True
+            self.app._append_only_for_next_start = False
+        except Exception:
+            pass
+        recorder = getattr(self.app, "recorder", None)
+        if recorder is not None:
+            recorder.defer_typing_until_stop = False
+            recorder.append_only_until_stop = False
         dispatch_app(self.app, self.app.start_app, None)
 
     def _end(self, trigger, finalize=True):
@@ -839,7 +1336,7 @@ class MultiHotkeyListener:
                 return  # 우리가 타이핑한 합성 키 이벤트 — 무시
             self._handle_manual_edit()
             return
-        self.pressed.add(token)
+        self.pressed.update(self._press_tokens(token))
         hold_matched = self.hold_parts <= self.pressed
         toggle_matched = self.toggle_parts <= self.pressed
         if hold_matched and not self.app.started:
@@ -858,7 +1355,8 @@ class MultiHotkeyListener:
         token = token_from_key(key)
         if token is None:
             return
-        self.pressed.discard(token)
+        for release_token in self._release_tokens(token):
+            self.pressed.discard(release_token)
         if not self.toggle_parts <= self.pressed:
             self.toggle_latched = False
         if self.active_trigger == "hold" and not self.hold_parts <= self.pressed:
@@ -887,9 +1385,16 @@ class StatusBarApp(rumps.App):
             "Start Recording",
             "Stop Recording",
             None,
+        ]
+        for engine in asr_engines.available_asr_engines():
+            item = rumps.MenuItem(self._asr_engine_menu_title(engine), callback=self.change_asr_engine)
+            item.engine_id = engine["id"]
+            menu.append(item)
+        menu.extend([
+            None,
             rumps.MenuItem("Open Settings Dashboard", callback=self.open_dashboard),
             None,
-        ]
+        ])
         for lang in self.languages:
             menu.append(rumps.MenuItem(f"Language: {lang}", callback=self.change_language))
         self.menu = menu
@@ -905,6 +1410,19 @@ class StatusBarApp(rumps.App):
         self._overlay_timer = rumps.Timer(self._tick_overlay, 0.15)
         self._overlay_timer.start()
 
+    def _model_loading(self):
+        """모델을 실제로 올리는 중인가(HUD '불러오는 중' 표시 조건). 로드 실패 시엔
+        transcriber.loading 이 finally 에서 내려가므로 표시가 영원히 남지 않는다."""
+        rec = getattr(self, "recorder", None)
+        tr = getattr(rec, "transcriber", None) if rec else None
+        return bool(tr and getattr(tr, "loading", False))
+
+    @staticmethod
+    def _loading_pulse():
+        """로딩 막대를 숨쉬듯 움직일 0~1 삼각파. math import 없이 시간만으로 만든다."""
+        frac = (time.time() % 0.9) / 0.9      # 0.9초 주기 0→1 톱니
+        return 1.0 - abs(2.0 * frac - 1.0)    # 0→1→0 삼각파
+
     def _tick_overlay(self, _):
         try:
             ov = hud_overlay.get_overlay()
@@ -918,7 +1436,18 @@ class StatusBarApp(rumps.App):
                 self._applied_hud = desired
             mode = desired[0]
 
-            if self.started and self.start_time is not None:
+            if self._model_loading():
+                # 모델 cold load(~7초) 중엔 시작 워밍업이든 첫 받아쓰기든, 막대를 숨쉬듯
+                # 펄스시키고 '불러오는 중'을 띄워 멈춘 게 아니라 준비 중임을 알린다.
+                if self.started and self.start_time is not None:
+                    elapsed = int(time.time() - self.start_time)
+                    self.elapsed_time = elapsed
+                    minutes, seconds = divmod(elapsed, 60)
+                    self.title = f"({minutes:02d}:{seconds:02d}) 🔴"
+                ov.update(self._loading_pulse(), 0)
+                ov.set_processing(False)
+                ov.show_status("모델 불러오는 중…")
+            elif self.started and self.start_time is not None:
                 elapsed = int(time.time() - self.start_time)
                 self.elapsed_time = elapsed
                 minutes, seconds = divmod(elapsed, 60)
@@ -946,9 +1475,12 @@ class StatusBarApp(rumps.App):
             "language": self.current_language,
             "max_time": self.max_time or 0,
             "input_device": getattr(self, "input_device", ""),
-            "hold_key": getattr(self, "hold_key", "cmd_r"),
+            "hold_key": getattr(self, "hold_key", "ctrl_r"),
             "toggle_key": getattr(self, "toggle_key", "alt_r"),
             "min_volume": getattr(self, "min_volume", DEFAULT_MIN_VOLUME),
+            "asr_engine": asr_engines.normalize_asr_engine(
+                getattr(self, "asr_engine", asr_engines.DEFAULT_ASR_ENGINE)
+            ),
             "edit_interrupt_mode": getattr(self, "edit_interrupt_mode", "stop"),
             "hold_send_enter": getattr(self, "hold_send_enter", True),
             "domain_context": getattr(self, "domain_context", ""),
@@ -992,6 +1524,9 @@ class StatusBarApp(rumps.App):
         self.hold_key = cfg["hold_key"]
         self.toggle_key = cfg["toggle_key"]
         self.min_volume = normalize_min_volume(cfg.get("min_volume", DEFAULT_MIN_VOLUME))
+        self.asr_engine = asr_engines.normalize_asr_engine(
+            cfg.get("asr_engine", asr_engines.DEFAULT_ASR_ENGINE)
+        )
         mode = cfg.get("edit_interrupt_mode", "stop")
         self.edit_interrupt_mode = mode if mode in ("continue", "stop") else "stop"
         self.hold_send_enter = bool(cfg.get("hold_send_enter", True))
@@ -1002,11 +1537,25 @@ class StatusBarApp(rumps.App):
         if getattr(self, "recorder", None) is not None:
             self.recorder.transcriber.min_volume = self.min_volume
             self.recorder.transcriber.domain_context = self.domain_context
+            self.recorder.transcriber.set_engine(self.asr_engine)
         self.sync_menu_state()
+
+    @staticmethod
+    def _asr_engine_menu_title(engine):
+        return f"Model: {engine.get('short_label') or engine['label']}"
 
     def sync_menu_state(self):
         for lang in self.languages:
-            self.menu[f"Language: {lang}"].state = int(self.current_language == lang)
+            title = f"Language: {lang}"
+            if title in self.menu:
+                self.menu[title].state = int(self.current_language == lang)
+        selected_engine = asr_engines.normalize_asr_engine(
+            getattr(self, "asr_engine", asr_engines.DEFAULT_ASR_ENGINE)
+        )
+        for engine in asr_engines.available_asr_engines():
+            title = self._asr_engine_menu_title(engine)
+            if title in self.menu:
+                self.menu[title].state = int(selected_engine == engine["id"])
 
     def open_dashboard(self, _):
         settings_window.open_settings("http://127.0.0.1:5001")
@@ -1014,6 +1563,16 @@ class StatusBarApp(rumps.App):
     def change_language(self, sender):
         self.current_language = sender.title.replace("Language: ", "")
         self.sync_menu_state()
+        self.save_settings()
+
+    def set_asr_engine(self, engine):
+        self.asr_engine = asr_engines.normalize_asr_engine(engine)
+        if getattr(self, "recorder", None) is not None:
+            self.recorder.transcriber.set_engine(self.asr_engine)
+        self.sync_menu_state()
+
+    def change_asr_engine(self, sender):
+        self.set_asr_engine(getattr(sender, "engine_id", asr_engines.DEFAULT_ASR_ENGINE))
         self.save_settings()
 
     @rumps.clicked("Start Recording")
@@ -1024,7 +1583,15 @@ class StatusBarApp(rumps.App):
         self.started = True
         self.menu["Start Recording"].set_callback(None)
         self.menu["Stop Recording"].set_callback(self.stop_app)
-        self.recorder.start(self.current_language)
+        live_typing = bool(getattr(self, "_live_typing_for_next_start", True))
+        self._live_typing_for_next_start = True
+        append_only_live = bool(getattr(self, "_append_only_for_next_start", False))
+        self._append_only_for_next_start = False
+        self.recorder.start(
+            self.current_language,
+            live_typing=live_typing,
+            append_only_live=append_only_live,
+        )
         if self.max_time and self.max_time > 0:
             self.timer = threading.Timer(
                 self.max_time,
@@ -1075,7 +1642,7 @@ class StatusBarApp(rumps.App):
         """현재 홀드/토글 설정으로 키 리스너 객체를 만든다."""
         return MultiHotkeyListener(
             self,
-            hold_key=getattr(self, "hold_key", "cmd_r"),
+            hold_key=getattr(self, "hold_key", "ctrl_r"),
             toggle_key=getattr(self, "toggle_key", "alt_r"),
         )
 
@@ -1132,19 +1699,19 @@ def main():
     languages = [item.strip() for item in args.language.split(",") if item.strip()]
     device = "mps" if torch.backends.mps.is_available() else "cpu"
     dtype = torch.float16 if device == "mps" else torch.float32
-    print(f"Initializing Qwen3-ASR on {device}...")
-
     app = StatusBarApp(languages=languages, max_time=args.max_time)
-    transcriber = SpeechTranscriber(device, dtype)
+    print(f"Initializing {asr_engines.asr_engine_label(app.asr_engine)} on {device}...")
+
+    transcriber = SpeechTranscriber(device, dtype, asr_engine=app.asr_engine)
     recorder = Recorder(transcriber, app)
     app.recorder = recorder
 
-    # 모델을 백그라운드에서 미리 올려둔다(앱 켤 때 ~6~7초 cold load 를 첫 받아쓰기
+    # 선택된 모델을 백그라운드에서 미리 올려둔다(앱 켤 때 cold load 를 첫 받아쓰기
     # 시점이 아니라 시작 시점에 숨긴다 → 첫 받아쓰기도 바로 빠르게).
     def _warmup_model():
         try:
-            transcriber.get_model()
-            print("Model preloaded (1.7b).")
+            transcriber.preload_current_model()
+            print(f"Model preloaded ({transcriber.current_engine_label()}).")
         except Exception as exc:
             print(f"Model preload error: {exc}")
 

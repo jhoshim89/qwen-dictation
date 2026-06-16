@@ -1,4 +1,6 @@
 import importlib.util
+from types import SimpleNamespace
+
 from pynput import keyboard
 
 
@@ -71,7 +73,7 @@ def test_multi_listener_accepts_custom_keys():
 def test_multi_listener_defaults():
     wd = _load()
     lis = wd.MultiHotkeyListener(object())
-    assert lis.hold_key == "cmd_r"
+    assert lis.hold_key == "ctrl_r"
     assert lis.toggle_key == "alt_r"
 
 
@@ -80,7 +82,7 @@ def test_app_config_has_hotkey_defaults(tmp_path, monkeypatch):
     cfg_file = tmp_path / "config.json"
     monkeypatch.setattr(app_config, "config_path", lambda: str(cfg_file))
     cfg = app_config.load_config()
-    assert cfg["hold_key"] == "cmd_r"
+    assert cfg["hold_key"] == "ctrl_r"
     assert cfg["toggle_key"] == "alt_r"
 
 
@@ -138,6 +140,10 @@ def test_api_config_sets_min_volume():
 
     class FakeTranscriber:
         min_volume = 35
+        asr_engine = "qwen"
+
+        def set_engine(self, engine):
+            self.asr_engine = engine
 
     class FakeRecorder:
         transcriber = FakeTranscriber()
@@ -150,6 +156,7 @@ def test_api_config_sets_min_volume():
         hold_key = "cmd_r"
         toggle_key = "alt_r"
         min_volume = 35
+        asr_engine = "qwen"
         recorder = FakeRecorder()
 
         def save_settings(self):
@@ -171,13 +178,70 @@ def test_api_config_sets_min_volume():
     assert r.status_code == 200
     assert fake.min_volume == 100
 
+    r = client.post("/api/config", json={"asr_engine": "nemotron"})
+    assert r.status_code == 200
+    assert fake.asr_engine == "nemotron_mlx"
+    assert fake.recorder.transcriber.asr_engine == "nemotron_mlx"
 
-def test_default_keys_are_cmd_hold_option_toggle():
+    r = client.post("/api/config", json={"asr_engine": "google"})
+    assert r.status_code == 200
+    assert fake.asr_engine == "google_stt"
+    assert fake.recorder.transcriber.asr_engine == "google_stt"
+
+    r = client.post("/api/config", json={"asr_engine": "sherpa"})
+    assert r.status_code == 200
+    assert fake.asr_engine == "sherpa_onnx_ko"
+    assert fake.recorder.transcriber.asr_engine == "sherpa_onnx_ko"
+
+
+def test_menu_model_change_updates_transcriber_and_checkmark():
+    wd = _load()
+
+    class Item:
+        state = 0
+
+    class Transcriber:
+        asr_engine = "qwen"
+
+        def set_engine(self, engine):
+            self.asr_engine = engine
+
+    class App:
+        languages = ["ko"]
+        current_language = "ko"
+        asr_engine = "qwen"
+        recorder = SimpleNamespace(transcriber=Transcriber())
+        menu = {
+            "Language: ko": Item(),
+            "Model: Qwen": Item(),
+            "Model: Nemotron": Item(),
+        }
+        saved = 0
+        _asr_engine_menu_title = staticmethod(wd.StatusBarApp._asr_engine_menu_title)
+
+        def save_settings(self):
+            self.saved += 1
+
+    app = App()
+    app.sync_menu_state = wd.StatusBarApp.sync_menu_state.__get__(app, App)
+    app.set_asr_engine = wd.StatusBarApp.set_asr_engine.__get__(app, App)
+    app.change_asr_engine = wd.StatusBarApp.change_asr_engine.__get__(app, App)
+
+    app.change_asr_engine(SimpleNamespace(engine_id="nemotron"))
+
+    assert app.asr_engine == "nemotron_mlx"
+    assert app.recorder.transcriber.asr_engine == "nemotron_mlx"
+    assert app.menu["Model: Qwen"].state == 0
+    assert app.menu["Model: Nemotron"].state == 1
+    assert app.saved == 1
+
+
+def test_default_keys_are_ctrl_hold_option_toggle():
     import app_config
     cfg = dict(app_config.DEFAULTS)
-    assert cfg["hold_key"] == "cmd_r"      # 홀드 = 오른쪽 Cmd
+    assert cfg["hold_key"] == "ctrl_r"     # 홀드 = 오른쪽 Ctrl
     assert cfg["toggle_key"] == "alt_r"    # 토글 = 오른쪽 Option
-    assert cfg["min_volume"] == 35          # 기존 음량 게이트와 같은 기본값
+    assert cfg["min_volume"] == 8           # 이 마이크에서 작은 목소리도 시작되게 하는 기본값
 
 
 def test_multi_listener_both_triggers_start_app():

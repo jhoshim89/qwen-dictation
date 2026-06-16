@@ -1,17 +1,19 @@
 # Qwen Dictation
 
-> Local-first Mac dictation powered by Qwen3-ASR. Hold Right Cmd, speak, and it
+> Local-first Mac dictation powered by Qwen3-ASR. Hold Right Ctrl, speak, and it
 > types into any app.
 
 Qwen Dictation runs from the macOS menu bar, records only while you trigger it,
 and types into the currently focused input field. Qwen3-ASR is the default local
-engine.
+engine. Nemotron 3.5 ASR via MLX, Google Speech-to-Text, and sherpa-onnx
+Korean can be selected from the dashboard when their optional runtimes are
+installed.
 
 Why it is useful:
 
 - **Works anywhere you can type**: Cursor, ChatGPT, Slack, mail, browsers, and editors.
 - **Local by default**: audio is processed on your Mac, not sent to a cloud API.
-- **Fast push-to-talk flow**: hold Right Cmd to dictate, or toggle with Right Option.
+- **Fast push-to-talk flow**: hold Right Ctrl to dictate, or toggle with Right Option.
 - **Vocabulary-aware**: register names and specialist terms for better recognition.
 
 <p align="center">
@@ -26,15 +28,15 @@ still terminal-based and a polished signed macOS app is not ready yet.
 ## How it works
 
 1. Focus any text field.
-2. Hold Right Cmd and speak.
+2. Hold Right Ctrl and speak.
 3. Qwen Dictation transcribes locally and types into the focused app.
-4. Release Right Cmd to stop.
+4. Release Right Ctrl to stop.
 
 Right Option can be used as a toggle instead of a hold key.
 
 ## 받아쓰기 방식 (실시간 스트리밍)
 
-실시간 스트리밍 단축키 2개 — 오른쪽 Cmd 홀드(누르는 동안) / 오른쪽 Option 토글(눌러 시작, 다시 눌러 정지). 말하는 대로 포커스된 입력창에 ~0.8초 간격으로 바로 타이핑되고, 문맥이 바뀌면 앞부분을 고쳐 쓰며, 쉬는 지점에서 확정한다. 리뷰 패널·배치·자동전송은 제거됨.
+실시간 스트리밍 단축키 2개 — 오른쪽 Ctrl 홀드(누르는 동안) / 오른쪽 Option 토글(눌러 시작, 다시 눌러 정지). 말하는 대로 포커스된 입력창에 ~0.8초 간격으로 바로 타이핑되고, 문맥이 바뀌면 앞부분을 고쳐 쓰며, 쉬는 지점에서 확정한다. 리뷰 패널·배치·자동전송은 제거됨.
 
 ## Install
 
@@ -72,7 +74,7 @@ http://127.0.0.1:5001
 
 기본 단축키는 두 개입니다.
 
-- **오른쪽 Cmd 홀드**: 키를 누르고 있는 동안 받아쓰기, 떼면 정지.
+- **오른쪽 Ctrl 홀드**: 키를 누르고 있는 동안 받아쓰기, 떼면 정지.
 - **오른쪽 Option 토글**: 한 번 눌러 시작, 다시 눌러 정지.
 
 둘 다 똑같은 실시간 스트리밍으로 동작합니다. 말하는 대로 ~0.8초마다 포커스된
@@ -94,7 +96,8 @@ Microphone permission is usually missing.
 ## Word registration (vocabulary)
 
 Register names and specialist terms in the dashboard. They are passed to Qwen as
-recognition context on the next dictation. The list lives at
+recognition context on the next dictation, and are applied as post-correction
+terms for engines that do not expose the same context API. The list lives at
 `~/.qwen-dictation/vocabulary.json`, one word or short phrase per entry.
 
 Note: this biases recognition toward those words — it improves accuracy but is not a
@@ -126,8 +129,90 @@ Settings (language, microphone, max recording time, and hotkeys) are saved to
 `~/.qwen-dictation/config.json` and restored on next launch. Recording stops
 after 300 seconds by default; set `max_time = 0` in advanced settings for no
 limit.
-The only model is **Qwen3-ASR 1.7B** (loads once on first dictation, then ~0.5s
-per utterance).
+The default engine is **Qwen3-ASR 1.7B**. Optional dashboard engines:
+
+- **Nemotron 3.5 ASR 0.6B (MLX)**:
+  `mlx-community/nemotron-3.5-asr-streaming-0.6b`
+- **Google Speech-to-Text**: cloud comparison engine using normal Google ADC.
+- **sherpa-onnx Korean Zipformer**:
+  `k2-fsa/sherpa-onnx-streaming-zipformer-korean-2024-06-16`
+
+Install the optional Nemotron runtime without letting it replace Qwen's pinned
+`transformers==4.57.6`:
+
+```bash
+./install_nemotron_mlx.sh
+```
+
+Avoid plain `pip install mlx-audio` in this environment; its current dependency
+metadata asks pip to upgrade Transformers to a version that breaks `qwen-asr`.
+
+Install the optional Google Speech-to-Text runtime:
+
+```bash
+./install_google_stt.sh
+gcloud auth application-default login
+```
+
+Alternatively, set `GOOGLE_APPLICATION_CREDENTIALS` to a Speech-enabled service
+account JSON. The app does not store Google credentials.
+
+Install the optional local Korean sherpa-onnx runtime and model:
+
+```bash
+./install_sherpa_onnx_ko.sh
+```
+
+## ASR comparison
+
+Create a small local bench folder with matching audio and reference files:
+
+```text
+bench_audio/
+  001.wav
+  001.txt
+  002.wav
+  002.txt
+```
+
+Run the default local comparison engines on the same files:
+
+```bash
+./venv/bin/python compare_asr.py bench_audio --language ko --output asr_compare.csv
+```
+
+Compare optional engines after installing their runtimes:
+
+```bash
+./venv/bin/python compare_asr.py bench_audio --engines qwen,nemotron_mlx,google_stt,sherpa_onnx_ko --language ko --output asr_compare.csv
+```
+
+Use `--context app` to include the current vocabulary/domain context where an
+engine supports it. The CSV contains raw text, CER/WER when `.txt` references
+exist, and per-file latency. The current smoke-test judgment is kept in
+`docs/asr-comparison.md`.
+
+## Known limitations
+
+- macOS only.
+- Current install flow is developer-oriented and terminal-based.
+- Accuracy depends on microphone quality, noise, language, and vocabulary.
+- This is not intended for regulated medical, legal, or compliance transcription.
+- A signed `.app`, auto-updater, and model manager are future packaging work.
+
+## Roadmap
+
+- Add a short README demo GIF/video when available.
+- Package a signed and notarized macOS app.
+- Add a model manager for downloading, switching, and removing local ASR models.
+- Improve install diagnostics and permission onboarding.
+- Collect real microphone benchmarks across languages and Mac hardware.
+
+## Contributing
+
+Bug reports, install feedback, real microphone accuracy notes, and focused pull
+requests are welcome. See [CONTRIBUTING.md](CONTRIBUTING.md) for the current
+priorities and bug report details.
 
 ## Known limitations
 
@@ -175,6 +260,12 @@ Pre-download the default model without launching the app:
 
 ```bash
 HF_HUB_DISABLE_XET=1 HF_HUB_ENABLE_HF_TRANSFER=1 ./venv/bin/huggingface-cli download Qwen/Qwen3-ASR-1.7B
+```
+
+Pre-download Nemotron MLX:
+
+```bash
+HF_HUB_DISABLE_XET=1 HF_HUB_ENABLE_HF_TRANSFER=1 ./install_nemotron_mlx.sh
 ```
 
 Equivalent Python helper:

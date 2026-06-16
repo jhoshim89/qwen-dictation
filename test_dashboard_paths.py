@@ -65,7 +65,7 @@ def test_dashboard_config_hud_mode_roundtrip(monkeypatch):
         current_language="ko", languages=["ko", "en", "auto"],
         max_time=300, input_device="", hold_key="cmd_r", toggle_key="alt_r",
         min_volume=35, edit_interrupt_mode="continue", hold_send_enter=True,
-        domain_context="", hud_mode="pill", hud_pin_x=None, hud_pin_y=None,
+        asr_engine="qwen", domain_context="", hud_mode="pill", hud_pin_x=None, hud_pin_y=None,
     )
     fake.sync_menu_state = lambda: None
     fake.save_settings = lambda: None
@@ -83,7 +83,7 @@ def test_dashboard_config_hud_mode_rejects_unknown(monkeypatch):
     fake = SimpleNamespace(
         current_language="ko", languages=["ko"], max_time=300, input_device="",
         hold_key="cmd_r", toggle_key="alt_r", min_volume=35,
-        edit_interrupt_mode="continue", hold_send_enter=True, domain_context="",
+        asr_engine="qwen", edit_interrupt_mode="continue", hold_send_enter=True, domain_context="",
         hud_mode="pill", hud_pin_x=None, hud_pin_y=None,
     )
     fake.sync_menu_state = lambda: None

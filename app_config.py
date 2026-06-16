@@ -7,18 +7,20 @@ import json
 import os
 
 import app_paths
+import asr_engines
 
 # max_time=0 은 "자동중단 없음(무제한)" 을 뜻한다.
 DEFAULTS = {
     "language": "ko",
     "max_time": 300,
-    "input_device": "MATA STUDIO C10",
-    "hold_key": "cmd_r",
+    "input_device": "",
+    "hold_key": "ctrl_r",
     "toggle_key": "alt_r",
-    "min_volume": 35,
+    "min_volume": 8,
+    "asr_engine": asr_engines.DEFAULT_ASR_ENGINE,
     # 받아쓰기 도중 사용자가 키보드로 직접 고쳤을 때의 동작.
     # "continue": 수정 보존하고 세션 유지(다시 말하면 이어서), "stop": 즉시 종료.
-    "edit_interrupt_mode": "continue",
+    "edit_interrupt_mode": "stop",
     # 홀드 키를 떼면 마지막 글자까지 입력한 뒤 자동으로 Enter 를 보낼지.
     "hold_send_enter": True,
     # 받아쓰기 분야 머리말(자유 문장). 매 변환의 context 앞에 붙어 모델을 그 분야로
@@ -59,6 +61,7 @@ def load_config():
             cfg["max_time"] = 300
         cfg["max_time_zero_migrated"] = True
         save_config(cfg)
+    cfg["asr_engine"] = asr_engines.normalize_asr_engine(cfg.get("asr_engine"))
     return cfg
 
 
