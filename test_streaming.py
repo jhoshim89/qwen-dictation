@@ -252,6 +252,24 @@ def test_qwen_original_transcribes_above_silence_even_below_start_gate():
     assert rec.typed_log == ["작은 말"]
 
 
+def test_qwen_original_commits_before_long_rolling_window_builds_up():
+    wd = _load()
+    rec = _make_recorder(wd, None, ["긴 말"])
+    rec.app = type("App", (), {"min_volume": 35, "asr_engine": "qwen_original"})()
+    rec.transcriber = type("Transcriber", (), {})()
+    rec.session_vocab = []
+    # Keep Qwen Original from repeatedly re-transcribing a very long active
+    # segment. The normal mode may wait up to MAX_WINDOW_SEC, but Original
+    # should force a shorter rolling commit so the UI keeps typing while
+    # recording continues.
+    loud = (np.ones(int(16000 * (wd.QWEN_ORIGINAL_MAX_WINDOW_SEC + 0.25)), dtype=np.int16) * 5000).tobytes()
+    with rec.audio_lock:
+        rec.audio_frames = [loud]
+    wd.Recorder._stream_tick(rec, language="Korean")
+    assert rec.committed_text == "긴 말"
+    assert rec.window_start == 1
+
+
 def test_stream_tick_keeps_recent_quiet_onset_before_speech():
     wd = _load()
     rec = _make_recorder(wd, None, [""])

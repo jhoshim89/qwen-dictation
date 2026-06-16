@@ -120,6 +120,10 @@ STABLE_COMMIT_TICKS = 3
 # 매 틱마다 '확정 이후의 창 전체'를 다시 받아쓴다. 보통은 쉼(PAUSE_SILENCE_SEC)에서 먼저
 # 확정되므로 이 상한은 거의 안 걸린다. Whisper 계열 30초 한계보다 한참 아래로 두는 안전망.
 MAX_WINDOW_SEC = 12.0        # 초: 창이 이보다 길면 강제 확정(드물게 걸리는 안전망)
+# Qwen Original은 중간 hypothesis를 바로 입력하므로, 긴 구간 전체를 계속 다시
+# 받아쓰면 모델 호출이 점점 길어져 "듣는 중인데 입력이 멈춘" 상태가 된다.
+# 짧게 확정해 다음 rolling window로 넘겨 각 tick의 작업량을 묶는다.
+QWEN_ORIGINAL_MAX_WINDOW_SEC = 4.0
 # 확정 시점 편향(context)을 적용할 최소 창 길이(초). 이보다 짧은 확정 창은 음향 증거가
 # 약해 누출 위험이 커지므로 편향하지 않고 무편향 결과를 그대로 쓴다.
 BIAS_MIN_WINDOW_SEC = 1.0
@@ -1119,7 +1123,8 @@ class Recorder:
         # 외국어 확정을 막고, 아직 말하는 중이면 화면에 안 띄우고 직전 글자를 유지한다
         # (빈 토막처럼 처리 → '깜빡임' 없이 직전 한국어 유지).
         if hypo and looks_like_foreign_language(hypo):
-            if finalizing or should_commit(window_secs, paused, MAX_WINDOW_SEC):
+            max_window_sec = QWEN_ORIGINAL_MAX_WINDOW_SEC if qwen_original_live else MAX_WINDOW_SEC
+            if finalizing or should_commit(window_secs, paused, max_window_sec):
                 forced = self._transcribe_window(window, "Korean")
                 hypo = forced if not looks_like_foreign_language(forced) else ""
             else:
@@ -1145,7 +1150,11 @@ class Recorder:
             unbiased and (
                 finalizing
                 or stable_commit
-                or should_commit(window_secs, paused, MAX_WINDOW_SEC)
+                or should_commit(
+                    window_secs,
+                    paused,
+                    QWEN_ORIGINAL_MAX_WINDOW_SEC if qwen_original_live else MAX_WINDOW_SEC,
+                )
             )
         )
         if committing:
