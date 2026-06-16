@@ -1,0 +1,42 @@
+name: Install feedback
+description: Share whether Qwen Dictation installed and launched on your Mac.
+title: "[Install]: "
+labels: ["install"]
+body:
+  - type: markdown
+    attributes:
+      value: |
+        Real install reports are useful even when nothing broke.
+  - type: input
+    id: macos-version
+    attributes:
+      label: macOS version
+      placeholder: "Example: macOS 15.5"
+    validations:
+      required: true
+  - type: input
+    id: mac-model
+    attributes:
+      label: Mac model and chip
+      placeholder: "Example: MacBook Air M2"
+    validations:
+      required: true
+  - type: dropdown
+    id: result
+    attributes:
+      label: Result
+      options:
+        - Installed and launched
+        - Installed but did not launch
+        - Install failed
+        - Permissions or hotkeys blocked usage
+    validations:
+      required: true
+  - type: textarea
+    id: notes
+    attributes:
+      label: Notes
+      description: Include terminal output, permission prompts, model download issues, or what was confusing.
+      render: text
+    validations:
+      required: false

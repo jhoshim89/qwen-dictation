@@ -35,7 +35,7 @@ body:
       placeholder: |
         1. Launch Qwen Dictation
         2. Focus a text field
-        3. Hold Right Cmd
+        3. Hold Right Ctrl
         4. Speak...
     validations:
       required: true
