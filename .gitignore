@@ -10,6 +10,30 @@ app_main.py
 .claude/
 
 .superpowers/
+docs/superpowers/
+
+# Local secrets and machine-specific credentials
+.env
+.env.*
+*.pem
+*.key
+*.p12
+*.mobileprovision
+credentials*.json
+service-account*.json
+*service_account*.json
+*secret*.json
+*token*.json
+
+# Local audio, logs, and benchmark outputs
+*.log
+*.wav
+*.mp3
+*.m4a
+*.flac
+*.csv
+bench_audio/
+asr_compare*.csv
 
 # 별도 프로젝트(Postiz labpc 배포) 산출물 — 이 저장소와 무관
 .postiz-deploy/

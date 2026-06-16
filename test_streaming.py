@@ -520,7 +520,7 @@ def test_streaming_timing_defaults_stay_responsive():
     # Measured Qwen inference ~0.1s/pass (mps) -> poll well under the generic 0.8s
     # default so the last words show quickly. Values are hand-tuned; assert the
     # design intent (responsive bounds) rather than exact numbers so tuning is free.
-    # See docs/superpowers/plans/2026-06-04-streaming-dictation-defaults.md
+    # Keep the live loop responsive enough for push-to-talk dictation.
     assert 0 < wd.STREAM_INTERVAL <= 0.5
     assert 0.2 <= wd.PAUSE_SILENCE_SEC <= 0.6
     assert 4.0 <= wd.MAX_WINDOW_SEC <= 20.0
