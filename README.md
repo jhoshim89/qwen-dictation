@@ -5,9 +5,8 @@
 
 Qwen Dictation runs from the macOS menu bar, records only while you trigger it,
 and types into the currently focused input field. Qwen3-ASR is the default local
-engine. Nemotron 3.5 ASR via MLX, Google Speech-to-Text, and sherpa-onnx
-Korean can be selected from the dashboard when their optional runtimes are
-installed.
+engine, with Qwen Original and Nemotron 3.5 ASR via MLX available from the
+dashboard.
 
 Why it is useful:
 
@@ -129,13 +128,11 @@ Settings (language, microphone, max recording time, and hotkeys) are saved to
 `~/.qwen-dictation/config.json` and restored on next launch. Recording stops
 after 300 seconds by default; set `max_time = 0` in advanced settings for no
 limit.
-The default engine is **Qwen3-ASR 1.7B**. Optional dashboard engines:
+The default engine is **Qwen3-ASR 1.7B**. Dashboard engines:
 
+- **Qwen3-ASR 1.7B Original**: rolling WAV transcription for direct Qwen output.
 - **Nemotron 3.5 ASR 0.6B (MLX)**:
   `mlx-community/nemotron-3.5-asr-streaming-0.6b`
-- **Google Speech-to-Text**: cloud comparison engine using normal Google ADC.
-- **sherpa-onnx Korean Zipformer**:
-  `k2-fsa/sherpa-onnx-streaming-zipformer-korean-2024-06-16`
 
 Install the optional Nemotron runtime without letting it replace Qwen's pinned
 `transformers==4.57.6`:
@@ -146,22 +143,6 @@ Install the optional Nemotron runtime without letting it replace Qwen's pinned
 
 Avoid plain `pip install mlx-audio` in this environment; its current dependency
 metadata asks pip to upgrade Transformers to a version that breaks `qwen-asr`.
-
-Install the optional Google Speech-to-Text runtime:
-
-```bash
-./install_google_stt.sh
-gcloud auth application-default login
-```
-
-Alternatively, set `GOOGLE_APPLICATION_CREDENTIALS` to a Speech-enabled service
-account JSON. The app does not store Google credentials.
-
-Install the optional local Korean sherpa-onnx runtime and model:
-
-```bash
-./install_sherpa_onnx_ko.sh
-```
 
 ## ASR comparison
 
@@ -181,10 +162,10 @@ Run the default local comparison engines on the same files:
 ./venv/bin/python compare_asr.py bench_audio --language ko --output asr_compare.csv
 ```
 
-Compare optional engines after installing their runtimes:
+Compare all dashboard engines after installing Nemotron:
 
 ```bash
-./venv/bin/python compare_asr.py bench_audio --engines qwen,nemotron_mlx,google_stt,sherpa_onnx_ko --language ko --output asr_compare.csv
+./venv/bin/python compare_asr.py bench_audio --engines qwen,qwen_original,nemotron_mlx --language ko --output asr_compare.csv
 ```
 
 Use `--context app` to include the current vocabulary/domain context where an

@@ -44,10 +44,6 @@ if importlib.util.find_spec("mlx_lm") is not None:
     PACKAGES.append("mlx_lm")
 if importlib.util.find_spec("mlx") is not None:
     PACKAGES.append("mlx")
-if importlib.util.find_spec("google.cloud.speech") is not None:
-    PACKAGES.append("google.cloud.speech")
-if importlib.util.find_spec("sherpa_onnx") is not None:
-    PACKAGES.append("sherpa_onnx")
 
 OPTIONS = {
     "argv_emulation": False,

@@ -3,8 +3,10 @@
 ## What this is
 
 Qwen Dictation is a local-first macOS menu-bar dictation app powered by
-**Qwen3-ASR 1.7B**. It records microphone audio, transcribes locally, and types
-the visible diff into the focused input field. The Flask dashboard at
+switchable local ASR engines. **Qwen3-ASR 1.7B** is the default; **Qwen
+Original** and **Nemotron 3.5 ASR 0.6B (MLX)** can be selected for comparison/use.
+It records microphone audio, transcribes locally, and types the visible diff
+into the focused input field. The Flask dashboard at
 `http://127.0.0.1:5001` edits live settings and user vocabulary.
 
 The historical entry point remains `whisper-dictation.py`. Do not reintroduce
@@ -33,8 +35,9 @@ hotkeys.
 - `Recorder._stream_loop` wakes every `STREAM_INTERVAL` (0.8s), transcribes the
   current audio window, and uses `type_diff` to update focused text. Pauses
   commit spans and trim the window.
-- `SpeechTranscriber` lazy-loads only Qwen3-ASR 1.7B and passes the approved
-  vocabulary list as `context=`. It never applies find-replace rules.
+- `SpeechTranscriber` lazy-loads the selected ASR engine. Qwen supports
+  commit-time `context=` bias; Nemotron MLX uses the shared post-correction path.
+  It never applies find-replace rules.
 - `hud_overlay.py` draws the in-process coral jelly-bar HUD. There is no
   subprocess HUD or review card.
 - `dictation_history.py` stores the latest 50 final transcript texts locally.

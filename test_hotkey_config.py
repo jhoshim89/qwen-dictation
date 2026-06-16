@@ -183,15 +183,15 @@ def test_api_config_sets_min_volume():
     assert fake.asr_engine == "nemotron_mlx"
     assert fake.recorder.transcriber.asr_engine == "nemotron_mlx"
 
+    r = client.post("/api/config", json={"asr_engine": "qwen-original"})
+    assert r.status_code == 200
+    assert fake.asr_engine == "qwen_original"
+    assert fake.recorder.transcriber.asr_engine == "qwen_original"
+
     r = client.post("/api/config", json={"asr_engine": "google"})
     assert r.status_code == 200
-    assert fake.asr_engine == "google_stt"
-    assert fake.recorder.transcriber.asr_engine == "google_stt"
-
-    r = client.post("/api/config", json={"asr_engine": "sherpa"})
-    assert r.status_code == 200
-    assert fake.asr_engine == "sherpa_onnx_ko"
-    assert fake.recorder.transcriber.asr_engine == "sherpa_onnx_ko"
+    assert fake.asr_engine == "qwen"
+    assert fake.recorder.transcriber.asr_engine == "qwen"
 
 
 def test_menu_model_change_updates_transcriber_and_checkmark():

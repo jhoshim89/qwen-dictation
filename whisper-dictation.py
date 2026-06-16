@@ -1,6 +1,5 @@
 import argparse
 import collections
-import json
 import multiprocessing
 import os
 import re
@@ -87,11 +86,6 @@ SafeKeyboardListener = _safe_keyboard_listener_class()
 
 MODEL_1_7B = asr_engines.QWEN_MODEL_ID
 NEMOTRON_MLX_MODEL = asr_engines.NEMOTRON_MLX_MODEL_ID
-SHERPA_ONNX_KO_MODEL = asr_engines.SHERPA_ONNX_KO_MODEL_ID
-GOOGLE_STT_CREDENTIAL_ENV = "QWEN_GOOGLE_STT_CREDENTIALS"
-GOOGLE_STT_SCOPES = ["https://www.googleapis.com/auth/cloud-platform"]
-_GOOGLE_AUTHORIZED_USER_CREDENTIALS = None
-_GOOGLE_SERVICE_ACCOUNT_CREDENTIALS = None
 
 # int16 진폭(최대 32767). 이 값보다 peak 가 작으면 말소리가 없는 버퍼로 보고
 # 받아쓰기를 건너뛴다. 무음/작은 잡음(peak 수백 이하) vs 실제 말(peak 1만 이상)
@@ -520,8 +514,6 @@ class SpeechTranscriber:
         self.asr_engine = asr_engines.normalize_asr_engine(asr_engine)
         self.model_1_7b = None
         self.nemotron_mlx_model = None
-        self.google_speech_client = None
-        self.sherpa_onnx_recognizer = None
         self.model_lock = threading.Lock()
         # 모델을 실제로 올리는 중인지(HUD 가 '불러오는 중'을 보여줄 신호). 성공/실패 모두
         # finally 에서 내려, 로드 실패 시 표시가 영원히 남지 않게 한다.
@@ -569,233 +561,6 @@ class SpeechTranscriber:
                     self.loading = False
             return self.nemotron_mlx_model
 
-    def _load_google_speech_module(self):
-        try:
-            from google.cloud import speech
-        except Exception as exc:
-            raise RuntimeError(
-                "Google STT 엔진을 쓰려면 google-cloud-speech 패키지가 필요합니다. "
-                "`./venv/bin/python -m pip install google-cloud-speech` 후 다시 시도하세요."
-            ) from exc
-        return speech
-
-    def _google_stt_credential_candidates(self):
-        explicit = os.environ.get(GOOGLE_STT_CREDENTIAL_ENV, "").strip()
-        if explicit:
-            return [(os.path.expanduser(explicit), True)]
-        return [
-            (os.path.expanduser("~/.config/mcp-gsheets/token.json"), False),
-        ]
-
-    def _google_stt_credentials_from_file(self, path):
-        try:
-            with open(path, "r", encoding="utf-8") as f:
-                data = json.load(f)
-        except Exception as exc:
-            raise RuntimeError(f"Google STT credential 파일을 읽을 수 없습니다: {path}") from exc
-
-        if data.get("type") == "service_account":
-            global _GOOGLE_SERVICE_ACCOUNT_CREDENTIALS
-            if _GOOGLE_SERVICE_ACCOUNT_CREDENTIALS is None:
-                from google.oauth2 import service_account
-                _GOOGLE_SERVICE_ACCOUNT_CREDENTIALS = service_account.Credentials
-            return _GOOGLE_SERVICE_ACCOUNT_CREDENTIALS.from_service_account_file(
-                path,
-                scopes=GOOGLE_STT_SCOPES,
-            )
-
-        if all(data.get(key) for key in ("client_id", "client_secret", "refresh_token")):
-            existing_scopes = data.get("scopes") or data.get("scope") or []
-            if isinstance(existing_scopes, str):
-                existing_scopes = existing_scopes.split()
-            if existing_scopes and GOOGLE_STT_SCOPES[0] not in existing_scopes:
-                raise RuntimeError(
-                    "Google OAuth 토큰에 Speech-to-Text 권한 범위가 없습니다. "
-                    "`gcloud auth application-default login --scopes=https://www.googleapis.com/auth/cloud-platform`으로 "
-                    "Speech 권한이 있는 ADC를 다시 만들거나 서비스 계정 JSON을 사용하세요."
-                )
-            global _GOOGLE_AUTHORIZED_USER_CREDENTIALS
-            if _GOOGLE_AUTHORIZED_USER_CREDENTIALS is None:
-                from google.oauth2.credentials import Credentials
-                _GOOGLE_AUTHORIZED_USER_CREDENTIALS = Credentials
-            return _GOOGLE_AUTHORIZED_USER_CREDENTIALS.from_authorized_user_file(
-                path,
-                scopes=GOOGLE_STT_SCOPES,
-            )
-
-        raise RuntimeError(
-            "Google STT credential 파일 형식이 지원되지 않습니다. "
-            "service_account JSON 또는 refresh_token 이 있는 authorized-user JSON이 필요합니다."
-        )
-
-    def _load_google_stt_credentials(self):
-        for path, required in self._google_stt_credential_candidates():
-            if not path or not os.path.exists(path):
-                if required:
-                    raise RuntimeError(f"Google STT credential 파일이 없습니다: {path}")
-                continue
-            try:
-                return self._google_stt_credentials_from_file(path)
-            except RuntimeError:
-                if required:
-                    raise
-        return None
-
-    def get_google_speech_client(self):
-        with self.model_lock:
-            if self.google_speech_client is None:
-                self.loading = True
-                try:
-                    speech = self._load_google_speech_module()
-                    try:
-                        credentials = self._load_google_stt_credentials()
-                        if credentials is None:
-                            self.google_speech_client = speech.SpeechClient()
-                        else:
-                            self.google_speech_client = speech.SpeechClient(credentials=credentials)
-                    except RuntimeError:
-                        raise
-                    except Exception as exc:
-                        raise RuntimeError(
-                            "Google STT 인증이 필요합니다. "
-                            "`gcloud auth application-default login --scopes=https://www.googleapis.com/auth/cloud-platform`을 실행하거나 "
-                            f"Speech 권한이 있는 서비스 계정/authorized-user JSON 경로를 {GOOGLE_STT_CREDENTIAL_ENV}에 설정하세요."
-                        ) from exc
-                finally:
-                    self.loading = False
-            return self.google_speech_client
-
-    def _sherpa_model_root(self):
-        override = os.environ.get("SHERPA_ONNX_KO_MODEL_PATH", "")
-        if override:
-            return os.path.expanduser(override)
-        return os.path.expanduser(
-            "~/.qwen-dictation/models/sherpa-onnx-streaming-zipformer-korean-2024-06-16"
-        )
-
-    def _load_sherpa_onnx_module(self):
-        try:
-            import sherpa_onnx
-        except Exception as exc:
-            raise RuntimeError(
-                "sherpa-onnx Korean 엔진을 쓰려면 sherpa-onnx 패키지가 필요합니다. "
-                "`./venv/bin/python -m pip install sherpa-onnx` 후 다시 시도하세요."
-            ) from exc
-        return sherpa_onnx
-
-    def _first_existing(self, root, names):
-        for name in names:
-            path = os.path.join(root, name)
-            if os.path.exists(path):
-                return path
-        return ""
-
-    def _locate_sherpa_onnx_model(self):
-        root = self._sherpa_model_root()
-        tokens = self._first_existing(root, ["tokens.txt"])
-        encoder = self._first_existing(
-            root,
-            [
-                "encoder-epoch-99-avg-1.int8.onnx",
-                "encoder-epoch-99-avg-1.onnx",
-                "encoder.int8.onnx",
-                "encoder.onnx",
-            ],
-        )
-        decoder = self._first_existing(
-            root,
-            [
-                "decoder-epoch-99-avg-1.int8.onnx",
-                "decoder-epoch-99-avg-1.onnx",
-                "decoder.int8.onnx",
-                "decoder.onnx",
-            ],
-        )
-        joiner = self._first_existing(
-            root,
-            [
-                "joiner-epoch-99-avg-1.int8.onnx",
-                "joiner-epoch-99-avg-1.onnx",
-                "joiner.int8.onnx",
-                "joiner.onnx",
-            ],
-        )
-        if not all([tokens, encoder, decoder, joiner]):
-            raise RuntimeError(
-                "sherpa-onnx Korean 모델 파일이 없습니다. "
-                f"{root} 아래에 tokens.txt, encoder*.onnx, decoder*.onnx, joiner*.onnx를 두세요."
-            )
-        return {
-            "root": root,
-            "tokens": tokens,
-            "encoder": encoder,
-            "decoder": decoder,
-            "joiner": joiner,
-        }
-
-    def get_sherpa_onnx_recognizer(self):
-        with self.model_lock:
-            if self.sherpa_onnx_recognizer is None:
-                self.loading = True
-                try:
-                    sherpa_onnx = self._load_sherpa_onnx_module()
-                    model = self._locate_sherpa_onnx_model()
-                    self.sherpa_onnx_recognizer = sherpa_onnx.OnlineRecognizer.from_transducer(
-                        tokens=model["tokens"],
-                        encoder=model["encoder"],
-                        decoder=model["decoder"],
-                        joiner=model["joiner"],
-                        num_threads=2,
-                        sample_rate=16000,
-                        feature_dim=80,
-                        decoding_method="greedy_search",
-                        provider="cpu",
-                    )
-                finally:
-                    self.loading = False
-            return self.sherpa_onnx_recognizer
-
-    def _transcribe_google_stt(self, audio_path, language):
-        speech = self._load_google_speech_module()
-        client = self.get_google_speech_client()
-        with open(audio_path, "rb") as f:
-            content = f.read()
-        config = speech.RecognitionConfig(
-            encoding=speech.RecognitionConfig.AudioEncoding.LINEAR16,
-            sample_rate_hertz=16000,
-            language_code=asr_engines.normalize_google_language(language),
-            enable_automatic_punctuation=True,
-            model=asr_engines.GOOGLE_STT_MODEL_ID,
-        )
-        audio = speech.RecognitionAudio(content=content)
-        response = client.recognize(config=config, audio=audio)
-        parts = []
-        for result in getattr(response, "results", []) or []:
-            alternatives = getattr(result, "alternatives", []) or []
-            if alternatives:
-                parts.append(getattr(alternatives[0], "transcript", "") or "")
-        return " ".join(part.strip() for part in parts if part.strip()).strip()
-
-    def _transcribe_sherpa_onnx(self, audio_path):
-        recognizer = self.get_sherpa_onnx_recognizer()
-        samples, sample_rate = sf.read(audio_path, dtype="float32")
-        if getattr(samples, "ndim", 1) > 1:
-            samples = np.mean(samples, axis=1).astype(np.float32)
-        stream = recognizer.create_stream()
-        stream.accept_waveform(int(sample_rate), samples)
-        if hasattr(stream, "input_finished"):
-            stream.input_finished()
-        is_ready = getattr(recognizer, "is_ready", None)
-        if callable(is_ready):
-            while recognizer.is_ready(stream):
-                recognizer.decode_stream(stream)
-        else:
-            recognizer.decode_stream(stream)
-        result = recognizer.get_result(stream)
-        if isinstance(result, str):
-            return result.strip()
-        return (getattr(result, "text", "") or "").strip()
-
     def _result_text(self, result):
         if isinstance(result, str):
             return result.strip()
@@ -828,10 +593,6 @@ class SpeechTranscriber:
         engine = asr_engines.normalize_asr_engine(self.asr_engine)
         if engine == asr_engines.ASR_ENGINE_NEMOTRON_MLX:
             return self.get_nemotron_model()
-        if engine == asr_engines.ASR_ENGINE_GOOGLE_STT:
-            return self.get_google_speech_client()
-        if engine == asr_engines.ASR_ENGINE_SHERPA_ONNX_KO:
-            return self.get_sherpa_onnx_recognizer()
         return self.get_model()
 
     def transcribe_file(self, audio_path, language=None, context=""):
@@ -845,10 +606,6 @@ class SpeechTranscriber:
         engine = asr_engines.normalize_asr_engine(self.asr_engine)
         if engine == asr_engines.ASR_ENGINE_NEMOTRON_MLX:
             return self._transcribe_nemotron_stream(audio_path, language)
-        if engine == asr_engines.ASR_ENGINE_GOOGLE_STT:
-            return self._transcribe_google_stt(audio_path, language)
-        if engine == asr_engines.ASR_ENGINE_SHERPA_ONNX_KO:
-            return self._transcribe_sherpa_onnx(audio_path)
 
         model = self.get_model()
         language = normalize_language(language)

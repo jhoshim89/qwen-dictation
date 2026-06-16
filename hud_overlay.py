@@ -25,6 +25,14 @@ PANEL_HEIGHT = 40.0
 BOTTOM_OFFSET = 86.0
 BAR_CORNER_RADIUS = PANEL_HEIGHT / 2.0
 
+# 라벨(상태 글자) 배치. 측정·그리기·알약 폭 계산이 같은 값을 공유해야 긴 글자가 잘리지
+# 않는다("모델 불러오는 중…" 처럼 기본 폭을 넘는 라벨은 알약을 늘려서 보여준다).
+LABEL_LEFT = 40.0          # 막대 오른쪽, 글자가 시작하는 x
+LABEL_BASELINE_Y = 11.0
+LABEL_RIGHT_PAD = 14.0     # 글자 오른쪽 안쪽 여백
+LABEL_FONT_SIZE = 13.0
+LABEL_FONT_WEIGHT = 0.42
+
 
 def jelly_bar_heights(level):
     """Clamp microphone level and return symmetric (left, center, right) bar heights.
@@ -50,6 +58,13 @@ PIN_DEFAULT_MARGIN = 24.0
 def normalize_hud_mode(value):
     """알 수 없는 값(옛 'caret'/'cursor' 포함)은 안전하게 'pill'로 떨어뜨린다."""
     return value if value in HUD_MODES else "pill"
+
+
+def pill_width_for_label(text_width):
+    """라벨의 픽셀 폭을 받아 알약 전체 폭을 돌려준다. 짧은 라벨('듣는 중')은 기본 폭을
+    유지하고, 긴 라벨('모델 불러오는 중…')은 글자가 다 보이도록 늘린다."""
+    needed = LABEL_LEFT + max(0.0, float(text_width)) + LABEL_RIGHT_PAD
+    return max(PANEL_WIDTH, needed)
 
 
 def clamp_to_visible(x, y, width, height, screen_boxes):
@@ -114,6 +129,16 @@ if _APPKIT_OK:
     JELLY_RGBA = (255, 111, 133, 0.86)
     JELLY_HALO_RGBA = (255, 111, 133, 0.13)
     JELLY_HIGHLIGHT_RGBA = (255, 190, 201, 0.64)
+
+    def _label_attrs():
+        """상태 글자의 색·글꼴. 그리기와 폭 측정이 같은 속성을 써야 측정 오차가 없다."""
+        return {
+            NSForegroundColorAttributeName: _rgb(*TEXT_RGBA),
+            NSFontAttributeName: NSFont.systemFontOfSize_weight_(
+                LABEL_FONT_SIZE, LABEL_FONT_WEIGHT
+            ),
+        }
+
     class _OverlayView(NSView):
         """Custom view that draws level-reactive jelly bars."""
 
@@ -201,14 +226,10 @@ if _APPKIT_OK:
 
         def _draw_label(self):
             text = self._label_text or "듣는 중"
-            attrs = {
-                NSForegroundColorAttributeName: _rgb(*TEXT_RGBA),
-                NSFontAttributeName: NSFont.systemFontOfSize_weight_(13.0, 0.42),
-            }
             # Plain Python str does not expose the AppKit drawing category; wrap
             # it in an NSString so drawAtPoint_withAttributes_ is available.
             NSString.stringWithString_(text).drawAtPoint_withAttributes_(
-                NSMakePoint(40.0, 11.0), attrs
+                NSMakePoint(LABEL_LEFT, LABEL_BASELINE_Y), _label_attrs()
             )
 
         def _draw_jelly_rect(self, x, y, width, height, alpha=0.94):
@@ -397,9 +418,27 @@ class DictationOverlay:
             return
         try:
             self._view.setLabelText_(label)
+            if self._mode == "pill":
+                self._fit_pill_to_label(label)
             self.show()
         except Exception as exc:
             print(f"hud_overlay: show_status error: {exc}")
+
+    def _measure_label_width(self, text):
+        """라벨을 그릴 글꼴로 잰 픽셀 폭. 그리기와 항상 같은 _label_attrs 를 쓴다."""
+        s = NSString.stringWithString_(text or "")
+        return float(s.sizeWithAttributes_(_label_attrs()).width)
+
+    def _fit_pill_to_label(self, label):
+        """알약 폭을 라벨이 다 보이도록 맞춘다(폭이 실제로 달라질 때만 리사이즈해 매 틱
+        흔들림을 막는다). 아이콘 고정 모드는 라벨을 안 그리므로 pill 모드 전용이다."""
+        if self._panel is None:
+            return
+        target = pill_width_for_label(self._measure_label_width(label))
+        current = float(self._panel.frame().size.width)
+        if abs(target - current) < 1.0:
+            return
+        self._resize_panel(target, PANEL_HEIGHT, BAR_CORNER_RADIUS)
 
     def _resize_panel(self, width, height, radius):
         sw, sh, ox, oy = self._screen_box()

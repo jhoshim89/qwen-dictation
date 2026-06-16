@@ -33,12 +33,6 @@ fi
 if ./venv/bin/python -c 'import mlx' >/dev/null 2>&1; then
   EXTRA_COLLECT_ARGS+=(--collect-all mlx)
 fi
-if ./venv/bin/python -c 'from google.cloud import speech' >/dev/null 2>&1; then
-  EXTRA_COLLECT_ARGS+=(--collect-all google.cloud.speech)
-fi
-if ./venv/bin/python -c 'import sherpa_onnx' >/dev/null 2>&1; then
-  EXTRA_COLLECT_ARGS+=(--collect-all sherpa_onnx)
-fi
 
 rm -rf build dist
 ./venv/bin/pyinstaller --noconfirm --windowed --name "Qwen Dictation" \

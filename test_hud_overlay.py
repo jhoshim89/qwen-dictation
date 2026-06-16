@@ -3,11 +3,15 @@ from types import SimpleNamespace
 
 
 class _FakePanel:
-    def __init__(self):
+    def __init__(self, width=hud_overlay.PANEL_WIDTH):
         self.hidden = 0
         self.shown = 0
         self.ignores_mouse = None
         self.movable = None
+        self._width = width
+
+    def frame(self):
+        return SimpleNamespace(size=SimpleNamespace(width=self._width))
 
     def orderOut_(self, _):
         self.hidden += 1
@@ -38,14 +42,16 @@ class _FakeView:
         self.dimmed = flag
 
 
-def _overlay(visible=False):
+def _overlay(visible=False, width=hud_overlay.PANEL_WIDTH):
     overlay = object.__new__(hud_overlay.DictationOverlay)
-    overlay._panel = _FakePanel()
+    overlay._panel = _FakePanel(width)
     overlay._view = _FakeView()
     overlay._visible = visible
     overlay._resizes = []
     overlay._resize_panel = lambda width, height, radius: overlay._resizes.append((width, height, radius))
     overlay._reposition_for_pointer_screen = lambda: None
+    # 라벨 측정은 AppKit 의존이라 테스트마다 결정적 값으로 덮어쓴다(기본은 짧은 라벨).
+    overlay._measure_label_width = lambda text: 30.0
     overlay._mode = "pill"
     overlay._pin_xy = None
     return overlay
@@ -65,12 +71,44 @@ def test_hide_visible_overlay_orders_window_out():
     assert overlay._panel.hidden == 1
 
 
-def test_show_status_updates_label_without_resizing_panel():
-    overlay = _overlay()
-    overlay.show_status("받아쓰기 변환 중")
-    assert overlay._view.labels == ["받아쓰기 변환 중"]
+def test_show_status_keeps_default_width_for_short_label():
+    overlay = _overlay(width=hud_overlay.PANEL_WIDTH)
+    overlay._measure_label_width = lambda text: 30.0  # 40+30+14=84 < 92 → 기본 폭 유지
+    overlay.show_status("듣는 중")
+    assert overlay._view.labels == ["듣는 중"]
     assert overlay._resizes == []
     assert overlay._visible is True
+
+
+def test_show_status_widens_pill_for_long_label():
+    overlay = _overlay(width=hud_overlay.PANEL_WIDTH)
+    overlay._measure_label_width = lambda text: 120.0  # 40+120+14=174 로 늘어남
+    overlay.show_status("모델 불러오는 중…")
+    assert overlay._view.labels == ["모델 불러오는 중…"]
+    assert overlay._resizes == [
+        (174.0, hud_overlay.PANEL_HEIGHT, hud_overlay.BAR_CORNER_RADIUS)
+    ]
+    assert overlay._visible is True
+
+
+def test_show_status_pinned_mode_does_not_resize():
+    overlay = _overlay()
+    overlay._mode = "pinned"
+    overlay._measure_label_width = lambda text: 999.0
+    overlay.show_status("모델 불러오는 중…")
+    # 아이콘(고정) 모드는 라벨을 안 그리므로 폭을 건드리지 않는다.
+    assert overlay._resizes == []
+    assert overlay._visible is True
+
+
+def test_pill_width_for_label_keeps_minimum_for_short_text():
+    assert hud_overlay.pill_width_for_label(0.0) == hud_overlay.PANEL_WIDTH
+    assert hud_overlay.pill_width_for_label(30.0) == hud_overlay.PANEL_WIDTH
+
+
+def test_pill_width_for_label_grows_for_long_text():
+    # 40(좌) + 120(글자) + 14(우여백) = 174
+    assert hud_overlay.pill_width_for_label(120.0) == 174.0
 
 
 def test_contains_point_selects_monitor_bounds():
