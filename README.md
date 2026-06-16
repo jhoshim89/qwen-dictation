@@ -19,7 +19,7 @@ Why it is useful:
 - **Vocabulary-aware**: register names and specialist terms for better recognition.
 
 <p align="center">
-  <img src="docs/hud-current-preview.svg" alt="Qwen Dictation HUD preview" width="560">
+  <img src="docs/social-preview.png" alt="Qwen Dictation social preview" width="720">
 </p>
 
 ## Status
