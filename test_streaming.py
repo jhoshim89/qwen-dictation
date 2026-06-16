@@ -236,6 +236,22 @@ def test_stream_tick_discards_quiet_window_before_transcribing():
     assert rec.window_start == 0
 
 
+def test_qwen_original_transcribes_above_silence_even_below_start_gate():
+    wd = _load()
+    rec = _make_recorder(wd, None, ["작은 말"])
+    rec.app = type("App", (), {"min_volume": 35, "asr_engine": "qwen_original"})()
+    rec.transcriber = type("Transcriber", (), {})()
+    # Legacy min_volume=35: silence gate=1000, start gate=3500. This is clearly
+    # above silence but below the old start gate, so Qwen Original should still
+    # try transcription instead of silently doing nothing while "listening".
+    quiet_speech = (np.ones(16000, dtype=np.int16) * 1500).tobytes()
+    with rec.audio_lock:
+        rec.audio_frames = [quiet_speech]
+    wd.Recorder._stream_tick(rec, language="Korean")
+    assert rec.last_typed == "작은 말"
+    assert rec.typed_log == ["작은 말"]
+
+
 def test_stream_tick_keeps_recent_quiet_onset_before_speech():
     wd = _load()
     rec = _make_recorder(wd, None, [""])

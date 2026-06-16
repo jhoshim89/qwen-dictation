@@ -1097,7 +1097,8 @@ class Recorder:
             set_engine(engine)
         else:
             self.transcriber.asr_engine = engine
-        if pcm_peak(window) < start_threshold:
+        speech_gate = silence_threshold if qwen_original_live else start_threshold
+        if pcm_peak(window) < speech_gate:
             with self.audio_lock:
                 self.window_start = max(0, frame_count - SPEECH_START_LOOKBACK_CHUNKS)
             return
