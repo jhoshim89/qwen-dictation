@@ -1,0 +1,300 @@
+<!doctype html>
+<html lang="en">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <meta name="description" content="Local-first macOS dictation powered by Qwen3-ASR. Hold Right Ctrl, speak, and type into any app.">
+  <title>Qwen Dictation</title>
+  <style>
+    :root {
+      color-scheme: light;
+      --ink: #19181b;
+      --muted: #625c66;
+      --line: #ded8df;
+      --paper: #fffaf7;
+      --rose: #c3215a;
+      --berry: #811d4a;
+      --mint: #8fd1bd;
+      --gold: #e6b65f;
+      --night: #24212a;
+      font-family: Inter, ui-sans-serif, system-ui, -apple-system, BlinkMacSystemFont, "Segoe UI", sans-serif;
+    }
+    * { box-sizing: border-box; }
+    body {
+      margin: 0;
+      background: var(--paper);
+      color: var(--ink);
+      line-height: 1.5;
+    }
+    a { color: inherit; }
+    .hero {
+      min-height: 88vh;
+      display: grid;
+      grid-template-rows: auto 1fr;
+      background:
+        linear-gradient(90deg, rgba(255,250,247,.97) 0%, rgba(255,250,247,.88) 44%, rgba(255,250,247,.4) 100%),
+        url("hud-current-preview.svg") right 15% center / min(58vw, 760px) auto no-repeat,
+        var(--paper);
+      border-bottom: 1px solid var(--line);
+    }
+    nav {
+      display: flex;
+      align-items: center;
+      justify-content: space-between;
+      gap: 24px;
+      padding: 22px clamp(20px, 5vw, 72px);
+      font-size: 14px;
+      color: var(--muted);
+    }
+    .brand {
+      display: inline-flex;
+      align-items: center;
+      gap: 10px;
+      color: var(--ink);
+      font-weight: 700;
+    }
+    .navlinks {
+      display: flex;
+      gap: 18px;
+      flex-wrap: wrap;
+      justify-content: flex-end;
+    }
+    .hero-inner {
+      width: min(1120px, calc(100% - 40px));
+      margin: 0 auto;
+      display: grid;
+      align-items: center;
+      padding: 56px 0 84px;
+    }
+    .hero-copy {
+      max-width: 660px;
+    }
+    .eyebrow {
+      margin: 0 0 14px;
+      color: var(--berry);
+      font-weight: 700;
+      text-transform: uppercase;
+      font-size: 13px;
+      letter-spacing: 0;
+    }
+    h1 {
+      margin: 0;
+      font-size: clamp(46px, 8vw, 92px);
+      line-height: .95;
+      letter-spacing: 0;
+    }
+    .lead {
+      max-width: 600px;
+      margin: 24px 0 0;
+      font-size: clamp(18px, 2.2vw, 24px);
+      color: var(--muted);
+    }
+    .actions {
+      display: flex;
+      gap: 12px;
+      flex-wrap: wrap;
+      margin-top: 32px;
+    }
+    .button {
+      display: inline-flex;
+      align-items: center;
+      justify-content: center;
+      min-height: 44px;
+      padding: 0 18px;
+      border-radius: 8px;
+      border: 1px solid var(--night);
+      text-decoration: none;
+      font-weight: 700;
+    }
+    .button.primary {
+      background: var(--night);
+      color: #fff;
+    }
+    main section {
+      padding: 72px clamp(20px, 5vw, 72px);
+    }
+    .split {
+      display: grid;
+      grid-template-columns: minmax(0, 1fr) minmax(300px, 470px);
+      gap: clamp(28px, 5vw, 72px);
+      align-items: center;
+      max-width: 1120px;
+      margin: 0 auto;
+    }
+    h2 {
+      margin: 0 0 18px;
+      font-size: clamp(30px, 4vw, 48px);
+      line-height: 1.05;
+      letter-spacing: 0;
+    }
+    p {
+      margin: 0 0 16px;
+      color: var(--muted);
+      font-size: 17px;
+    }
+    .features {
+      max-width: 1120px;
+      margin: 0 auto;
+      display: grid;
+      grid-template-columns: repeat(3, minmax(0, 1fr));
+      gap: 1px;
+      background: var(--line);
+      border: 1px solid var(--line);
+    }
+    .feature {
+      background: #fff;
+      padding: 26px;
+      min-height: 190px;
+    }
+    .feature strong {
+      display: block;
+      margin-bottom: 10px;
+      font-size: 19px;
+    }
+    .feature p {
+      font-size: 15px;
+      margin: 0;
+    }
+    .preview {
+      width: 100%;
+      border: 1px solid var(--line);
+      border-radius: 8px;
+      background: #fff;
+      padding: 20px;
+      box-shadow: 0 18px 45px rgba(36,33,42,.08);
+    }
+    .preview img {
+      display: block;
+      width: 100%;
+      height: auto;
+    }
+    .band {
+      background: #fff;
+      border-top: 1px solid var(--line);
+      border-bottom: 1px solid var(--line);
+    }
+    .commands {
+      max-width: 760px;
+      margin: 28px 0 0;
+      border: 1px solid var(--line);
+      border-radius: 8px;
+      overflow: hidden;
+      background: #15141a;
+      color: #f7f1ed;
+      font-family: ui-monospace, SFMono-Regular, Menlo, Consolas, monospace;
+      font-size: 14px;
+    }
+    .commands div {
+      padding: 14px 16px;
+      border-top: 1px solid rgba(255,255,255,.1);
+      overflow-x: auto;
+      white-space: nowrap;
+    }
+    .commands div:first-child { border-top: 0; }
+    footer {
+      padding: 36px clamp(20px, 5vw, 72px);
+      color: var(--muted);
+      font-size: 14px;
+    }
+    footer .inner {
+      max-width: 1120px;
+      margin: 0 auto;
+      display: flex;
+      justify-content: space-between;
+      gap: 16px;
+      flex-wrap: wrap;
+    }
+    @media (max-width: 860px) {
+      .hero {
+        min-height: auto;
+        background:
+          linear-gradient(180deg, rgba(255,250,247,.98) 0%, rgba(255,250,247,.95) 55%, rgba(255,250,247,.75) 100%),
+          url("hud-current-preview.svg") center bottom 28px / min(92vw, 560px) auto no-repeat,
+          var(--paper);
+      }
+      .hero-inner { padding-bottom: 260px; }
+      .split, .features { grid-template-columns: 1fr; }
+      nav { align-items: flex-start; }
+      .navlinks { gap: 12px; }
+    }
+  </style>
+</head>
+<body>
+  <header class="hero">
+    <nav aria-label="Primary">
+      <span class="brand">Qwen Dictation</span>
+      <span class="navlinks">
+        <a href="#features">Features</a>
+        <a href="#engines">Engines</a>
+        <a href="https://github.com/jhoshim89/qwen-dictation">GitHub</a>
+      </span>
+    </nav>
+    <div class="hero-inner">
+      <div class="hero-copy">
+        <p class="eyebrow">Local-first macOS dictation</p>
+        <h1>Qwen Dictation</h1>
+        <p class="lead">Hold Right Ctrl, speak, and Qwen Dictation types into the app you are already using.</p>
+        <div class="actions">
+          <a class="button primary" href="https://github.com/jhoshim89/qwen-dictation">View on GitHub</a>
+          <a class="button" href="#install">Install</a>
+        </div>
+      </div>
+    </div>
+  </header>
+  <main>
+    <section id="features">
+      <div class="features">
+        <div class="feature">
+          <strong>Works in any text field</strong>
+          <p>Use push-to-talk dictation in editors, browsers, chat apps, mail, and developer tools.</p>
+        </div>
+        <div class="feature">
+          <strong>Local by default</strong>
+          <p>Qwen3-ASR runs on your Mac. Audio is not sent to a cloud API by the default engine.</p>
+        </div>
+        <div class="feature">
+          <strong>Vocabulary-aware</strong>
+          <p>Register names and specialist terms so Qwen can bias recognition at commit time.</p>
+        </div>
+      </div>
+    </section>
+    <section class="band" id="engines">
+      <div class="split">
+        <div>
+          <h2>Three focused ASR modes</h2>
+          <p>Qwen streaming is the default. Qwen Original keeps the model's rolling output closer to its native behavior. Nemotron MLX is available for fast local experiments on Apple Silicon.</p>
+          <p>The dashboard stays intentionally small: Qwen streaming, Qwen Original, and Nemotron.</p>
+        </div>
+        <div class="preview">
+          <img src="menubar-current-preview.png" alt="Qwen Dictation menu bar preview">
+        </div>
+      </div>
+    </section>
+    <section id="install">
+      <div class="split">
+        <div>
+          <h2>Developer install</h2>
+          <p>The current build is a developer MVP for macOS. Install from source, grant Microphone and Accessibility permissions, then run the menu-bar app.</p>
+          <div class="commands" aria-label="Install commands">
+            <div>brew install portaudio</div>
+            <div>python3 -m venv venv</div>
+            <div>source venv/bin/activate</div>
+            <div>pip install -r requirements.txt</div>
+            <div>./run.sh</div>
+          </div>
+        </div>
+        <div>
+          <h2>Built for daily typing</h2>
+          <p>Right Ctrl works as a hold key, Right Option works as a toggle, and the HUD keeps the current listening state visible without taking over your screen.</p>
+        </div>
+      </div>
+    </section>
+  </main>
+  <footer>
+    <div class="inner">
+      <span>Qwen Dictation</span>
+      <span>Local-first dictation for macOS</span>
+    </div>
+  </footer>
+</body>
+</html>
