@@ -2,12 +2,20 @@
 
 Use this metadata before posting the repository publicly.
 
-Applied to `jhoshim89/qwen-dictation` on 2026-06-12.
+Applied to `jhoshim89/qwen-dictation` on 2026-06-12. Refresh this after GitHub
+CLI auth is valid again; the live repository description still used older
+hotkey wording when checked on 2026-06-16.
 
 ## Description
 
 ```text
-Local-first macOS dictation powered by Qwen3-ASR. Hold Right Cmd, speak, and type into any app.
+Local-first macOS dictation powered by Qwen3-ASR. Hold Right Ctrl, speak, and type into any app.
+```
+
+## Homepage
+
+```text
+https://jhoshim89.github.io/qwen-dictation/
 ```
 
 ## Topics
@@ -31,7 +39,8 @@ Run from the repository root with a GitHub account that can administer the repo:
 
 ```bash
 gh repo edit jhoshim89/qwen-dictation \
-  --description "Local-first macOS dictation powered by Qwen3-ASR. Hold Right Cmd, speak, and type into any app." \
+  --description "Local-first macOS dictation powered by Qwen3-ASR. Hold Right Ctrl, speak, and type into any app." \
+  --homepage "https://jhoshim89.github.io/qwen-dictation/" \
   --add-topic macos \
   --add-topic dictation \
   --add-topic speech-to-text \
@@ -44,6 +53,10 @@ gh repo edit jhoshim89/qwen-dictation \
   --add-topic productivity
 ```
 
-## Later
+## Auth note
 
-Add a homepage only after there is a stable landing page or GitHub Pages site.
+If `gh auth status` reports an invalid token, run:
+
+```bash
+gh auth login -h github.com
+```

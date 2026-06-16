@@ -3,20 +3,22 @@
 ## Before posting
 
 - [x] README first screen explains the product in one sentence.
-- [x] Install command uses a commit-pinned script that clones `main`.
-- [x] GitHub description and topics are set.
+- [x] Install command uses the `main` branch script.
+- [ ] GitHub description, homepage, and topics are set.
+- [x] GitHub Pages responds at the public URL.
 - [x] README has a clear "How it works" section.
 - [x] Demo media is either attached or explicitly deferred.
 - [ ] The app installs on a clean-ish Mac or fresh install directory.
-- [ ] The maintainer has tested Right Cmd hold in one text field.
+- [ ] The maintainer has tested Right Ctrl hold in one text field.
 - [x] Known limitations are visible in the README.
 - [x] `promo/posts.yaml` has final links.
 - [x] `promo/metrics.md` has starting star count.
 
 ## Remaining blockers
 
+- Refresh GitHub repo description/homepage after `gh auth login`; current public metadata still has older hotkey wording.
 - Confirm the installer works from `main` on this Mac or a fresh install directory.
-- Confirm Right Cmd hold types into one real text field.
+- Confirm Right Ctrl hold types into one real text field.
 
 ## Completed release prep
 
@@ -33,7 +35,7 @@
 ## Show HN day
 
 - [ ] Confirm README explains the workflow without needing demo media.
-- [ ] Confirm install command uses the commit-pinned script that clones `main`.
+- [ ] Confirm install command uses the `main` branch script.
 - [ ] Submit the Show HN title from `promo/posts.yaml`.
 - [ ] Post the prepared first comment.
 - [ ] Monitor comments for 6-8 hours.

@@ -11,9 +11,9 @@ It types through the normal macOS input path, so it works in ordinary text
 fields across apps like editors, browsers, chat apps, and mail. Apps with custom
 or restricted input behavior may need testing.
 
-## Why Right Cmd?
+## Why Right Ctrl?
 
-Right Cmd is easy to hold while speaking and is less likely to conflict with
+Right Ctrl is easy to hold while speaking and is less likely to conflict with
 normal typing shortcuts. Right Option can be used as a toggle.
 
 ## How accurate is it?

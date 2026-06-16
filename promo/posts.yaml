@@ -8,7 +8,7 @@ posts:
 
       The workflow:
       1. Focus any text field
-      2. Hold Right Cmd
+      2. Hold Right Ctrl
       3. Speak
       4. It types into the current app
 
@@ -24,7 +24,7 @@ posts:
       The dictation UX I wanted on macOS:
 
       1. Focus any text field
-      2. Hold Right Cmd
+      2. Hold Right Ctrl
       3. Speak
       4. Text appears directly in the current app
 
@@ -50,7 +50,7 @@ posts:
     text: |
       The useful trick in Qwen Dictation is that it does not open a separate transcription box.
 
-      It records while you hold Right Cmd, runs local ASR, then types the result through the normal macOS input path.
+      It records while you hold Right Ctrl, runs local ASR, then types the result through the normal macOS input path.
 
       That means it works in the app you are already using.
 
@@ -64,7 +64,7 @@ posts:
       I wanted Mac dictation that works well for Korean developer workflows, names, and specialist terms.
 
       So I built a local Qwen3-ASR menu-bar app:
-      hold Right Cmd, speak, and it types into the current app.
+      hold Right Ctrl, speak, and it types into the current app.
 
       https://github.com/jhoshim89/qwen-dictation
 
@@ -75,7 +75,7 @@ posts:
     text: |
       Qwen Dictation is built around one simple local-ASR loop:
 
-      hold Right Cmd, speak, run speech recognition locally on the Mac, and type into the app that is already focused.
+      hold Right Ctrl, speak, run speech recognition locally on the Mac, and type into the app that is already focused.
 
       https://github.com/jhoshim89/qwen-dictation
 
@@ -86,7 +86,7 @@ posts:
     text: |
       Looking for a few Mac users who are comfortable with terminal installs to try Qwen Dictation.
 
-      It is a local-first dictation MVP: hold Right Cmd, speak, and it types into the focused app.
+      It is a local-first dictation MVP: hold Right Ctrl, speak, and it types into the focused app.
 
       Feedback on install friction and accuracy would help.
 
@@ -97,7 +97,7 @@ posts:
     status: draft
     angle: simple
     text: |
-      Mac에서 오른쪽 Cmd를 누르고 말하면, 지금 열려 있는 앱에 바로 입력되는 로컬 받아쓰기 앱을 만들고 있습니다.
+      Mac에서 오른쪽 Ctrl을 누르고 말하면, 지금 열려 있는 앱에 바로 입력되는 로컬 받아쓰기 앱을 만들고 있습니다.
 
       Qwen3-ASR 기반이고, Cursor/ChatGPT/Slack 같은 입력창에서 바로 동작합니다.
 
@@ -110,7 +110,7 @@ posts:
     text: |
       음성 받아쓰기는 가능하면 로컬에서 처리하고 싶어서 Qwen3-ASR 기반 Mac 앱을 만들고 있습니다.
 
-      오른쪽 Cmd를 누르고 말하면 현재 입력창에 바로 타이핑됩니다.
+      오른쪽 Ctrl을 누르고 말하면 현재 입력창에 바로 타이핑됩니다.
 
       https://github.com/jhoshim89/qwen-dictation
 
@@ -122,7 +122,7 @@ posts:
     text: |
       I built Qwen Dictation because I wanted a faster push-to-talk dictation flow on macOS.
 
-      The interaction is simple: focus any text field, hold Right Cmd, speak, and the app types into the current app. It uses local ASR on the Mac instead of a cloud API.
+      The interaction is simple: focus any text field, hold Right Ctrl, speak, and the app types into the current app. It uses local ASR on the Mac instead of a cloud API.
 
       It is still a developer MVP. The install flow uses Homebrew, Python, PortAudio, and a Hugging Face model download, so I am mostly looking for feedback from Mac users who are comfortable with terminal installs.
 
@@ -130,7 +130,7 @@ posts:
 
       I would especially appreciate feedback on:
       - install friction
-      - whether Right Cmd feels like a good trigger
+      - whether Right Ctrl feels like a good trigger
       - accuracy with real microphone input
       - what should be packaged first for a proper macOS app
 
@@ -141,7 +141,7 @@ posts:
     text: |
       I built a local-first macOS dictation app powered by Qwen3-ASR.
 
-      The main interaction is push-to-talk: hold Right Cmd, speak, and it types into the currently focused text field. It works in apps like Cursor, ChatGPT, Slack, mail, browsers, and editors because it uses the normal macOS typing path.
+      The main interaction is push-to-talk: hold Right Ctrl, speak, and it types into the currently focused text field. It works in apps like Cursor, ChatGPT, Slack, mail, browsers, and editors because it uses the normal macOS typing path.
 
       The app runs from the menu bar, has a small settings dashboard, supports vocabulary registration for names and specialist terms, and processes audio locally on the Mac.
 

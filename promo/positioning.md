@@ -7,7 +7,7 @@ browsers, and editors all day.
 
 ## Core promise
 
-Hold Right Cmd, speak, and Qwen Dictation types into the app you are already
+Hold Right Ctrl, speak, and Qwen Dictation types into the app you are already
 using.
 
 ## Short descriptions
@@ -20,7 +20,7 @@ using.
 
 - Works in any app that accepts typing.
 - Audio is processed locally on the Mac.
-- Right Cmd hold is faster than opening a separate transcription window.
+- Right Ctrl hold is faster than opening a separate transcription window.
 - Vocabulary registration helps with names and specialist terms.
 - Qwen3-ASR is the default local engine.
 
@@ -34,4 +34,4 @@ using.
 
 ## Suggested repo description
 
-Local-first macOS dictation powered by Qwen3-ASR. Hold Right Cmd, speak, and type into any app.
+Local-first macOS dictation powered by Qwen3-ASR. Hold Right Ctrl, speak, and type into any app.

@@ -2,8 +2,9 @@
 
 ## Goal
 
-Earn the first 30-75 GitHub stars by clearly explaining the local Mac dictation
-workflow to developers and local-AI users.
+Earn the first 1-10 GitHub stars by clearly explaining the local Mac dictation
+workflow to developers and local-AI users. Optimize for real feedback over a
+large launch spike.
 
 ## Launch order
 
@@ -11,7 +12,7 @@ workflow to developers and local-AI users.
 
 - Rewrite the README first screen around the core promise.
 - Use the HUD preview and a concise "How it works" section until demo media is ready.
-- Set GitHub repository description and topics.
+- Set GitHub repository description, homepage, and topics.
 - Keep installation on the default `main` branch.
 
 ### Phase 2: X and Threads soft launch
@@ -42,7 +43,7 @@ workflow to developers and local-AI users.
 
 ## Success metrics
 
-- 5-20 stars before Show HN.
-- 30-75 stars after Show HN if the workflow resonates without demo media.
+- 1-3 stars from the first soft-launch posts.
+- 5-10 stars before deciding whether to do Show HN.
 - At least 3 installation or feature questions from real users.
 - At least 1 external share by someone other than the maintainer.

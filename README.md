@@ -3,6 +3,9 @@
 > Local-first Mac dictation powered by Qwen3-ASR. Hold Right Ctrl, speak, and it
 > types into any app.
 
+[Website](https://jhoshim89.github.io/qwen-dictation/) ·
+[Repository](https://github.com/jhoshim89/qwen-dictation)
+
 Qwen Dictation runs from the macOS menu bar, records only while you trigger it,
 and types into the currently focused input field. Qwen3-ASR is the default local
 engine, with Qwen Original and Nemotron 3.5 ASR via MLX available from the
@@ -24,6 +27,9 @@ Why it is useful:
 This is a developer MVP. The core dictation loop works, but the install flow is
 still terminal-based and a polished signed macOS app is not ready yet.
 
+If this saves you typing or gives you a useful local-ASR reference, a GitHub star
+helps other Mac users find it.
+
 ## How it works
 
 1. Focus any text field.
@@ -42,7 +48,7 @@ Right Option can be used as a toggle instead of a hold key.
 One-line install for a new Mac:
 
 ```bash
-curl -fsSL https://raw.githubusercontent.com/jhoshim89/qwen-dictation/912491d75039847a95c6d673e1fd77c8d4bd4a87/install.sh | bash
+curl -fsSL https://raw.githubusercontent.com/jhoshim89/qwen-dictation/main/install.sh | bash
 ```
 
 This installs PortAudio with Homebrew, clones the app into
@@ -172,28 +178,6 @@ Use `--context app` to include the current vocabulary/domain context where an
 engine supports it. The CSV contains raw text, CER/WER when `.txt` references
 exist, and per-file latency. The current smoke-test judgment is kept in
 `docs/asr-comparison.md`.
-
-## Known limitations
-
-- macOS only.
-- Current install flow is developer-oriented and terminal-based.
-- Accuracy depends on microphone quality, noise, language, and vocabulary.
-- This is not intended for regulated medical, legal, or compliance transcription.
-- A signed `.app`, auto-updater, and model manager are future packaging work.
-
-## Roadmap
-
-- Add a short README demo GIF/video when available.
-- Package a signed and notarized macOS app.
-- Add a model manager for downloading, switching, and removing local ASR models.
-- Improve install diagnostics and permission onboarding.
-- Collect real microphone benchmarks across languages and Mac hardware.
-
-## Contributing
-
-Bug reports, install feedback, real microphone accuracy notes, and focused pull
-requests are welcome. See [CONTRIBUTING.md](CONTRIBUTING.md) for the current
-priorities and bug report details.
 
 ## Known limitations
 
