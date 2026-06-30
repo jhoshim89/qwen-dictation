@@ -77,6 +77,11 @@ def get_config():
         "hud_pin_y": getattr(app_instance, 'hud_pin_y', None),
     })
 
+@flask_app.route('/api/debug', methods=['GET'])
+def get_debug():
+    recorder = getattr(app_instance, "recorder", None) if app_instance else None
+    return jsonify({"events": list(getattr(recorder, "debug_events", []))})
+
 @flask_app.route('/api/config', methods=['POST'])
 def post_config():
     if not app_instance:

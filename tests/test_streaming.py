@@ -107,6 +107,7 @@ def _make_recorder(wd, monkeypatch, hypo_by_call):
     rec.app = type("App", (), {"min_volume": 35})()
     rec.transcriber = FakeTranscriber()
     rec.typed_log = []
+    rec.debug_events = __import__("collections").deque(maxlen=200)
     # type 함수 주입: (old,new)->new, 로그 기록
     rec._type = lambda old, new, append_only=False: (rec.typed_log.append(new) or new)
     # _transcribe_window 를 가설 시퀀스로 대체
@@ -115,6 +116,13 @@ def _make_recorder(wd, monkeypatch, hypo_by_call):
     # 소비한다 — 편향 호출 차례에 시퀀스가 비면 ""(가드가 무편향으로 되돌림).
     rec._transcribe_window = lambda window_bytes, language, context="": seq.pop(0) if seq else ""
     return rec
+
+
+def test_stream_tick_debugs_no_window(monkeypatch):
+    wd = _load()
+    rec = _make_recorder(wd, monkeypatch, [])
+    wd.Recorder._stream_tick(rec, language="Korean")
+    assert list(rec.debug_events)[-1]["reason"] == "no_window"
 
 
 def test_stream_tick_types_agreed_prefix_after_two_ticks(monkeypatch):
@@ -172,7 +180,7 @@ def test_stream_tick_hold_live_waits_for_stable_text_until_release(monkeypatch):
         rec.audio_frames = [loud, loud]
     wd.Recorder._stream_tick(rec, language="English")
     assert rec.last_typed == ""
-    assert calls[-1] == ("", "", True)
+    assert calls == []
 
     rec.recording = False
     wd.Recorder._stream_tick(rec, language="English", allow_stopped=True)
@@ -180,15 +188,17 @@ def test_stream_tick_hold_live_waits_for_stable_text_until_release(monkeypatch):
     assert rec.last_typed == "abcY"
 
 
-def test_qwen_original_live_types_immediate_hypothesis_and_allows_rewrite(monkeypatch):
+def test_qwen_original_live_types_only_stable_prefix(monkeypatch):
     wd = _load()
-    rec = _make_recorder(wd, monkeypatch, ["abcX", "abcY"])
+    rec = _make_recorder(wd, monkeypatch, ["뭘 수", "수정했어", "수정했어"])
     rec.app = type("App", (), {"min_volume": 35, "asr_engine": "qwen_original"})()
     calls = []
+    kb = _FakeKeyboard()
+    inserted = []
 
     def type_live(old, new, append_only=False):
         calls.append((old, new, append_only))
-        return wd.type_diff(old, new, _FakeKeyboard(), insert=lambda _text: None, append_only=append_only)
+        return wd.type_diff(old, new, kb, insert=inserted.append, append_only=append_only)
 
     rec._type = type_live
     loud = (np.random.RandomState(0).randn(16000) * 6000).astype(np.int16).tobytes()
@@ -196,14 +206,63 @@ def test_qwen_original_live_types_immediate_hypothesis_and_allows_rewrite(monkey
         rec.audio_frames = [loud]
 
     wd.Recorder._stream_tick(rec, language="English")
-    assert rec.last_typed == "abcX"
-    assert calls[-1] == ("", "abcX", False)
+    assert rec.last_typed == ""
+    assert calls == []
 
     with rec.audio_lock:
         rec.audio_frames = [loud, loud]
     wd.Recorder._stream_tick(rec, language="English")
-    assert rec.last_typed == "abcY"
-    assert calls[-1] == ("abcX", "abcY", False)
+    assert rec.last_typed == ""
+    assert calls == []
+
+    wd.Recorder._stream_tick(rec, language="English")
+    assert rec.last_typed == "수정했어"
+    assert calls[-1] == ("", "수정했어", True)
+    assert inserted == ["수정했어"]
+    assert kb.events == []
+
+
+def test_repeated_sentence_hallucination_collapses_to_one_sentence():
+    wd = _load()
+    text = "검사 코드는 어떻게 연결하는 게 좋을까? 검사 코드는 어떻게 연결하는 게 좋을까?검사 코드는 어떻게 연결하는 게 좋을까?"
+    assert wd.collapse_repeated_sentences(text) == "검사 코드는 어떻게 연결하는 게 좋을까?"
+
+
+def test_stream_tick_does_not_refresh_type_guard_when_text_is_unchanged(monkeypatch):
+    wd = _load()
+    rec = _make_recorder(wd, monkeypatch, ["안녕", "안녕"])
+    rec.app = type("App", (), {"min_volume": 35, "asr_engine": "qwen_original"})()
+    calls = []
+    rec._type = lambda old, new, append_only=False: (calls.append((old, new)) or new)
+    loud = (np.random.RandomState(0).randn(16000) * 6000).astype(np.int16).tobytes()
+    with rec.audio_lock:
+        rec.audio_frames = [loud]
+
+    wd.Recorder._stream_tick(rec, language="Korean")
+    wd.Recorder._stream_tick(rec, language="Korean")
+
+    assert rec.last_typed == "안녕"
+    assert calls == [("", "안녕")]
+
+
+def test_stream_tick_debugs_typed_lengths_without_text(monkeypatch):
+    wd = _load()
+    rec = _make_recorder(wd, monkeypatch, ["안녕", "안녕"])
+    rec.app = type("App", (), {"min_volume": 35, "asr_engine": "qwen_original"})()
+    loud = (np.random.RandomState(0).randn(16000) * 6000).astype(np.int16).tobytes()
+    with rec.audio_lock:
+        rec.audio_frames = [loud]
+
+    wd.Recorder._stream_tick(rec, language="Korean")
+    wd.Recorder._stream_tick(rec, language="Korean")
+
+    event = list(rec.debug_events)[-1]
+    assert event["reason"] == "typed"
+    assert event["old_len"] == 0
+    assert event["new_len"] == 2
+    assert event["append_only"] is True
+    assert "text" not in event
+    assert "hypo" not in event
 
 
 def test_final_tick_flushes_full_hypothesis_without_pause(monkeypatch):
@@ -234,11 +293,15 @@ def test_stream_tick_discards_quiet_window_before_transcribing():
     assert rec.last_typed == ""
     assert rec.typed_log == []
     assert rec.window_start == 0
+    event = list(rec.debug_events)[-1]
+    assert event["reason"] == "below_gate"
+    assert event["peak"] == 2200.0
+    assert event["gate"] == 3500.0
 
 
 def test_qwen_original_transcribes_above_silence_even_below_start_gate():
     wd = _load()
-    rec = _make_recorder(wd, None, ["작은 말"])
+    rec = _make_recorder(wd, None, ["작은 말", "작은 말"])
     rec.app = type("App", (), {"min_volume": 35, "asr_engine": "qwen_original"})()
     rec.transcriber = type("Transcriber", (), {})()
     # Legacy min_volume=35: silence gate=1000, start gate=3500. This is clearly
@@ -247,6 +310,8 @@ def test_qwen_original_transcribes_above_silence_even_below_start_gate():
     quiet_speech = (np.ones(16000, dtype=np.int16) * 1500).tobytes()
     with rec.audio_lock:
         rec.audio_frames = [quiet_speech]
+    wd.Recorder._stream_tick(rec, language="Korean")
+    assert rec.last_typed == ""
     wd.Recorder._stream_tick(rec, language="Korean")
     assert rec.last_typed == "작은 말"
     assert rec.typed_log == ["작은 말"]
@@ -395,7 +460,47 @@ def test_stream_tick_removes_short_filler_when_stopping_without_pause():
     wd.Recorder._stream_tick(rec, language="Korean", allow_stopped=True)
     assert rec.last_typed == ""
     assert rec.committed_text == ""
-    assert rec.typed_log == [""]
+    assert rec.typed_log == []
+
+
+def test_stream_tick_removes_short_filler_during_live_typing():
+    wd = _load()
+    rec = _make_recorder(wd, None, ["네"])
+    rec.app = type("App", (), {"min_volume": 35, "asr_engine": "qwen_original"})()
+    loud = (np.random.RandomState(0).randn(16000) * 6000).astype(np.int16).tobytes()
+    with rec.audio_lock:
+        rec.audio_frames = [loud]
+    wd.Recorder._stream_tick(rec, language="Korean")
+    assert rec.last_typed == ""
+    assert rec.typed_log == []
+    assert list(rec.debug_events)[-1]["reason"] == "filler_filtered"
+
+
+def test_stream_tick_allows_affirmative_only_when_stopping():
+    wd = _load()
+    rec = _make_recorder(wd, None, ["네"])
+    rec.app = type("App", (), {"min_volume": 35, "asr_engine": "qwen_original"})()
+    rec.recording = False
+    loud = (np.random.RandomState(0).randn(16000) * 6000).astype(np.int16).tobytes()
+    with rec.audio_lock:
+        rec.audio_frames = [loud]
+    wd.Recorder._stream_tick(rec, language="Korean", allow_stopped=True)
+    assert rec.last_typed == "네"
+    assert rec.typed_log == ["네"]
+
+
+def test_stream_tick_empty_final_does_not_clear_sentence():
+    wd = _load()
+    rec = _make_recorder(wd, None, ["그렇죠."])
+    rec.app = type("App", (), {"min_volume": 35, "asr_engine": "qwen_original"})()
+    rec.recording = False
+    rec.last_typed = "이미 받아쓴 긴 문장"
+    loud = (np.random.RandomState(0).randn(16000) * 6000).astype(np.int16).tobytes()
+    with rec.audio_lock:
+        rec.audio_frames = [loud]
+    wd.Recorder._stream_tick(rec, language="Korean", allow_stopped=True)
+    assert rec.last_typed == "이미 받아쓴 긴 문장"
+    assert rec.typed_log == []
 
 
 def test_punctuation_only_filter_keeps_contextual_punctuation():
@@ -719,25 +824,44 @@ def test_unicode_type_empty_posts_nothing():
     assert posts == []
 
 
-def test_recorder_type_uses_keyboard_controller_inserter(monkeypatch):
+def test_type_preserving_latin_uses_unicode_for_latin_runs(monkeypatch):
+    wd = _load()
+    typed = []
+    literal = []
+
+    class _KbWithType(_FakeKeyboard):
+        def type(self, text):
+            typed.append(text)
+
+    monkeypatch.setattr(wd, "CGEventCreateKeyboardEvent", object())
+    monkeypatch.setattr(wd, "CGEventKeyboardSetUnicodeString", object())
+    monkeypatch.setattr(wd, "CGEventPost", object())
+    monkeypatch.setattr(wd, "unicode_type", literal.append)
+
+    wd.type_preserving_latin("나스 NAS 됨", _KbWithType())
+
+    assert typed == ["나스 ", " 됨"]
+    assert literal == ["NAS"]
+
+
+def test_recorder_type_preserves_latin_with_custom_inserter(monkeypatch):
     wd = _load()
     captured = {}
 
-    def fake_type_diff(
-        old, new, kb, allow_empty=False, insert=None, append_only=False, delete_backward=None
-    ):
-        captured["insert"] = insert
+    def fake_type_diff(old, new, kb, allow_empty=False, insert=None, append_only=False, delete_backward=None):
         captured["append_only"] = append_only
         captured["delete_backward"] = delete_backward
+        insert("NAS")
         return new
 
+    inserted = []
     monkeypatch.setattr(wd, "type_diff", fake_type_diff)
+    monkeypatch.setattr(wd, "type_preserving_latin", lambda text, kb: inserted.append(text))
     rec = _kbd_recorder(wd)
-    rec._type("", "hello")
-    # The custom Quartz Unicode inserter is not reliable across focused apps.
-    # Leave insert=None so type_diff uses pynput Controller.type, which uses
-    # pynput's platform-specific text insertion path.
-    assert captured["insert"] is None
+
+    rec._type("", "NAS")
+
+    assert inserted == ["NAS"]
     assert captured["append_only"] is False
     if wd.CGEventCreateKeyboardEvent is not None:
         assert captured["delete_backward"] is wd.plain_backspace
@@ -771,6 +895,32 @@ def test_start_seeds_audio_frames_from_preroll(monkeypatch):
     rec.start("ko")
     assert rec.audio_frames == [b"aa", b"bb"]  # 직전 preroll 이 앞에 깔림
     rec.recording = False
+
+
+def test_start_capture_restarts_dead_capture_thread(monkeypatch):
+    wd = _load()
+    rec = _kbd_recorder(wd)
+    rec._capture_on = True
+    rec._capture_thread = type("DeadThread", (), {"is_alive": lambda self: False})()
+    started = []
+
+    class FakeThread:
+        def __init__(self, target, daemon):
+            self.target = target
+            self.daemon = daemon
+        def is_alive(self):
+            return True
+        def start(self):
+            started.append((self.target, self.daemon))
+
+    monkeypatch.setattr(rec, "_close_stream", lambda: started.append(("closed", True)))
+    monkeypatch.setattr(wd.threading, "Thread", FakeThread)
+
+    rec.start_capture()
+
+    assert started == [("closed", True), (rec._capture_loop, True)]
+    assert rec._capture_on is True
+    assert list(rec.debug_events)[-1]["reason"] == "capture_restart"
 
 
 def test_capture_loop_fills_preroll_but_records_only_when_recording():

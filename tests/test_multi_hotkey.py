@@ -231,6 +231,16 @@ def test_toggle_enter_stops_without_final_tick_and_enter_keeps_flowing():
     assert app.log == [("start", True), ("stop", False, False)]
 
 
+def test_toggle_keypad_enter_stops_without_final_tick():
+    wd = _load()
+    app = FakeApp()
+    lis = wd.MultiHotkeyListener(app)
+    lis.on_key_press(keyboard.Key.alt_r)
+    lis.on_key_press(keyboard.KeyCode(vk=76))
+    assert app.started is False
+    assert app.log == [("start", True), ("stop", False, False)]
+
+
 def test_other_key_ignored_while_recording():
     wd = _load()
     app = FakeApp()

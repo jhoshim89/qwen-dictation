@@ -17,16 +17,16 @@
   <style>
     :root {
       color-scheme: light;
-      --ink: #19181b;
-      --muted: #625c66;
-      --line: #ded8df;
-      --paper: #fffaf7;
-      --rose: #c3215a;
-      --berry: #811d4a;
-      --mint: #8fd1bd;
-      --gold: #e6b65f;
-      --night: #24212a;
-      font-family: Inter, ui-sans-serif, system-ui, -apple-system, BlinkMacSystemFont, "Segoe UI", sans-serif;
+      --ink: #422e35;
+      --muted: #836c74;
+      --line: #eaddd8;
+      --paper: #f7f1e9;
+      --rose: #e84762;
+      --berry: #d13652;
+      --mint: #fbe5ea;
+      --gold: #ffb3bf;
+      --night: #422e35;
+      font-family: "Pretendard Variable", Pretendard, ui-sans-serif, system-ui, -apple-system, BlinkMacSystemFont, "Segoe UI", sans-serif;
     }
     * { box-sizing: border-box; }
     body {
@@ -41,7 +41,7 @@
       display: grid;
       grid-template-rows: auto 1fr;
       background:
-        linear-gradient(90deg, rgba(255,250,247,.97) 0%, rgba(255,250,247,.88) 44%, rgba(255,250,247,.4) 100%),
+        linear-gradient(90deg, rgba(247,241,233,.97) 0%, rgba(247,241,233,.88) 44%, rgba(247,241,233,.4) 100%),
         url("hud-current-preview.svg") right 15% center / min(58vw, 760px) auto no-repeat,
         var(--paper);
       border-bottom: 1px solid var(--line);
@@ -134,6 +134,7 @@
       align-items: center;
       max-width: 1120px;
       margin: 0 auto;
+      min-width: 0;
     }
     h2 {
       margin: 0 0 18px;
@@ -188,6 +189,8 @@
       border-bottom: 1px solid var(--line);
     }
     .commands {
+      width: 100%;
+      min-width: 0;
       max-width: 760px;
       margin: 28px 0 0;
       border: 1px solid var(--line);
@@ -204,6 +207,7 @@
       overflow-x: auto;
       white-space: nowrap;
     }
+    .split > * { min-width: 0; }
     .commands div:first-child { border-top: 0; }
     .status-note {
       max-width: 760px;
@@ -228,7 +232,7 @@
       .hero {
         min-height: auto;
         background:
-          linear-gradient(180deg, rgba(255,250,247,.98) 0%, rgba(255,250,247,.95) 55%, rgba(255,250,247,.75) 100%),
+          linear-gradient(180deg, rgba(247,241,233,.98) 0%, rgba(247,241,233,.95) 55%, rgba(247,241,233,.75) 100%),
           url("hud-current-preview.svg") center bottom 28px / min(92vw, 560px) auto no-repeat,
           var(--paper);
       }

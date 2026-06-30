@@ -286,16 +286,41 @@ def looks_like_repetition_hallucination(text):
     return len(tokens) >= 3 and len(set(tokens)) == 1
 
 
+def collapse_repeated_sentences(text):
+    raw = (text or "").strip()
+    parts = [p.strip() for p in re.findall(r"[^.!?。！？]+[.!?。！？]*", raw) if p.strip()]
+    if len(parts) < 2:
+        return text
+    normalized = [re.sub(r"\s+", " ", p) for p in parts]
+    return normalized[0] if len(set(normalized)) == 1 else text
+
+
 def looks_like_pause_noise_filler(text):
     """쉼 끝에서 주변 잡음 때문에 자주 생기는 짧은 단독 응답인지."""
     tokens = [t for t in re.split(r"[\s,.;!?·]+", (text or "").strip()) if t]
     return bool(tokens) and all(t in NOISE_FILLER_TEXTS for t in tokens)
 
 
+def looks_like_affirmative_only(text):
+    tokens = [t for t in re.split(r"[\s,.;!?·]+", (text or "").strip()) if t]
+    return tokens in (["네"], ["예"])
+
+
 def looks_like_punctuation_only(text):
     """내용 없이 구두점만 생성된 환각인지. 실제 문장에 붙은 구두점은 유지한다."""
     compact = re.sub(r"[\s,.;!?·]+", "", text or "")
     return bool(text and not compact)
+
+
+def looks_like_clearable_noise_text(text):
+    """이미 친 글자 중 안전하게 지워도 되는 단독 잡음 후보."""
+    tokens = [t for t in re.split(r"[\s,.;!?·]+", (text or "").strip()) if t]
+    return (
+        looks_like_repetition_hallucination(text)
+        or (len(tokens) >= 2 and len(set(tokens)) == 1)
+        or looks_like_pause_noise_filler(text)
+        or looks_like_punctuation_only(text)
+    )
 
 
 # 한글(자모 포함)과 라틴 문자(악센트 포함) — '허용' 글자. 사용자 콘텐츠는 한국어
@@ -384,6 +409,7 @@ HOTKEY_KEY_NAMES = {
 HOTKEY_KEY_NAMES.update({f"f{number}": getattr(keyboard.Key, f"f{number}") for number in range(1, 21)})
 HOTKEY_NAME_BY_KEY = {value: name for name, value in HOTKEY_KEY_NAMES.items()}
 HOTKEY_FN = "fn"
+MAC_KEYPAD_ENTER_VK = 76
 
 
 # 수동 편집으로 치지 않는 토큰: 모디파이어 단독과 Enter.
@@ -400,6 +426,8 @@ def token_from_key(key):
         return HOTKEY_FN
     if key in HOTKEY_NAME_BY_KEY:
         return HOTKEY_NAME_BY_KEY[key]
+    if getattr(key, "vk", None) == MAC_KEYPAD_ENTER_VK or getattr(key, "char", None) == "\r":
+        return "enter"
     char = getattr(key, "char", None)
     return str(char).lower() if char and len(str(char)) == 1 else None
 
@@ -438,6 +466,20 @@ def unicode_type(text, _post=None):
             CGEventSetFlags(up, 0)
         CGEventKeyboardSetUnicodeString(up, 1, ch)
         post(kCGHIDEventTap, up)
+
+
+def type_preserving_latin(text, keyboard_controller):
+    """Type Latin letters literally so a Korean IME cannot turn NAS into 자모."""
+    if not (CGEventCreateKeyboardEvent and CGEventKeyboardSetUnicodeString and CGEventPost):
+        keyboard_controller.type(text)
+        return
+    for part in re.split(r"([A-Za-z]+)", text):
+        if not part:
+            continue
+        if re.fullmatch(r"[A-Za-z]+", part):
+            unicode_type(part)
+        else:
+            keyboard_controller.type(part)
 
 
 def plain_backspace(_post=None):
@@ -632,6 +674,7 @@ class Recorder:
         self._capture_error_notified = False
         # 키 누르기 직전 오디오를 들고 있는 롤링 버퍼(받아쓰기 시작 시 앞에 붙인다).
         self._preroll = collections.deque(maxlen=PREROLL_CHUNKS)
+        self.debug_events = collections.deque(maxlen=200)
         self.window_start = 0
         self.committed_text = ""
         self.last_typed = ""
@@ -655,6 +698,14 @@ class Recorder:
         # 다음 확인 주기를 기다리지 않고 곧장 마지막 틱(+Enter)으로 넘어간다.
         self._wake = threading.Event()
 
+    def _debug(self, reason, **fields):
+        events = getattr(self, "debug_events", None)
+        if events is None:
+            events = self.debug_events = collections.deque(maxlen=200)
+        event = {"ts": round(time.time(), 3), "reason": reason}
+        event.update(fields)
+        events.append(event)
+
     def rebaseline(self):
         """입력창 글자에 대한 소유권을 내려놓는다. 다음 발화는 빈 기준에서 시작해
         백스페이스 없이 커서 위치에 새 글자만 덧붙는다(사용자 수정 보존)."""
@@ -674,6 +725,14 @@ class Recorder:
         # 붙여, 키 누르자마자/살짝 먼저 말해도 첫 단어가 잡히게 한다.
         with self.audio_lock:
             self.audio_frames = list(self._preroll)
+            preroll_frames = len(self.audio_frames)
+        self._debug(
+            "start",
+            preroll_frames=preroll_frames,
+            engine=asr_engines.normalize_asr_engine(getattr(self.app, "asr_engine", asr_engines.DEFAULT_ASR_ENGINE)),
+            min_volume=normalize_min_volume(getattr(self.app, "min_volume", DEFAULT_MIN_VOLUME)),
+            input_device=getattr(self.app, "input_device", ""),
+        )
         self.recording = True
         # 캡처가 아직 안 돌고 있으면(안전망) 지금 띄운다.
         self.start_capture()
@@ -696,8 +755,11 @@ class Recorder:
 
         한 번만 띄우면 되고, 이후 떼고/다시 누르는 동안 스트림은 계속 열려 있다.
         """
-        if self._capture_on:
+        if self._capture_on and self._capture_thread is not None and self._capture_thread.is_alive():
             return
+        if self._capture_on:
+            self._debug("capture_restart")
+            self._close_stream()
         self._capture_on = True
         self._capture_thread = threading.Thread(target=self._capture_loop, daemon=True)
         self._capture_thread.start()
@@ -747,6 +809,7 @@ class Recorder:
                         self._open_stream()
                         self._capture_error_notified = False
                     except Exception as exc:
+                        self._debug("capture_error", phase="open", error=str(exc))
                         if not self._capture_error_notified:
                             self._capture_error_notified = True
                             self.app.dispatch_to_main(self.app.handle_recording_error, str(exc))
@@ -756,6 +819,7 @@ class Recorder:
                     data = self._stream.read(FRAMES_PER_BUFFER, exception_on_overflow=False)
                 except Exception as exc:
                     print(f"Audio read error: {exc}")
+                    self._debug("capture_error", phase="read", error=str(exc))
                     self._close_stream()
                     time.sleep(0.2)
                     continue
@@ -768,6 +832,8 @@ class Recorder:
         finally:
             self._close_stream()
             audio_level.clear_level()
+            if threading.current_thread() is self._capture_thread:
+                self._capture_on = False
 
     def _write_current_audio(self, path):
         with self.audio_lock:
@@ -780,14 +846,12 @@ class Recorder:
         return True
 
     def _type(self, old, new, append_only=False):
-        # Let pynput choose the platform text insertion path. The local Quartz
-        # Unicode inserter is unreliable in some focused apps on this macOS
-        # build: it can report success internally without inserting text.
-        inserter = None
+        kb = self.transcriber.pykeyboard
+        inserter = lambda text: type_preserving_latin(text, kb)
         deleter = plain_backspace if CGEventCreateKeyboardEvent is not None else None
         self.self_type_guard_until = time.time() + 30.0
         try:
-            return type_diff(old, new, self.transcriber.pykeyboard,
+            return type_diff(old, new, kb,
                              allow_empty=True, insert=inserter, append_only=append_only,
                              delete_backward=deleter)
         finally:
@@ -837,6 +901,7 @@ class Recorder:
             window = b"".join(self.audio_frames[self.window_start:])
             frame_count = len(self.audio_frames)
         if not window:
+            self._debug("no_window", frame_count=frame_count, window_start=self.window_start)
             return
         # 새 구간은 분명한 말소리가 들어오기 전까지 추론하지 않는다. 작은 주변
         # 소리만 계속 쌓이면 Qwen이 "어", "응", "네" 같은 짧은 말을 만들 수 있다.
@@ -859,13 +924,18 @@ class Recorder:
         else:
             self.transcriber.asr_engine = engine
         speech_gate = silence_threshold if qwen_original_live else start_threshold
-        if pcm_peak(window) < speech_gate:
+        peak = pcm_peak(window)
+        if peak < speech_gate:
+            self._debug("below_gate", peak=round(peak, 1), gate=round(speech_gate, 1), frames=frame_count)
             with self.audio_lock:
                 self.window_start = max(0, frame_count - SPEECH_START_LOOKBACK_CHUNKS)
             return
         hypo = self._transcribe_window(window, language)
+        if not hypo:
+            self._debug("empty_hypo", window_ms=round(len(window) / 2.0 / 16.0))
         if not self.recording and not allow_stopped:
             return
+        hypo = collapse_repeated_sentences(hypo)
         if looks_like_repetition_hallucination(hypo):
             hypo = ""
         if looks_like_punctuation_only(hypo):
@@ -873,7 +943,12 @@ class Recorder:
         paused = trailing_silence(window, 16000, silence_threshold, PAUSE_SILENCE_SEC)
         window_secs = len(window) / 2.0 / 16000.0
         finalizing = bool(allow_stopped and not self.recording)
-        if (paused or finalizing) and looks_like_pause_noise_filler(hypo):
+        if (
+            (self.recording or paused or finalizing)
+            and looks_like_pause_noise_filler(hypo)
+            and not (finalizing and looks_like_affirmative_only(hypo))
+        ):
+            self._debug("filler_filtered", text_len=len(str(hypo or "")), finalizing=finalizing)
             hypo = ""
         # 한국어(한글)도 영어도 아닌 언어로 새면(짧은 라이브 창에서 auto 감지가 흔들려
         # 중국어·일본어·러시아어 등으로 빠짐): 확정 직전이면 한국어로 다시 받아써서
@@ -883,8 +958,13 @@ class Recorder:
             max_window_sec = QWEN_ORIGINAL_MAX_WINDOW_SEC if qwen_original_live else MAX_WINDOW_SEC
             if finalizing or should_commit(window_secs, paused, max_window_sec):
                 forced = self._transcribe_window(window, "Korean")
-                hypo = forced if not looks_like_foreign_language(forced) else ""
+                if looks_like_foreign_language(forced):
+                    self._debug("foreign_filtered", text_len=len(str(hypo or "")), finalizing=finalizing)
+                    hypo = ""
+                else:
+                    hypo = forced
             else:
+                self._debug("foreign_filtered", text_len=len(str(hypo or "")), finalizing=finalizing)
                 hypo = ""
         # 등록 용어로 사후 교정한다(라이브 틱은 모델에 용어를 안 줬으므로 여기서만 반영).
         unbiased = term_correct.correct_terms(hypo, getattr(self, "session_vocab", None) or [])
@@ -923,25 +1003,24 @@ class Recorder:
             shown = hypo
         else:
             hypo = unbiased
-            if qwen_original_live:
-                # Qwen Original: rolling WAV 재인식 결과를 바로 표시한다. 이 모드는
-                # 원래처럼 중간 hypothesis를 backspace rewrite 하며 따라간다.
-                shown = hypo
-            else:
-                # LocalAgreement-2: '연속 두 번 같은' 앞부분만 화면에 표시한다. 확정
-                # 앞부분은 단조 증가만 하므로 이미 친 글자를 지우거나 바꾸지 않는다.
-                prev = getattr(self, "_la_prev_hypo", "")
-                confirmed = getattr(self, "_la_confirmed", "")
-                agreed = agreed_word_prefix(prev, hypo)
-                cw, aw = confirmed.split(), agreed.split()
-                if len(aw) > len(cw) and aw[: len(cw)] == cw:
-                    confirmed = agreed  # 합의된 앞부분이 더 늘면 확정 연장
-                shown = confirmed
-                self._la_confirmed = confirmed
+            # LocalAgreement-2: raw interim 은 외부 앱에 직접 치지 않는다.
+            # 연속 두 번 같은 앞부분만 표시하면 Qwen Original의 흔들리는 중간 결과도
+            # backspace rewrite 없이 단조 증가한다.
+            prev = getattr(self, "_la_prev_hypo", "")
+            confirmed = getattr(self, "_la_confirmed", "")
+            agreed = agreed_word_prefix(prev, hypo)
+            cw, aw = confirmed.split(), agreed.split()
+            if len(aw) > len(cw) and aw[: len(cw)] == cw:
+                confirmed = agreed
+            shown = confirmed
+            self._la_confirmed = confirmed
         self._la_prev_hypo = hypo
         # 단위가 붙은 한국어 수사만 아라비아 숫자로 바꾼다('삼 밀리'->3밀리). 변환은
         # idempotent 라 확정 텍스트에 다시 적용해도 안전하다.
         target = text_normalize.normalize_numbers(self.committed_text + shown)
+        # 빈 재인식 결과로 긴 기존 문장을 전부 backspace하지 않는다.
+        if not target and self.last_typed and not looks_like_clearable_noise_text(self.last_typed):
+            return
         defer_typing = (
             getattr(self, "defer_typing_until_stop", False)
             and self.recording
@@ -952,15 +1031,11 @@ class Recorder:
             append_only = (
                 self.recording
                 and not allow_stopped
-                and not qwen_original_live
             )
-            # 타이핑 중과 직후 짧은 보호 시간에는 우리가 만든 합성 키 이벤트가 들어오므로, 그 사이
-            # 리스너가 키를 사용자 수동 편집으로 오인하지 않도록 가드 시각을 세운다.
-            self.self_type_guard_until = time.time() + 30.0
-            try:
+            if target != self.last_typed:
+                old_len = len(self.last_typed)
                 self.last_typed = self._type(self.last_typed, target, append_only=append_only)
-            finally:
-                self.self_type_guard_until = time.time() + SELF_TYPE_GUARD_SETTLE_SEC
+                self._debug("typed", old_len=old_len, new_len=len(self.last_typed), append_only=append_only)
             self.deferred_text = ""
         elif target:
             self.deferred_text = target
@@ -1130,7 +1205,7 @@ class MultiHotkeyListener:
                 self._end("toggle")
             elif not self.app.started:
                 self._begin("toggle")
-        elif key == keyboard.Key.enter and self.active_trigger == "toggle":
+        elif token == "enter" and self.active_trigger == "toggle":
             # Let Enter keep flowing to the focused app so it sends normally.
             self._end("toggle", finalize=False)
 

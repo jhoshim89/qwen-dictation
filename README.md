@@ -187,6 +187,27 @@ exist, and per-file latency. The current smoke-test judgment is kept in
 - This is not intended for regulated medical, legal, or compliance transcription.
 - A signed `.app`, auto-updater, and model manager are future packaging work.
 
+## Release readiness checklist
+
+Current release target: **developer MVP readiness**, not a signed or notarized consumer app.
+
+- **Install:** Homebrew PortAudio, Python virtual environment, `requirements.txt`, Qwen model download, and `./run.sh` are the supported path.
+- **Permissions:** users must grant Microphone and Accessibility to the terminal/app host that runs Qwen Dictation.
+- **Runtime smoke:** verify Right Ctrl hold, Right Option toggle, focused-app typing, streaming cadence, vocabulary context, and recent dictation privacy.
+- **Dashboard:** verify settings persistence, microphone selection, ASR engine selection, vocabulary, history correction, and candidate approval.
+- **HUD/design:** keep the current text-bearing HUD pill as an intentional `DESIGN.md` exception; verify pill and pinned modes for clipping, contrast, screen-edge overlap, and microphone-level readability.
+- **Packaging:** `./build_app.sh` writes `dist.noindex/Qwen Dictation.app`; signing/notarization, auto-updater, and model manager remain future work unless separately implemented.
+- **Evidence:** record focused pytest, full pytest when appropriate, `py_compile`, CLI smoke, optional LazyCodex/OmO health note, visual QA notes, and manual macOS permission limits.
+
+### Release readiness diagnosis matrix
+
+| Item | Evidence | User impact | Decision | Verification |
+|------|----------|-------------|----------|--------------|
+| HUD source of truth | `hud_overlay.py`, dashboard HUD previews, and tests use a text-bearing status pill while earlier `DESIGN.md` text said native HUD had no text. | Removing status text would make listening/processing state less obvious. | Keep the text-bearing pill as an intentional `DESIGN.md` exception and document it here. | HUD tests plus local visual QA for pill/pinned clipping, contrast, edge overlap, and mic-level readability. |
+| Landing-page design drift | `docs/index.html` used a separate darker berry/mint/gold palette instead of Warm Jelly Voice tokens. | Public first impression felt less connected to the app/dashboard brand. | Align landing-page CSS variables and hero wash to `DESIGN.md` colors while keeping developer-MVP copy. | Browser/static visual QA for spacing, clipping, overlap, contrast, and responsive hero composition. |
+| Packaged app output path | `build_app.sh` produces an app bundle under `dist.noindex/`. | Users and maintainers need the current artifact path when checking builds. | Document `dist.noindex/Qwen Dictation.app` and keep signed/notarized distribution as future work. | Conditional packaging verification when packaging files are edited or packaging is in scope. |
+| macOS permissions | Microphone and Accessibility cannot be granted by automated tests. | Recording or typing may fail despite passing code tests. | Keep permission checks as manual release-readiness evidence. | Manual System Settings checklist separated from automated pass/fail claims. |
+
 ## Roadmap
 
 - Add a short README demo GIF/video when available.

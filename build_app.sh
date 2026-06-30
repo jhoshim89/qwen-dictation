@@ -1,6 +1,6 @@
 #!/bin/bash
 # PyInstaller 빌드 스크립트 (py2app 는 Python 3.11 과 비호환이라 대체).
-# 산출물: dist/Qwen Dictation.app
+# 산출물: dist.noindex/Qwen Dictation.app
 #
 # 모델 가중치(1.8GB)는 번들에 넣지 않는다. 실행 시 ~/.cache/huggingface 의
 # 기존 Qwen3-ASR 캐시를 그대로 참조한다.
@@ -34,8 +34,12 @@ if ./venv/bin/python -c 'import mlx' >/dev/null 2>&1; then
   EXTRA_COLLECT_ARGS+=(--collect-all mlx)
 fi
 
-rm -rf build dist
+DIST_DIR="dist.noindex"
+APP_BUNDLE="$DIST_DIR/Qwen Dictation.app"
+
+rm -rf build dist "$DIST_DIR"
 ./venv/bin/pyinstaller --noconfirm --windowed --name "Qwen Dictation" \
+  --distpath "$DIST_DIR" \
   --osx-bundle-identifier com.shimjaeho.qwendictation \
   --icon assets/AppIcon.icns \
   --add-data "assets/menubar.png:assets" \
@@ -85,7 +89,7 @@ rm -rf build dist
   --copy-metadata numpy --copy-metadata tokenizers --copy-metadata safetensors \
   app_main.py
 
-./venv/bin/python fix_plist.py "dist/Qwen Dictation.app/Contents/Info.plist"
+./venv/bin/python fix_plist.py "$APP_BUNDLE/Contents/Info.plist"
 
 # Info.plist 를 수정한 뒤 반드시 재서명한다. 안 하면 서명이 Info.plist 를
 # 감싸지 못해(Info.plist=not bound) 서명이 무효가 되고, macOS 가 마이크 권한
@@ -107,11 +111,11 @@ if [ -f "$SIGN_KC" ] && [ -f "$SIGN_DIR/keychain.pw" ]; then
 fi
 if [ -n "$SIGN_HASH" ]; then
   echo "Signing with stable identity: $SIGN_CN ($SIGN_HASH)"
-  codesign --force --deep -s "$SIGN_HASH" "dist/Qwen Dictation.app"
+  codesign --force --deep -s "$SIGN_HASH" "$APP_BUNDLE"
 else
   echo "WARNING: stable signing identity 없음 → ad-hoc 서명(재빌드 시 권한 재설정 필요)"
-  codesign --force --deep -s - "dist/Qwen Dictation.app"
+  codesign --force --deep -s - "$APP_BUNDLE"
 fi
-codesign --verify --verbose "dist/Qwen Dictation.app" || echo "WARNING: codesign verify failed"
+codesign --verify --verbose "$APP_BUNDLE" || echo "WARNING: codesign verify failed"
 
-echo "BUILD OK -> dist/Qwen Dictation.app"
+echo "BUILD OK -> $APP_BUNDLE"

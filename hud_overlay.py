@@ -20,16 +20,20 @@ LAYOUT:
 - A slim macOS-style status pill shows a tiny reactive voice meter and state text.
 """
 
-PANEL_WIDTH = 92.0
-PANEL_HEIGHT = 40.0
+PANEL_WIDTH = 104.0
+PANEL_HEIGHT = 44.0
 BOTTOM_OFFSET = 86.0
 BAR_CORNER_RADIUS = PANEL_HEIGHT / 2.0
 
 # 라벨(상태 글자) 배치. 측정·그리기·알약 폭 계산이 같은 값을 공유해야 긴 글자가 잘리지
 # 않는다("모델 불러오는 중…" 처럼 기본 폭을 넘는 라벨은 알약을 늘려서 보여준다).
-LABEL_LEFT = 40.0          # 막대 오른쪽, 글자가 시작하는 x
+PILL_SIDE_PAD = 12.0
+METER_BAR_WIDTH = 5.0
+METER_BAR_GAP = 4.0
+METER_WIDTH = (METER_BAR_WIDTH * 3.0) + (METER_BAR_GAP * 2.0)
+METER_LABEL_GAP = 10.0
+PILL_CONTENT_OPTICAL_OFFSET_X = -2.0
 LABEL_BASELINE_Y = 11.0
-LABEL_RIGHT_PAD = 14.0     # 글자 오른쪽 안쪽 여백
 LABEL_FONT_SIZE = 13.0
 LABEL_FONT_WEIGHT = 0.42
 
@@ -42,8 +46,9 @@ def jelly_bar_heights(level):
     as the microphone picks up the voice.
     """
     level = min(1.0, max(0.0, float(level)))
-    side = 5.0 + (8.0 * level)
-    center = 8.0 + (16.0 * level)
+    visual_level = level ** 0.5
+    side = 4.0 + (12.0 * visual_level)
+    center = 7.0 + (26.0 * visual_level)
     return side, center, side
 
 
@@ -60,10 +65,22 @@ def normalize_hud_mode(value):
     return value if value in HUD_MODES else "pill"
 
 
+def pill_layout_for_label(pill_width, text_width):
+    """Return (meter_x, label_x) with a slight left optical correction.
+
+    The text label has much more visual weight than the three thin meter bars, so
+    a purely geometric center reads a little right-heavy in the live HUD.
+    """
+    content_width = METER_WIDTH + METER_LABEL_GAP + max(0.0, float(text_width))
+    centered_left = (float(pill_width) - content_width) / 2.0
+    left = max(PILL_SIDE_PAD, centered_left + PILL_CONTENT_OPTICAL_OFFSET_X)
+    return left, left + METER_WIDTH + METER_LABEL_GAP
+
+
 def pill_width_for_label(text_width):
     """라벨의 픽셀 폭을 받아 알약 전체 폭을 돌려준다. 짧은 라벨('듣는 중')은 기본 폭을
     유지하고, 긴 라벨('모델 불러오는 중…')은 글자가 다 보이도록 늘린다."""
-    needed = LABEL_LEFT + max(0.0, float(text_width)) + LABEL_RIGHT_PAD
+    needed = (PILL_SIDE_PAD * 2.0) + METER_WIDTH + METER_LABEL_GAP + max(0.0, float(text_width))
     return max(PANEL_WIDTH, needed)
 
 
@@ -173,9 +190,9 @@ if _APPKIT_OK:
 
         def setValues_(self, values):
             # values = (level, elapsed_seconds, blink_on)
-            # Smooth abrupt microphone changes so the orb breathes instead of
+            # Smooth abrupt microphone changes so the meter breathes instead of
             # jittering, but lean toward the new sample so it visibly reacts.
-            self._level = (self._level * 0.4) + (float(values[0]) * 0.6)
+            self._level = (self._level * 0.25) + (float(values[0]) * 0.75)
             self._elapsed = values[1]
             self._blink_on = values[2]
             self.setNeedsDisplay_(True)
@@ -214,22 +231,23 @@ if _APPKIT_OK:
                     self._draw_jelly_rect(x, y, ICON_BAR_WIDTH, height, alpha=alpha)
                 return
 
-            bar_w = 4.0
-            gap = 4.0
-            start_x = 14.0
+            text_width = float(NSString.stringWithString_(self._label_text or "듣는 중").sizeWithAttributes_(_label_attrs()).width)
+            start_x, _label_x = pill_layout_for_label(bounds.size.width, text_width)
+            bar_w = METER_BAR_WIDTH
+            gap = METER_BAR_GAP
 
             for index, height in enumerate(heights):
                 x = start_x + (index * (bar_w + gap))
                 y = cy - (height / 2.0)
                 self._draw_jelly_rect(x, y, bar_w, height)
-            self._draw_label()
+            self._draw_label(_label_x)
 
-        def _draw_label(self):
+        def _draw_label(self, x):
             text = self._label_text or "듣는 중"
             # Plain Python str does not expose the AppKit drawing category; wrap
             # it in an NSString so drawAtPoint_withAttributes_ is available.
             NSString.stringWithString_(text).drawAtPoint_withAttributes_(
-                NSMakePoint(LABEL_LEFT, LABEL_BASELINE_Y), _label_attrs()
+                NSMakePoint(x, LABEL_BASELINE_Y), _label_attrs()
             )
 
         def _draw_jelly_rect(self, x, y, width, height, alpha=0.94):

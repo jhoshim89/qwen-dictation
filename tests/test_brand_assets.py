@@ -20,3 +20,32 @@ def test_logo_mark_uses_three_vertical_bars_only():
     left = min(float(rect.attrib["x"]) for rect in foreground)
     right = max(float(rect.attrib["x"]) + float(rect.attrib["width"]) for rect in foreground)
     assert (left + right) / 2 == 48.0
+
+
+def test_docs_landing_uses_warm_jelly_tokens():
+    html = (ROOT / "docs" / "index.html").read_text(encoding="utf-8").lower()
+
+    for token in ("#422e35", "#836c74", "#eaddd8", "#f7f1e9", "#e84762", "#d13652"):
+        assert token in html
+
+    assert "#c3215a" not in html
+    assert "#811d4a" not in html
+    assert "pretendard" in html
+
+
+def test_hud_text_pill_exception_is_documented():
+    design = (ROOT / "DESIGN.md").read_text(encoding="utf-8")
+    readme = (ROOT / "README.md").read_text(encoding="utf-8")
+
+    assert "텍스트 상태 pill을 의도적 예외로 허용" in design
+    assert "text-bearing HUD pill" in readme
+    assert "Release readiness diagnosis matrix" in readme
+
+
+def test_docs_hud_preview_matches_current_pill_constants():
+    svg = (ROOT / "docs" / "hud-current-preview.svg").read_text(encoding="utf-8")
+
+    assert "현재 코드 기준: 104 x 44, 배경 alpha 0.58" in svg
+    assert 'width="104" height="44" rx="22"' in svg
+    assert 'fill-opacity=".58"' in svg
+    assert 'transform="translate(428 362)"' in svg

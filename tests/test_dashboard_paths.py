@@ -32,6 +32,22 @@ def test_dashboard_post_vocabulary_writes_user_path(tmp_path, monkeypatch):
         assert "GPT" in json.load(f)
 
 
+def test_resource_path_prefers_app_resources_over_frameworks(tmp_path, monkeypatch):
+    app = tmp_path / "Qwen Dictation.app"
+    resources = app / "Contents" / "Resources" / "templates"
+    frameworks = app / "Contents" / "Frameworks"
+    macos = app / "Contents" / "MacOS"
+    resources.mkdir(parents=True)
+    frameworks.mkdir(parents=True)
+    macos.mkdir(parents=True)
+    (resources / "dashboard.html").write_text("ok", encoding="utf-8")
+
+    monkeypatch.setattr(app_paths.sys, "frozen", True, raising=False)
+    monkeypatch.setattr(app_paths.sys, "_MEIPASS", str(frameworks), raising=False)
+    monkeypatch.setattr(app_paths.sys, "executable", str(macos / "Qwen Dictation"))
+
+    assert app_paths.resource_path("templates", "dashboard.html") == str(resources / "dashboard.html")
+
 def test_dashboard_serves_bundled_brand_assets():
     client = dashboard.flask_app.test_client()
     assert client.get("/assets/logo-mark.svg").status_code == 200
@@ -41,6 +57,27 @@ def test_dashboard_serves_bundled_brand_assets():
 def test_dashboard_assets_route_blocks_parent_directory_escape():
     client = dashboard.flask_app.test_client()
     assert client.get("/assets/../dictionary.json").status_code == 404
+
+
+def test_dashboard_debug_returns_empty_without_recorder(monkeypatch):
+    from types import SimpleNamespace
+    monkeypatch.setattr(dashboard, "app_instance", SimpleNamespace())
+
+    resp = dashboard.flask_app.test_client().get("/api/debug")
+
+    assert resp.status_code == 200
+    assert resp.get_json() == {"events": []}
+
+
+def test_dashboard_debug_returns_recorder_events(monkeypatch):
+    from types import SimpleNamespace
+    recorder = SimpleNamespace(debug_events=[{"reason": "below_gate", "peak": 10}])
+    monkeypatch.setattr(dashboard, "app_instance", SimpleNamespace(recorder=recorder))
+
+    resp = dashboard.flask_app.test_client().get("/api/debug")
+
+    assert resp.status_code == 200
+    assert resp.get_json() == {"events": [{"reason": "below_gate", "peak": 10}]}
 
 
 def test_dashboard_history_correction_candidate_flow(tmp_path, monkeypatch):

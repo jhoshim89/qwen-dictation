@@ -16,14 +16,43 @@ def is_frozen():
     return getattr(sys, "frozen", False)
 
 
+def _resource_bases():
+    """Return candidate read-only resource roots in priority order."""
+    bases = []
+
+    if is_frozen():
+        # PyInstaller macOS .app can report sys._MEIPASS as Contents/Frameworks
+        # while --add-data files are placed in Contents/Resources.
+        exe = getattr(sys, "executable", "")
+        if exe:
+            contents_dir = os.path.dirname(os.path.dirname(os.path.abspath(exe)))
+            bases.append(os.path.join(contents_dir, "Resources"))
+
+    meipass = getattr(sys, "_MEIPASS", None)
+    if meipass:
+        bases.append(meipass)
+
+    bases.append(_THIS_DIR)
+
+    deduped = []
+    for base in bases:
+        if base and base not in deduped:
+            deduped.append(base)
+    return deduped
+
+
 def resource_path(*parts):
     """읽기전용 리소스(templates 등)의 절대경로.
 
     PyInstaller 번들에서는 sys._MEIPASS 아래에서 찾고,
     개발 중에는 이 모듈이 있는 디렉터리 기준으로 찾는다.
     """
-    base = getattr(sys, "_MEIPASS", None) or _THIS_DIR
-    return os.path.join(base, *parts)
+    rel = os.path.join(*parts)
+    for base in _resource_bases():
+        candidate = os.path.join(base, rel)
+        if os.path.exists(candidate):
+            return candidate
+    return os.path.join(_resource_bases()[0], rel)
 
 
 def user_data_dir():

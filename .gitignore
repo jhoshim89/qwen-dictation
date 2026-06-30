@@ -5,9 +5,11 @@ __pycache__/
 .DS_Store
 build/
 dist/
+dist.noindex/
 *.spec
 app_main.py
 .claude/
+.gjc/
 
 .superpowers/
 docs/superpowers/

@@ -16,6 +16,7 @@ def test_token_from_key_known():
     assert wd.token_from_key(keyboard.Key.alt_r) == "alt_r"
     assert wd.token_from_key(keyboard.Key.cmd_r) == "cmd_r"
     assert wd.token_from_key(keyboard.Key.space) == "space"
+    assert wd.token_from_key(keyboard.KeyCode(vk=76)) == "enter"
     assert wd.token_from_key(keyboard.KeyCode(char="K")) == "k"
     assert wd.token_from_key(wd.HOTKEY_FN) == wd.HOTKEY_FN
 
