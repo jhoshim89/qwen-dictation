@@ -124,6 +124,7 @@ BIAS_MIN_WINDOW_SEC = 1.0
 # pynput/Quartz 합성 키 이벤트가 type_diff 반환 뒤 늦게 도착할 수 있다. 이 시간 안에
 # 들어온 키는 사용자의 수동 편집으로 보지 않아 세션이 중간에 끊기는 것을 막는다.
 SELF_TYPE_GUARD_SETTLE_SEC = 1.25
+COLD_START_NOTICE_SEC = 1.2
 MAC_BACKSPACE_KEYCODE = 51
 NOISE_FILLER_TEXTS = {"아", "어", "응", "음", "네", "예", "그", "그렇죠", "그쵸", "그렇지"}
 
@@ -731,6 +732,7 @@ class Recorder:
         self.window_start = 0
         self.committed_text = ""
         self.last_typed = ""
+        self.cold_start_until = 0.0
         self.finalize_on_stop = True
         # 사용자가 받아쓰기 중 직접 고친 뒤 "지금 입력창이 새 기준"으로 다시 잡으라는
         # 요청 플래그. 리스너 스레드가 세우고 스트리밍 스레드가 틱 시작에서 소비한다.
@@ -773,6 +775,7 @@ class Recorder:
         self.append_only_until_stop = bool(append_only_live and live_typing)
         self.deferred_text = ""
         self.rebaseline_pending = False
+        self.cold_start_until = time.time() + COLD_START_NOTICE_SEC
         self._wake.clear()
         # 마이크는 이미 계속 열려 있으니 여는 지연이 없다. 직전 0.5초(preroll)를 앞에
         # 붙여, 키 누르자마자/살짝 먼저 말해도 첫 단어가 잡히게 한다.
@@ -1329,6 +1332,12 @@ class StatusBarApp(rumps.App):
         tr = getattr(rec, "transcriber", None) if rec else None
         return bool(tr and getattr(tr, "loading", False))
 
+    def _cold_start_notice(self):
+        """첫 받아쓰기 창이 안정화되는 짧은 구간인가(HUD '콜드 스타트' 표시 조건)."""
+        rec = getattr(self, "recorder", None)
+        until = getattr(rec, "cold_start_until", 0.0) if rec else 0.0
+        return bool(until and time.time() < until and not getattr(rec, "last_typed", ""))
+
     @staticmethod
     def _loading_pulse():
         """로딩 막대를 숨쉬듯 움직일 0~1 삼각파. math import 없이 시간만으로 만든다."""
@@ -1364,9 +1373,10 @@ class StatusBarApp(rumps.App):
                 self.elapsed_time = elapsed
                 minutes, seconds = divmod(elapsed, 60)
                 self.title = f"({minutes:02d}:{seconds:02d}) 🔴"
-                ov.update(audio_level.read_level(), elapsed)
+                cold_start = self._cold_start_notice()
+                ov.update(self._loading_pulse() if cold_start else audio_level.read_level(), elapsed)
                 ov.set_processing(False)
-                ov.show_status("듣는 중")
+                ov.show_status("콜드 스타트…" if cold_start else "듣는 중")
                 if mode == "pinned":
                     origin = ov.current_origin()
                     if origin and (origin[0], origin[1]) != (self.hud_pin_x, self.hud_pin_y):

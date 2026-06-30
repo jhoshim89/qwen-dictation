@@ -273,6 +273,20 @@ def test_model_loading_false_without_recorder():
     assert wd.StatusBarApp._model_loading(app) is False
 
 
+def test_cold_start_notice_reflects_recorder_window():
+    import time
+    import types
+    wd = _load()
+    rec = types.SimpleNamespace(cold_start_until=time.time() + 10.0, last_typed="")
+    app = types.SimpleNamespace(recorder=rec)
+    assert wd.StatusBarApp._cold_start_notice(app) is True
+    rec.last_typed = "이미 입력됨"
+    assert wd.StatusBarApp._cold_start_notice(app) is False
+    rec.last_typed = ""
+    rec.cold_start_until = time.time() - 1.0
+    assert wd.StatusBarApp._cold_start_notice(app) is False
+
+
 def test_loading_pulse_in_unit_range():
     wd = _load()
     for _ in range(20):

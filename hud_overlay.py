@@ -27,12 +27,12 @@ BAR_CORNER_RADIUS = PANEL_HEIGHT / 2.0
 
 # 라벨(상태 글자) 배치. 측정·그리기·알약 폭 계산이 같은 값을 공유해야 긴 글자가 잘리지
 # 않는다("모델 불러오는 중…" 처럼 기본 폭을 넘는 라벨은 알약을 늘려서 보여준다).
-PILL_SIDE_PAD = 12.0
-METER_BAR_WIDTH = 5.0
-METER_BAR_GAP = 4.0
+PILL_SIDE_PAD = 14.0
+METER_BAR_WIDTH = 4.0
+METER_BAR_GAP = 3.0
 METER_WIDTH = (METER_BAR_WIDTH * 3.0) + (METER_BAR_GAP * 2.0)
-METER_LABEL_GAP = 10.0
-PILL_CONTENT_OPTICAL_OFFSET_X = -2.0
+METER_LABEL_GAP = 9.0
+PILL_CONTENT_OPTICAL_OFFSET_X = 0.0
 LABEL_BASELINE_Y = 11.0
 LABEL_FONT_SIZE = 13.0
 LABEL_FONT_WEIGHT = 0.42
@@ -47,8 +47,8 @@ def jelly_bar_heights(level):
     """
     level = min(1.0, max(0.0, float(level)))
     visual_level = level ** 0.5
-    side = 4.0 + (12.0 * visual_level)
-    center = 7.0 + (26.0 * visual_level)
+    side = 4.0 + (8.0 * visual_level)
+    center = 8.0 + (16.0 * visual_level)
     return side, center, side
 
 

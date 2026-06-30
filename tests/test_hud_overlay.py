@@ -82,11 +82,11 @@ def test_show_status_keeps_default_width_for_short_label():
 
 def test_show_status_widens_pill_for_long_label():
     overlay = _overlay(width=hud_overlay.PANEL_WIDTH)
-    overlay._measure_label_width = lambda text: 120.0  # 24+23+10+120=177 로 늘어남
+    overlay._measure_label_width = lambda text: 120.0  # 28+18+9+120=175 로 늘어남
     overlay.show_status("모델 불러오는 중…")
     assert overlay._view.labels == ["모델 불러오는 중…"]
     assert overlay._resizes == [
-        (177.0, hud_overlay.PANEL_HEIGHT, hud_overlay.BAR_CORNER_RADIUS)
+        (175.0, hud_overlay.PANEL_HEIGHT, hud_overlay.BAR_CORNER_RADIUS)
     ]
     assert overlay._visible is True
 
@@ -107,8 +107,8 @@ def test_pill_width_for_label_keeps_minimum_for_short_text():
 
 
 def test_pill_width_for_label_grows_for_long_text():
-    # 24(양옆 여백) + 23(미터) + 10(간격) + 120(글자) = 177
-    assert hud_overlay.pill_width_for_label(120.0) == 177.0
+    # 28(양옆 여백) + 18(미터) + 9(간격) + 120(글자) = 175
+    assert hud_overlay.pill_width_for_label(120.0) == 175.0
 
 
 def test_pill_layout_applies_short_label_optical_centering():
@@ -122,7 +122,7 @@ def test_pill_layout_applies_short_label_optical_centering():
 
 
 def test_pill_layout_keeps_long_label_inside_side_padding():
-    meter_x, _ = hud_overlay.pill_layout_for_label(177.0, 120.0)
+    meter_x, _ = hud_overlay.pill_layout_for_label(175.0, 120.0)
     assert meter_x == hud_overlay.PILL_SIDE_PAD
 
 
@@ -149,9 +149,9 @@ def test_recording_overlay_is_lifted_bottom_center_status_pill():
 def test_jelly_bar_heights_expand_with_level_clamp_and_stay_symmetric():
     # Resting bars are short; speaking grows them several-fold so the meter
     # visibly reacts to the voice.
-    assert hud_overlay.jelly_bar_heights(-1.0) == (4.0, 7.0, 4.0)
-    assert hud_overlay.jelly_bar_heights(0.25) == (10.0, 20.0, 10.0)
-    assert hud_overlay.jelly_bar_heights(2.0) == (16.0, 33.0, 16.0)
+    assert hud_overlay.jelly_bar_heights(-1.0) == (4.0, 8.0, 4.0)
+    assert hud_overlay.jelly_bar_heights(0.25) == (8.0, 16.0, 8.0)
+    assert hud_overlay.jelly_bar_heights(2.0) == (12.0, 24.0, 12.0)
 
 
 def test_normalize_hud_mode_accepts_known_and_falls_back():
