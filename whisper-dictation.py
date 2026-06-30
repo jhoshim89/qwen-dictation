@@ -304,6 +304,50 @@ def reduce_asr_punctuation(text):
     return re.sub(r"\s+", " ", without_soft).strip()
 
 
+def collapse_repeated_hangul_syllables(text):
+    """Collapse cold-start ASR artifacts like '방방법법 찾찾아아봐봐'.
+
+    Real Korean rarely has many adjacent identical syllable pairs across one
+    phrase. Qwen can produce that pattern on the first window after idle, so only
+    collapse when the whole text is dominated by repeated Hangul runs.
+    """
+    raw = text or ""
+    hangul_count = 0
+    duplicate_runs = 0
+    duplicated_chars = 0
+    i = 0
+    while i < len(raw):
+        ch = raw[i]
+        if not ("\uac00" <= ch <= "\ud7a3"):
+            i += 1
+            continue
+        hangul_count += 1
+        run_len = 1
+        j = i + 1
+        while j < len(raw) and raw[j] == ch:
+            hangul_count += 1
+            run_len += 1
+            j += 1
+        if run_len >= 2:
+            duplicate_runs += 1
+            duplicated_chars += run_len - 1
+        i = j
+
+    if hangul_count == 0 or duplicate_runs < 3 or (duplicated_chars / hangul_count) < 0.25:
+        return text
+
+    collapsed = []
+    i = 0
+    while i < len(raw):
+        ch = raw[i]
+        collapsed.append(ch)
+        if "\uac00" <= ch <= "\ud7a3":
+            while i + 1 < len(raw) and raw[i + 1] == ch:
+                i += 1
+        i += 1
+    return "".join(collapsed)
+
+
 def looks_like_pause_noise_filler(text):
     """쉼 끝에서 주변 잡음 때문에 자주 생기는 짧은 단독 응답인지."""
     tokens = [t for t in re.split(r"[\s,.;!?·…。！？]+", (text or "").strip()) if t]
@@ -944,7 +988,9 @@ class Recorder:
             self._debug("empty_hypo", window_ms=round(len(window) / 2.0 / 16.0))
         if not self.recording and not allow_stopped:
             return
-        hypo = reduce_asr_punctuation(collapse_repeated_sentences(hypo))
+        hypo = collapse_repeated_hangul_syllables(
+            reduce_asr_punctuation(collapse_repeated_sentences(hypo))
+        )
         if looks_like_repetition_hallucination(hypo):
             hypo = ""
         if looks_like_punctuation_only(hypo):

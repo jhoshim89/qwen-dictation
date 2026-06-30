@@ -228,6 +228,30 @@ def test_repeated_sentence_hallucination_collapses_to_one_sentence():
     assert wd.collapse_repeated_sentences(text) == "검사 코드는 어떻게 연결하는 게 좋을까?"
 
 
+def test_repeated_hangul_syllable_artifact_collapses():
+    wd = _load()
+    text = "싱싱킹킹 폴폴스스로로 하하는는 방방법법 찾찾아아봐봐"
+    assert wd.collapse_repeated_hangul_syllables(text) == "싱킹 폴스로 하는 방법 찾아봐"
+
+
+def test_repeated_hangul_syllable_keeps_small_normal_repetition():
+    wd = _load()
+    assert wd.collapse_repeated_hangul_syllables("아아 그건 아니야") == "아아 그건 아니야"
+    assert wd.collapse_repeated_hangul_syllables("하하 그랬어") == "하하 그랬어"
+
+
+def test_stream_tick_collapses_repeated_hangul_syllable_artifact(monkeypatch):
+    wd = _load()
+    rec = _make_recorder(wd, monkeypatch, ["방방법법 찾찾아아봐봐", "방방법법 찾찾아아봐봐"])
+    loud = (np.random.RandomState(0).randn(16000) * 6000).astype(np.int16).tobytes()
+    with rec.audio_lock:
+        rec.audio_frames = [loud]
+    wd.Recorder._stream_tick(rec, language="Korean")
+    assert rec.last_typed == ""
+    wd.Recorder._stream_tick(rec, language="Korean")
+    assert rec.last_typed == "방법 찾아봐"
+
+
 def test_stream_tick_does_not_refresh_type_guard_when_text_is_unchanged(monkeypatch):
     wd = _load()
     rec = _make_recorder(wd, monkeypatch, ["안녕", "안녕"])
