@@ -447,6 +447,8 @@ def test_pause_noise_filler_filter_rejects_short_response_only():
     assert wd.looks_like_pause_noise_filler("그렇죠.") is True
     assert wd.looks_like_pause_noise_filler("그렇죠.그.그렇죠.") is True
     assert wd.looks_like_pause_noise_filler("네 알겠습니다") is False
+    assert wd.looks_like_pause_noise_filler("아,") is True
+    assert wd.looks_like_pause_noise_filler("네, 아.") is True
 
 
 def test_stream_tick_removes_short_filler_when_stopping_without_pause():
@@ -476,7 +478,7 @@ def test_stream_tick_removes_short_filler_during_live_typing():
     assert list(rec.debug_events)[-1]["reason"] == "filler_filtered"
 
 
-def test_stream_tick_allows_affirmative_only_when_stopping():
+def test_stream_tick_filters_affirmative_only_when_stopping():
     wd = _load()
     rec = _make_recorder(wd, None, ["네"])
     rec.app = type("App", (), {"min_volume": 35, "asr_engine": "qwen_original"})()
@@ -485,8 +487,8 @@ def test_stream_tick_allows_affirmative_only_when_stopping():
     with rec.audio_lock:
         rec.audio_frames = [loud]
     wd.Recorder._stream_tick(rec, language="Korean", allow_stopped=True)
-    assert rec.last_typed == "네"
-    assert rec.typed_log == ["네"]
+    assert rec.last_typed == ""
+    assert rec.typed_log == []
 
 
 def test_stream_tick_empty_final_does_not_clear_sentence():
@@ -512,6 +514,12 @@ def test_punctuation_only_filter_keeps_contextual_punctuation():
     assert wd.looks_like_punctuation_only("괜찮나요?") is False
 
 
+def test_reduce_asr_punctuation_removes_soft_punctuation():
+    wd = _load()
+    assert wd.reduce_asr_punctuation("구두점이, 너무 많이. 찍히고.") == "구두점이 너무 많이 찍히고"
+    assert wd.reduce_asr_punctuation("3.5 밀리") == "3.5 밀리"
+
+
 def test_stream_tick_removes_short_filler_at_pause():
     wd = _load()
     rec = _make_recorder(wd, None, ["어."])
@@ -524,6 +532,18 @@ def test_stream_tick_removes_short_filler_at_pause():
     assert rec.last_typed == ""
     assert rec.committed_text == ""
     assert rec.typed_log == [""]
+
+
+def test_stream_tick_removes_ah_filler_with_punctuation():
+    wd = _load()
+    rec = _make_recorder(wd, None, ["아,"])
+    loud = (np.random.RandomState(0).randn(16000) * 6000).astype(np.int16).tobytes()
+    quiet = (np.zeros(16000, dtype=np.int16)).tobytes()
+    with rec.audio_lock:
+        rec.audio_frames = [loud, quiet]
+    wd.Recorder._stream_tick(rec, language="Korean")
+    assert rec.last_typed == ""
+    assert rec.typed_log == []
 
 
 def test_stream_tick_removes_punctuation_only_at_pause():

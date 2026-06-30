@@ -125,7 +125,7 @@ BIAS_MIN_WINDOW_SEC = 1.0
 # 들어온 키는 사용자의 수동 편집으로 보지 않아 세션이 중간에 끊기는 것을 막는다.
 SELF_TYPE_GUARD_SETTLE_SEC = 1.25
 MAC_BACKSPACE_KEYCODE = 51
-NOISE_FILLER_TEXTS = {"어", "응", "음", "네", "예", "그", "그렇죠", "그쵸", "그렇지"}
+NOISE_FILLER_TEXTS = {"아", "어", "응", "음", "네", "예", "그", "그렇죠", "그쵸", "그렇지"}
 
 
 def audio_peak(audio_path):
@@ -295,26 +295,35 @@ def collapse_repeated_sentences(text):
     return normalized[0] if len(set(normalized)) == 1 else text
 
 
+def reduce_asr_punctuation(text):
+    """Drop ASR-invented soft punctuation while preserving numeric decimals."""
+    raw = text or ""
+    if looks_like_punctuation_only(raw):
+        return ""
+    without_soft = re.sub(r"(?<!\d)[,.;:·…。]+(?!\d)", "", raw)
+    return re.sub(r"\s+", " ", without_soft).strip()
+
+
 def looks_like_pause_noise_filler(text):
     """쉼 끝에서 주변 잡음 때문에 자주 생기는 짧은 단독 응답인지."""
-    tokens = [t for t in re.split(r"[\s,.;!?·]+", (text or "").strip()) if t]
+    tokens = [t for t in re.split(r"[\s,.;!?·…。！？]+", (text or "").strip()) if t]
     return bool(tokens) and all(t in NOISE_FILLER_TEXTS for t in tokens)
 
 
 def looks_like_affirmative_only(text):
-    tokens = [t for t in re.split(r"[\s,.;!?·]+", (text or "").strip()) if t]
+    tokens = [t for t in re.split(r"[\s,.;!?·…。！？]+", (text or "").strip()) if t]
     return tokens in (["네"], ["예"])
 
 
 def looks_like_punctuation_only(text):
     """내용 없이 구두점만 생성된 환각인지. 실제 문장에 붙은 구두점은 유지한다."""
-    compact = re.sub(r"[\s,.;!?·]+", "", text or "")
+    compact = re.sub(r"[\s,.;!?·…。！？]+", "", text or "")
     return bool(text and not compact)
 
 
 def looks_like_clearable_noise_text(text):
     """이미 친 글자 중 안전하게 지워도 되는 단독 잡음 후보."""
-    tokens = [t for t in re.split(r"[\s,.;!?·]+", (text or "").strip()) if t]
+    tokens = [t for t in re.split(r"[\s,.;!?·…。！？]+", (text or "").strip()) if t]
     return (
         looks_like_repetition_hallucination(text)
         or (len(tokens) >= 2 and len(set(tokens)) == 1)
@@ -935,7 +944,7 @@ class Recorder:
             self._debug("empty_hypo", window_ms=round(len(window) / 2.0 / 16.0))
         if not self.recording and not allow_stopped:
             return
-        hypo = collapse_repeated_sentences(hypo)
+        hypo = reduce_asr_punctuation(collapse_repeated_sentences(hypo))
         if looks_like_repetition_hallucination(hypo):
             hypo = ""
         if looks_like_punctuation_only(hypo):
@@ -946,7 +955,6 @@ class Recorder:
         if (
             (self.recording or paused or finalizing)
             and looks_like_pause_noise_filler(hypo)
-            and not (finalizing and looks_like_affirmative_only(hypo))
         ):
             self._debug("filler_filtered", text_len=len(str(hypo or "")), finalizing=finalizing)
             hypo = ""
