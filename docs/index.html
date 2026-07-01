@@ -40,10 +40,7 @@
       min-height: 88vh;
       display: grid;
       grid-template-rows: auto 1fr;
-      background:
-        linear-gradient(90deg, rgba(247,241,233,.97) 0%, rgba(247,241,233,.92) 45%, rgba(247,241,233,.18) 72%, rgba(247,241,233,0) 100%),
-        url("hud-current-preview.svg?v=20260701-contrast") right 4% center / min(46vw, 650px) auto no-repeat,
-        var(--paper);
+      background: var(--paper);
       border-bottom: 1px solid var(--line);
     }
     nav {
@@ -72,6 +69,8 @@
       width: min(1120px, calc(100% - 40px));
       margin: 0 auto;
       display: grid;
+      grid-template-columns: minmax(0, 0.9fr) minmax(360px, 0.95fr);
+      gap: clamp(28px, 5vw, 72px);
       align-items: center;
       padding: 56px 0 84px;
     }
@@ -123,6 +122,12 @@
       margin-top: 14px;
       font-size: 14px;
       color: var(--muted);
+    }
+    .hero-preview {
+      width: 100%;
+      border: 1px solid var(--line);
+      border-radius: 8px;
+      box-shadow: 0 18px 45px rgba(36,33,42,.08);
     }
     main section {
       padding: 72px clamp(20px, 5vw, 72px);
@@ -231,12 +236,13 @@
     @media (max-width: 860px) {
       .hero {
         min-height: auto;
-        background:
-          linear-gradient(180deg, rgba(247,241,233,.98) 0%, rgba(247,241,233,.88) 55%, rgba(247,241,233,.08) 100%),
-          url("hud-current-preview.svg?v=20260701-contrast") center bottom 28px / min(92vw, 560px) auto no-repeat,
-          var(--paper);
+        background: var(--paper);
       }
-      .hero-inner { padding-bottom: 260px; }
+      .hero-inner {
+        grid-template-columns: 1fr;
+        padding-bottom: 48px;
+      }
+      .hero-preview { order: -1; }
       .split, .features { grid-template-columns: 1fr; }
       nav { align-items: flex-start; }
       .navlinks { gap: 12px; }
@@ -264,6 +270,7 @@
         </div>
         <p class="star-note">Developer MVP. A GitHub star helps other local-ASR Mac users find it.</p>
       </div>
+      <img class="hero-preview" src="social-preview.png?v=20260701-imagen" alt="Qwen Dictation social preview">
     </div>
   </header>
   <main>
