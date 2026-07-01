@@ -31,7 +31,7 @@ def test_docs_landing_uses_warm_jelly_tokens():
     assert "#c3215a" not in html
     assert "#811d4a" not in html
     assert "pretendard" in html
-    assert 'class="hero-preview" src="social-preview.png?v=20260701-imagen"' in html
+    assert 'class="hero-preview" src="social-preview.png?v=20260701-single-icons"' in html
 
 
 def test_hud_text_pill_exception_is_documented():
