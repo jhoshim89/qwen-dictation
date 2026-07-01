@@ -2,31 +2,31 @@
   <defs>
     <style>
       .ui{font-family:-apple-system,BlinkMacSystemFont,"Pretendard","Segoe UI",sans-serif}
-      .body{font:500 20px -apple-system,BlinkMacSystemFont,"Pretendard","Segoe UI",sans-serif;fill:#4b4243}
-      .muted{font:500 15px -apple-system,BlinkMacSystemFont,"Pretendard","Segoe UI",sans-serif;fill:#9a8e8e}
-      .hud{font:650 13px -apple-system,BlinkMacSystemFont,"Pretendard","Segoe UI",sans-serif;fill:rgba(255,250,248,.94)}
+      .body{font:650 20px -apple-system,BlinkMacSystemFont,"Pretendard","Segoe UI",sans-serif;fill:#4b3037}
+      .muted{font:650 15px -apple-system,BlinkMacSystemFont,"Pretendard","Segoe UI",sans-serif;fill:#75656a}
+      .hud{font:750 13px -apple-system,BlinkMacSystemFont,"Pretendard","Segoe UI",sans-serif;fill:#fffaf8}
     </style>
   </defs>
 
-  <rect width="960" height="540" fill="#f7f3ec"/>
-  <rect x="128" y="78" width="704" height="376" rx="18" fill="#fffdfb" stroke="#e2d9d1"/>
-  <circle cx="158" cy="108" r="6" fill="#ff6b65"/>
-  <circle cx="180" cy="108" r="6" fill="#ffbe4b"/>
-  <circle cx="202" cy="108" r="6" fill="#29c85f"/>
+  <rect width="960" height="540" fill="#f7f1e9"/>
+  <rect x="128" y="78" width="704" height="376" rx="18" fill="#fffdfb" stroke="#d8c7bf" stroke-width="2"/>
+  <circle cx="158" cy="108" r="6" fill="#ff7d78"/>
+  <circle cx="180" cy="108" r="6" fill="#ffc45a"/>
+  <circle cx="202" cy="108" r="6" fill="#57d57a"/>
 
-  <rect x="184" y="170" width="592" height="170" rx="18" fill="#ffffff" stroke="#ded6cf"/>
+  <rect x="184" y="170" width="592" height="170" rx="18" fill="#ffffff" stroke="#d9c9c2" stroke-width="2"/>
   <text x="222" y="224" class="body">메시지를 입력하세요</text>
-  <rect x="222" y="255" width="315" height="13" rx="6.5" fill="#eee8e2"/>
-  <rect x="222" y="289" width="416" height="13" rx="6.5" fill="#eee8e2"/>
-  <rect x="222" y="323" width="250" height="13" rx="6.5" fill="#eee8e2"/>
+  <rect x="222" y="255" width="315" height="13" rx="6.5" fill="#e7dcd6"/>
+  <rect x="222" y="289" width="416" height="13" rx="6.5" fill="#e7dcd6"/>
+  <rect x="222" y="323" width="250" height="13" rx="6.5" fill="#e7dcd6"/>
 
   <text x="184" y="426" class="muted">현재 코드 기준: 104 x 44, alpha 0.62, 하단 offset 24</text>
 
   <g transform="translate(428 362)">
-    <rect width="104" height="44" rx="22" fill="#5a5658" fill-opacity=".62"/>
-    <rect x="14" y="18" width="4" height="8" rx="2" fill="#ff6f85" opacity=".96"/>
-    <rect x="21" y="15" width="4" height="14" rx="2" fill="#ff6f85" opacity=".96"/>
-    <rect x="28" y="18" width="4" height="8" rx="2" fill="#ff6f85" opacity=".96"/>
+    <rect width="104" height="44" rx="22" fill="#5a5658" fill-opacity=".78"/>
+    <rect x="14" y="18" width="4" height="8" rx="2" fill="#ff6f85"/>
+    <rect x="21" y="15" width="4" height="14" rx="2" fill="#ff6f85"/>
+    <rect x="28" y="18" width="4" height="8" rx="2" fill="#ff6f85"/>
     <text x="41" y="28" class="hud">듣는 중</text>
   </g>
 </svg>

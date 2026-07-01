@@ -42,11 +42,11 @@ def test_hud_text_pill_exception_is_documented():
     assert "Release readiness diagnosis matrix" in readme
 
 
-def test_docs_hud_preview_matches_current_pill_constants():
+def test_docs_hud_preview_keeps_current_pill_label_and_legibility():
     svg = (ROOT / "docs" / "hud-current-preview.svg").read_text(encoding="utf-8")
 
     assert "현재 코드 기준: 104 x 44, alpha 0.62, 하단 offset 24" in svg
     assert 'width="104" height="44" rx="22"' in svg
-    assert 'fill="#5a5658" fill-opacity=".62"' in svg
+    assert 'fill="#5a5658" fill-opacity=".78"' in svg
     assert "filter=" not in svg
     assert 'transform="translate(428 362)"' in svg
