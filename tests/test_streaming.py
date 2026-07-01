@@ -934,11 +934,38 @@ def test_start_seeds_audio_frames_from_preroll(monkeypatch):
     wd = _load()
     rec = _kbd_recorder(wd)
     rec._preroll.extend([b"aa", b"bb"])
+    cancelled = []
+    rec._idle_capture_timer = type("Timer", (), {"cancel": lambda self: cancelled.append(True)})()
     monkeypatch.setattr(rec, "start_capture", lambda: None)
     monkeypatch.setattr(rec, "_stream_loop", lambda *a, **k: None)
     rec.start("ko")
     assert rec.audio_frames == [b"aa", b"bb"]  # 직전 preroll 이 앞에 깔림
+    assert cancelled == [True]
+    assert rec._idle_capture_timer is None
     rec.recording = False
+
+
+def test_stop_releases_idle_capture_after_delay(monkeypatch):
+    wd = _load()
+    rec = _kbd_recorder(wd)
+    rec._capture_on = True
+    rec._preroll.extend([b"old"])
+    timers = []
+
+    class FakeTimer:
+        def __init__(self, delay, callback):
+            self.delay = delay
+            self.callback = callback
+            self.daemon = False
+        def cancel(self): pass
+        def start(self): timers.append(self)
+
+    monkeypatch.setattr(wd.threading, "Timer", FakeTimer)
+    rec.stop()
+    assert timers[0].delay == wd.IDLE_CAPTURE_RELEASE_SEC
+    timers[0].callback()
+    assert rec._capture_on is False
+    assert list(rec._preroll) == []
 
 
 def test_start_capture_restarts_dead_capture_thread(monkeypatch):
@@ -1125,6 +1152,32 @@ def test_live_pause_commit_does_not_backspace_rewrite_visible_text():
     assert rec.window_start == 2
 
 
+def test_live_pause_commit_separates_next_spoken_span():
+    wd = _load()
+    import numpy as np
+
+    rec = _make_recorder(wd, None, ["말 멈췄다가", "다시하면", "다시하면"])
+    kb = _FakeKeyboard()
+    inserted = []
+    rec._type = lambda old, new, append_only=False: wd.type_diff(
+        old, new, kb, insert=inserted.append, append_only=append_only
+    )
+    loud = (np.random.RandomState(0).randn(16000) * 6000).astype(np.int16).tobytes()
+    quiet = np.zeros(16000, dtype=np.int16).tobytes()
+    with rec.audio_lock:
+        rec.audio_frames = [loud, quiet]
+    wd.Recorder._stream_tick(rec, language="Korean")
+    assert rec.committed_text == "말 멈췄다가"
+
+    with rec.audio_lock:
+        rec.audio_frames = [loud, quiet, loud]
+    wd.Recorder._stream_tick(rec, language="Korean")
+    wd.Recorder._stream_tick(rec, language="Korean")
+
+    assert rec.last_typed == "말 멈췄다가 다시하면"
+    assert inserted == ["말 멈췄다가", " 다시하면"]
+
+
 # --- 확정 시점 context 편향(_biased_commit_hypo) ---
 
 def _bias_recorder(wd, biased_text):
@@ -1145,6 +1198,16 @@ def test_biased_commit_accepts_when_guard_passes():
         rec, b"x", "Korean", unbiased="거미 타고 부시해", window_secs=2.0
     )
     assert out == "커밋하고 푸시해"   # 가드 통과 → 편향본 채택
+
+
+def test_biased_commit_collapses_repeated_hangul_artifact():
+    wd = _load()
+    rec = _bias_recorder(wd, "플플러러스스를를 어어떻떻게게 만만들들지지")
+    rec.session_vocab = ["플러스"]
+    out = wd.Recorder._biased_commit_hypo(
+        rec, b"x", "Korean", unbiased="플러스를 어떻게 만들지", window_secs=2.0
+    )
+    assert out == "플러스를 어떻게 만들지"
 
 
 def test_biased_commit_rejects_leak():

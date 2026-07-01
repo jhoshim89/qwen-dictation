@@ -93,8 +93,8 @@ NEMOTRON_MLX_MODEL = asr_engines.NEMOTRON_MLX_MODEL_ID
 SILENCE_PEAK_THRESHOLD = 1000.0
 SPEECH_START_PEAK_THRESHOLD = 3500.0
 DEFAULT_MIN_VOLUME = 35
-# 마이크 한 번 읽을 때 샘플 수(~64ms @16kHz). 마이크는 앱 시작부터 계속 열어두고
-# 읽어, 키 누르는 순간 바로 잡히게 한다(누를 때마다 새로 여는 ~1초 지연 제거).
+# 마이크 한 번 읽을 때 샘플 수(~64ms @16kHz). 녹음 중과 정지 직후 짧은 유예 동안만
+# 읽어, 대기 중 macOS 마이크 표시를 오래 띄우지 않는다.
 FRAMES_PER_BUFFER = 1024
 # 키 누르기 직전 이만큼을 미리 들고 있다가 받아쓰기에 포함한다. 토글을 누른 직후
 # 바로 말하는 습관에서는 첫 음절이 버튼 타이밍보다 살짝 앞서거나, 시작 직후 작게
@@ -124,7 +124,7 @@ BIAS_MIN_WINDOW_SEC = 1.0
 # pynput/Quartz 합성 키 이벤트가 type_diff 반환 뒤 늦게 도착할 수 있다. 이 시간 안에
 # 들어온 키는 사용자의 수동 편집으로 보지 않아 세션이 중간에 끊기는 것을 막는다.
 SELF_TYPE_GUARD_SETTLE_SEC = 1.25
-COLD_START_NOTICE_SEC = 1.2
+IDLE_CAPTURE_RELEASE_SEC = 5.0
 MAC_BACKSPACE_KEYCODE = 51
 NOISE_FILLER_TEXTS = {"아", "어", "응", "음", "네", "예", "그", "그렇죠", "그쵸", "그렇지"}
 
@@ -719,9 +719,10 @@ class Recorder:
         self.audio_frames = []
         self.audio_lock = threading.Lock()
         self.stream_thread = None
-        # 항상 열려 도는 마이크 캡처 스레드와, 그 캡처가 쓰는 PortAudio 스트림.
+        # 녹음 뒤 잠깐만 살아 있는 마이크 캡처 스레드와 PortAudio 스트림.
         self._capture_on = False
         self._capture_thread = None
+        self._idle_capture_timer = None
         self._pa = None
         self._stream = None
         self._open_device = None
@@ -732,7 +733,6 @@ class Recorder:
         self.window_start = 0
         self.committed_text = ""
         self.last_typed = ""
-        self.cold_start_until = 0.0
         self.finalize_on_stop = True
         # 사용자가 받아쓰기 중 직접 고친 뒤 "지금 입력창이 새 기준"으로 다시 잡으라는
         # 요청 플래그. 리스너 스레드가 세우고 스트리밍 스레드가 틱 시작에서 소비한다.
@@ -775,10 +775,12 @@ class Recorder:
         self.append_only_until_stop = bool(append_only_live and live_typing)
         self.deferred_text = ""
         self.rebaseline_pending = False
-        self.cold_start_until = time.time() + COLD_START_NOTICE_SEC
         self._wake.clear()
-        # 마이크는 이미 계속 열려 있으니 여는 지연이 없다. 직전 0.5초(preroll)를 앞에
-        # 붙여, 키 누르자마자/살짝 먼저 말해도 첫 단어가 잡히게 한다.
+        if self._idle_capture_timer is not None:
+            self._idle_capture_timer.cancel()
+            self._idle_capture_timer = None
+        # 정지 직후 유예 시간 안에는 preroll 을 붙여 바로 이어 말할 때 첫 단어가
+        # 잘리지 않게 한다. 유예 후엔 마이크를 닫고 preroll 도 비운다.
         with self.audio_lock:
             self.audio_frames = list(self._preroll)
             preroll_frames = len(self.audio_frames)
@@ -796,21 +798,29 @@ class Recorder:
         self.stream_thread.start()
 
     def stop(self, finalize=True, send_enter=False):
-        # recording=False 면 캡처 스레드는 계속 돌되 audio_frames 에 더는 안 쌓고
-        # preroll 만 갱신한다(마이크는 계속 열린 채 다음 시작을 즉시 받는다).
+        # 정지 후 짧은 유예 동안만 캡처를 유지한다. 바로 다시 말하면 빠르고,
+        # 유예가 지나면 macOS 마이크 표시가 사라지도록 스트림을 닫는다.
         self.finalize_on_stop = bool(finalize)
         # 홀드 해제로 정상 종료할 때만 마지막 글자 입력 뒤 Enter 를 보낸다.
         self.send_enter_on_stop = bool(send_enter and finalize)
         self.recording = False
         # 스트리밍 루프가 주기 대기 중이면 즉시 깨워 마지막 처리를 바로 시작한다.
         self._wake.set()
+        if self._capture_on:
+            if self._idle_capture_timer is not None:
+                self._idle_capture_timer.cancel()
+
+            def release_if_idle():
+                if not self.recording:
+                    self.stop_capture()
+
+            self._idle_capture_timer = threading.Timer(IDLE_CAPTURE_RELEASE_SEC, release_if_idle)
+            self._idle_capture_timer.daemon = True
+            self._idle_capture_timer.start()
         audio_level.clear_level()
 
     def start_capture(self):
-        """앱 시작 시 마이크를 미리 열어 계속 읽어둔다(키 누르면 즉시 잡히도록).
-
-        한 번만 띄우면 되고, 이후 떼고/다시 누르는 동안 스트림은 계속 열려 있다.
-        """
+        """마이크 캡처를 시작한다. 정지 직후 유예 중이면 기존 스트림을 재사용한다."""
         if self._capture_on and self._capture_thread is not None and self._capture_thread.is_alive():
             return
         if self._capture_on:
@@ -823,6 +833,7 @@ class Recorder:
     def stop_capture(self):
         """마이크 캡처를 멈춘다(앱 종료 정리용). 루프가 스스로 스트림을 닫는다."""
         self._capture_on = False
+        self._preroll.clear()
 
     def _open_stream(self):
         # pyaudio 로 시스템 기본 입력 장치에서 직접 캡처한다. (ffmpeg avfoundation
@@ -937,6 +948,9 @@ class Recorder:
         biased = self._transcribe_window(window, language, context=context)
         if looks_like_context_label_echo(biased):
             return unbiased  # context 머리표 자체가 새어나옴 → 거부
+        biased = collapse_repeated_hangul_syllables(
+            reduce_asr_punctuation(collapse_repeated_sentences(biased))
+        )
         biased = term_correct.correct_terms(biased, vocab)
         if not term_correct.context_bias_is_safe(unbiased, biased, vocab):
             return unbiased  # 근거 없는 등록어가 튀어나옴(누출) → 거부
@@ -1074,7 +1088,8 @@ class Recorder:
         self._la_prev_hypo = hypo
         # 단위가 붙은 한국어 수사만 아라비아 숫자로 바꾼다('삼 밀리'->3밀리). 변환은
         # idempotent 라 확정 텍스트에 다시 적용해도 안전하다.
-        target = text_normalize.normalize_numbers(self.committed_text + shown)
+        span_space = " " if self.committed_text and shown else ""
+        target = text_normalize.normalize_numbers(self.committed_text + span_space + shown)
         # 빈 재인식 결과로 긴 기존 문장을 전부 backspace하지 않는다.
         if not target and self.last_typed and not looks_like_clearable_noise_text(self.last_typed):
             return
@@ -1332,12 +1347,6 @@ class StatusBarApp(rumps.App):
         tr = getattr(rec, "transcriber", None) if rec else None
         return bool(tr and getattr(tr, "loading", False))
 
-    def _cold_start_notice(self):
-        """첫 받아쓰기 창이 안정화되는 짧은 구간인가(HUD '콜드 스타트' 표시 조건)."""
-        rec = getattr(self, "recorder", None)
-        until = getattr(rec, "cold_start_until", 0.0) if rec else 0.0
-        return bool(until and time.time() < until and not getattr(rec, "last_typed", ""))
-
     @staticmethod
     def _loading_pulse():
         """로딩 막대를 숨쉬듯 움직일 0~1 삼각파. math import 없이 시간만으로 만든다."""
@@ -1373,10 +1382,9 @@ class StatusBarApp(rumps.App):
                 self.elapsed_time = elapsed
                 minutes, seconds = divmod(elapsed, 60)
                 self.title = f"({minutes:02d}:{seconds:02d}) 🔴"
-                cold_start = self._cold_start_notice()
-                ov.update(self._loading_pulse() if cold_start else audio_level.read_level(), elapsed)
+                ov.update(audio_level.read_level(), elapsed)
                 ov.set_processing(False)
-                ov.show_status("콜드 스타트…" if cold_start else "듣는 중")
+                ov.show_status("듣는 중")
                 if mode == "pinned":
                     origin = ov.current_origin()
                     if origin and (origin[0], origin[1]) != (self.hud_pin_x, self.hud_pin_y):
@@ -1638,10 +1646,6 @@ def main():
             print(f"Model preload error: {exc}")
 
     threading.Thread(target=_warmup_model, daemon=True).start()
-
-    # 마이크도 시작 시점에 미리 열어 계속 읽어둔다. 키 누르는 순간 바로 잡혀,
-    # 홀드로 누르자마자 말해도 첫 단어가 잘리지 않는다(여는 ~1초 지연 제거).
-    recorder.start_capture()
 
     dashboard.start_server(app)
     app.apply_hotkey_config()

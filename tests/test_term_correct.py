@@ -40,6 +40,13 @@ def test_cross_script_is_a_known_limitation():
     assert term_correct.correct_terms("큐엔 좋아", ["Qwen"]) == "큐엔 좋아"
 
 
+def test_commit_and_push_alias_corrects_korean_loanword_phrase():
+    assert (
+        term_correct.correct_terms("커밋앤 푸시", ["commit and push"])
+        == "커밋 앤 푸시"
+    )
+
+
 def test_fused_particle_term_is_corrected_and_particle_kept():
     # 조사가 붙어 한 어절이 된 오인식도 줄기를 교정하고 조사는 보존한다.
     assert term_correct.correct_terms("각막괴양을 봤다", ["각막궤양"]) == "각막궤양을 봤다"
@@ -77,6 +84,12 @@ def test_context_bias_unsafe_when_term_has_no_acoustic_basis():
     # 무편향본에 근거 없는 '커밋'이 편향본에 새로 튀어나옴 → 누출 → 거부
     assert term_correct.context_bias_is_safe(
         "오늘 날씨 좋다", "커밋 오늘 날씨 좋다", ["커밋"]
+    ) is False
+
+
+def test_context_bias_checks_commit_and_push_alias():
+    assert term_correct.context_bias_is_safe(
+        "오늘 날씨 좋다", "커밋 앤 푸시 오늘 날씨 좋다", ["commit and push"]
     ) is False
 
 

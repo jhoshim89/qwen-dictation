@@ -111,6 +111,10 @@ def test_pill_width_for_label_grows_for_long_text():
     assert hud_overlay.pill_width_for_label(120.0) == 175.0
 
 
+def test_label_origin_y_centers_measured_text_box():
+    assert hud_overlay.label_origin_y(44.0, 16.0) == 14.0
+
+
 def test_pill_layout_applies_short_label_optical_centering():
     meter_x, label_x = hud_overlay.pill_layout_for_label(hud_overlay.PANEL_WIDTH, 30.0)
     geometric_meter_x = (
@@ -140,18 +144,29 @@ def test_contains_point_selects_monitor_bounds():
     ) is False
 
 
-def test_recording_overlay_is_lifted_bottom_center_status_pill():
+def test_recording_overlay_sits_low_at_bottom_center_status_pill():
     assert hud_overlay.PANEL_WIDTH == 104.0
     assert hud_overlay.PANEL_HEIGHT == 44.0
-    assert hud_overlay.BOTTOM_OFFSET == 86.0
+    assert hud_overlay.BOTTOM_OFFSET == 24.0
+
+
+def test_recording_hud_uses_flat_2d_surface():
+    assert hud_overlay.HUD_HAS_SHADOW is False
+    assert hud_overlay.HUD_BG_RGBA == (90, 86, 88, 0.62)
+    assert hud_overlay.HUD_BAR_RGBA == (255, 111, 133, 0.96)
+
+
+def test_voice_bar_corner_radius_matches_app_icon_capsule_shape():
+    # App icon bars use rx = width / 2, not height / 2.
+    assert hud_overlay.voice_bar_corner_radius(4.0, 14.0) == 2.0
+    assert hud_overlay.voice_bar_corner_radius(10.0, 49.0) == 5.0
 
 
 def test_jelly_bar_heights_expand_with_level_clamp_and_stay_symmetric():
-    # Resting bars are short; speaking grows them several-fold so the meter
-    # visibly reacts to the voice.
-    assert hud_overlay.jelly_bar_heights(-1.0) == (4.0, 8.0, 4.0)
-    assert hud_overlay.jelly_bar_heights(0.25) == (8.0, 16.0, 8.0)
-    assert hud_overlay.jelly_bar_heights(2.0) == (12.0, 24.0, 12.0)
+    # Resting bars still read as three vertical bars, not two dots plus a stem.
+    assert hud_overlay.jelly_bar_heights(-1.0) == (8.0, 14.0, 8.0)
+    assert hud_overlay.jelly_bar_heights(0.25) == (11.0, 18.0, 11.0)
+    assert hud_overlay.jelly_bar_heights(2.0) == (14.0, 22.0, 14.0)
 
 
 def test_normalize_hud_mode_accepts_known_and_falls_back():

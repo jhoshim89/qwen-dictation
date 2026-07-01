@@ -90,6 +90,9 @@ http://127.0.0.1:5001
 
 The app needs Microphone and Accessibility permissions because it listens to a
 global hotkey, records audio, and types into the focused app.
+To avoid leaving the macOS microphone indicator on while idle, recording keeps
+the microphone open only during dictation and for a short 5-second restart grace
+period after stopping.
 
 1. Open **System Settings > Privacy & Security > Microphone**.
 2. Enable the terminal app you use to run this project, such as Terminal, iTerm, or Codex.

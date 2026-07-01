@@ -26,6 +26,9 @@ LEN_RATIO_MIN = 0.8
 BIAS_NEAR_THRESHOLD = 0.55
 
 _WORD_RE = re.compile(r"\w+", re.UNICODE)
+_TERM_ALIASES = {
+    "commit and push": ("커밋 앤 푸시", "커밋", "푸시"),
+}
 
 # 명사 뒤에 붙는 흔한 조사 + '하다' 활용 어미. 긴 것부터 떼어 본다. 등록 용어는 명사이므로
 # 이 목록이 실사용의 어절 융합('커밋하고','각막궤양을')을 거의 덮는다.
@@ -66,24 +69,44 @@ def _strip_ending(word):
     return word, ""
 
 
+def _expand_terms(terms):
+    out = []
+    seen = set()
+    for term in terms:
+        term = term.strip()
+        for candidate in (term, *_TERM_ALIASES.get(term.lower(), ())):
+            if candidate and candidate not in seen:
+                seen.add(candidate)
+                out.append(candidate)
+    return out
+
+
 def _replace_spans(text, term, n, threshold):
     """text 안에서 n개 단어로 된 토막이 term 과 임계 이상 비슷하면 term 으로 바꾼다."""
     matches = list(_WORD_RE.finditer(text))
-    if len(matches) < n:
+    min_size = max(1, n - 1)
+    max_size = min(len(matches), n)
+    if max_size < min_size:
         return text
     out = []
     last = 0
     i = 0
-    while i <= len(matches) - n:
-        span_start = matches[i].start()
-        span_end = matches[i + n - 1].end()
-        span = text[span_start:span_end]
-        if span != term and _similarity(span, term) >= threshold:
-            out.append(text[last:span_start])
-            out.append(term)
-            last = span_end
-            i += n
-        else:
+    while i < len(matches):
+        replaced = False
+        for size in range(max_size, min_size - 1, -1):
+            if i + size > len(matches):
+                continue
+            span_start = matches[i].start()
+            span_end = matches[i + size - 1].end()
+            span = text[span_start:span_end]
+            if span != term and _similarity(span, term) >= threshold:
+                out.append(text[last:span_start])
+                out.append(term)
+                last = span_end
+                i += size
+                replaced = True
+                break
+        if not replaced:
             i += 1
     out.append(text[last:])
     return "".join(out)
@@ -131,10 +154,7 @@ def context_bias_is_safe(unbiased, biased, terms, near_threshold=BIAS_NEAR_THRES
     토막)를 가질 때만 안전하다고 본다. 근거 없는 등록어가 하나라도 있으면 거부."""
     if not biased:
         return False
-    for term in terms:
-        t = term.strip()
-        if not t:
-            continue
+    for t in _expand_terms(t.strip() for t in terms if t.strip()):
         if t in biased and t not in unbiased:
             if not _has_near_span(unbiased, t, near_threshold):
                 return False
@@ -145,7 +165,7 @@ def correct_terms(text, terms, threshold=SIMILARITY_THRESHOLD):
     """text 안의 근접 오인식을 등록 용어로 교정해 돌려준다."""
     if not text or not terms:
         return text
-    cleaned = {t.strip() for t in terms if t.strip()}
+    cleaned = _expand_terms(t.strip() for t in terms if t.strip())
     # 여러 단어로 된 용어를 먼저 맞춘다(부분 매칭이 긴 구를 깨지 않도록).
     multi = sorted(
         (t for t in cleaned if len(t.split()) > 1),

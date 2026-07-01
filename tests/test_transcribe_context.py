@@ -273,18 +273,28 @@ def test_model_loading_false_without_recorder():
     assert wd.StatusBarApp._model_loading(app) is False
 
 
-def test_cold_start_notice_reflects_recorder_window():
-    import time
+def test_started_overlay_shows_listening_not_cold_start(monkeypatch):
     import types
     wd = _load()
-    rec = types.SimpleNamespace(cold_start_until=time.time() + 10.0, last_typed="")
-    app = types.SimpleNamespace(recorder=rec)
-    assert wd.StatusBarApp._cold_start_notice(app) is True
-    rec.last_typed = "이미 입력됨"
-    assert wd.StatusBarApp._cold_start_notice(app) is False
-    rec.last_typed = ""
-    rec.cold_start_until = time.time() - 1.0
-    assert wd.StatusBarApp._cold_start_notice(app) is False
+    labels, updates = [], []
+    ov = types.SimpleNamespace(
+        set_mode=lambda *args: None,
+        update=lambda level, elapsed: updates.append((level, elapsed)),
+        set_processing=lambda flag: None, show_status=labels.append, hide=lambda: None,
+    )
+    rec = types.SimpleNamespace(transcriber=types.SimpleNamespace(loading=False))
+    app = types.SimpleNamespace(
+        recorder=rec, hud_mode="pill", hud_pin_x=None, hud_pin_y=None, started=True,
+        start_time=100.0, elapsed_time=0, title=None, processing_active=False, _applied_hud=None,
+    )
+    app._model_loading = wd.StatusBarApp._model_loading.__get__(app, type(app))
+    monkeypatch.setattr(wd.hud_overlay, "get_overlay", lambda: ov)
+    monkeypatch.setattr(wd.audio_level, "read_level", lambda: 0.42)
+    monkeypatch.setattr(wd.time, "time", lambda: 102.0)
+
+    wd.StatusBarApp._tick_overlay(app, None)
+
+    assert (labels, updates) == (["듣는 중"], [(0.42, 2)])
 
 
 def test_loading_pulse_in_unit_range():

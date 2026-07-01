@@ -16,14 +16,18 @@ ROBUSTNESS:
   keep working even if the overlay cannot draw.
 
 LAYOUT:
-- Floats near the BOTTOM-center of the pointer screen, lifted above prompt inputs.
+- Floats near the BOTTOM-center of the pointer screen, low enough to avoid prompt text.
 - A slim macOS-style status pill shows a tiny reactive voice meter and state text.
 """
 
 PANEL_WIDTH = 104.0
 PANEL_HEIGHT = 44.0
-BOTTOM_OFFSET = 86.0
+BOTTOM_OFFSET = 24.0
 BAR_CORNER_RADIUS = PANEL_HEIGHT / 2.0
+HUD_BG_RGBA = (90, 86, 88, 0.62)
+HUD_TEXT_RGBA = (255, 250, 248, 0.96)
+HUD_BAR_RGBA = (255, 111, 133, 0.96)
+HUD_HAS_SHADOW = False
 
 # 라벨(상태 글자) 배치. 측정·그리기·알약 폭 계산이 같은 값을 공유해야 긴 글자가 잘리지
 # 않는다("모델 불러오는 중…" 처럼 기본 폭을 넘는 라벨은 알약을 늘려서 보여준다).
@@ -33,7 +37,6 @@ METER_BAR_GAP = 3.0
 METER_WIDTH = (METER_BAR_WIDTH * 3.0) + (METER_BAR_GAP * 2.0)
 METER_LABEL_GAP = 9.0
 PILL_CONTENT_OPTICAL_OFFSET_X = 0.0
-LABEL_BASELINE_Y = 11.0
 LABEL_FONT_SIZE = 13.0
 LABEL_FONT_WEIGHT = 0.42
 
@@ -47,9 +50,14 @@ def jelly_bar_heights(level):
     """
     level = min(1.0, max(0.0, float(level)))
     visual_level = level ** 0.5
-    side = 4.0 + (8.0 * visual_level)
-    center = 8.0 + (16.0 * visual_level)
+    side = 8.0 + (6.0 * visual_level)
+    center = 14.0 + (8.0 * visual_level)
     return side, center, side
+
+
+def voice_bar_corner_radius(width, height):
+    """Match the app icon voice bars: rounded ends are based on bar width."""
+    return min(float(width), float(height)) / 2.0
 
 
 # 표시 모드와 아이콘(컴팩트) 사양. AppKit 없이도 import/테스트되도록 모듈 상단에 둔다.
@@ -82,6 +90,11 @@ def pill_width_for_label(text_width):
     유지하고, 긴 라벨('모델 불러오는 중…')은 글자가 다 보이도록 늘린다."""
     needed = (PILL_SIDE_PAD * 2.0) + METER_WIDTH + METER_LABEL_GAP + max(0.0, float(text_width))
     return max(PANEL_WIDTH, needed)
+
+
+def label_origin_y(pill_height, text_height):
+    """Return the label origin that centers AppKit's measured text box."""
+    return (float(pill_height) - float(text_height)) / 2.0
 
 
 def clamp_to_visible(x, y, width, height, screen_boxes):
@@ -138,19 +151,10 @@ if _APPKIT_OK:
             r / 255.0, g / 255.0, b / 255.0, a
         )
 
-    # Quiet Dictation palette: darker and slimmer so it reads as a system HUD,
-    # not as a decorative badge over the user's writing surface.
-    BG_RGBA = (34, 31, 32, 0.58)
-    BORDER_RGBA = (255, 255, 255, 0.11)
-    TEXT_RGBA = (255, 250, 248, 0.94)
-    JELLY_RGBA = (255, 111, 133, 0.86)
-    JELLY_HALO_RGBA = (255, 111, 133, 0.13)
-    JELLY_HIGHLIGHT_RGBA = (255, 190, 201, 0.64)
-
     def _label_attrs():
         """상태 글자의 색·글꼴. 그리기와 폭 측정이 같은 속성을 써야 측정 오차가 없다."""
         return {
-            NSForegroundColorAttributeName: _rgb(*TEXT_RGBA),
+            NSForegroundColorAttributeName: _rgb(*HUD_TEXT_RGBA),
             NSFontAttributeName: NSFont.systemFontOfSize_weight_(
                 LABEL_FONT_SIZE, LABEL_FONT_WEIGHT
             ),
@@ -180,13 +184,10 @@ if _APPKIT_OK:
             b = self.bounds()
             w, h = b.size.width, b.size.height
             r = min(self._corner_radius, w / 2.0, h / 2.0)
-            rect = NSMakeRect(0.5, 0.5, w - 1.0, h - 1.0)
+            rect = NSMakeRect(0.0, 0.0, w, h)
             path = NSBezierPath.bezierPathWithRoundedRect_xRadius_yRadius_(rect, r, r)
-            _rgb(*BG_RGBA).setFill()
+            _rgb(*HUD_BG_RGBA).setFill()
             path.fill()
-            path.setLineWidth_(1.0)
-            _rgb(*BORDER_RGBA).setStroke()
-            path.stroke()
 
         def setValues_(self, values):
             # values = (level, elapsed_seconds, blink_on)
@@ -244,28 +245,18 @@ if _APPKIT_OK:
 
         def _draw_label(self, x):
             text = self._label_text or "듣는 중"
+            label = NSString.stringWithString_(text)
+            attrs = _label_attrs()
+            y = label_origin_y(self.bounds().size.height, label.sizeWithAttributes_(attrs).height)
             # Plain Python str does not expose the AppKit drawing category; wrap
             # it in an NSString so drawAtPoint_withAttributes_ is available.
-            NSString.stringWithString_(text).drawAtPoint_withAttributes_(
-                NSMakePoint(x, LABEL_BASELINE_Y), _label_attrs()
-            )
+            label.drawAtPoint_withAttributes_(NSMakePoint(x, y), attrs)
 
         def _draw_jelly_rect(self, x, y, width, height, alpha=0.94):
-            halo = 2.0
-            _rgb(*JELLY_HALO_RGBA).setFill()
+            _rgb(HUD_BAR_RGBA[0], HUD_BAR_RGBA[1], HUD_BAR_RGBA[2], alpha).setFill()
+            radius = voice_bar_corner_radius(width, height)
             NSBezierPath.bezierPathWithRoundedRect_xRadius_yRadius_(
-                NSMakeRect(x - halo, y - halo, width + (halo * 2.0), height + (halo * 2.0)),
-                (min(width, height) + (halo * 2.0)) / 2.0,
-                (min(width, height) + (halo * 2.0)) / 2.0,
-            ).fill()
-            _rgb(JELLY_RGBA[0], JELLY_RGBA[1], JELLY_RGBA[2], alpha).setFill()
-            NSBezierPath.bezierPathWithRoundedRect_xRadius_yRadius_(
-                NSMakeRect(x, y, width, height), height / 2.0, height / 2.0
-            ).fill()
-            highlight_width = max(3.0, width - 4.0)
-            _rgb(*JELLY_HIGHLIGHT_RGBA).setFill()
-            NSBezierPath.bezierPathWithRoundedRect_xRadius_yRadius_(
-                NSMakeRect(x + 0.8, y + height - 3.4, highlight_width, 1.4), 0.7, 0.7
+                NSMakeRect(x, y, width, height), radius, radius
             ).fill()
 
 
@@ -399,7 +390,7 @@ class DictationOverlay:
         panel.setOpaque_(False)
         # Transparent window; the rounded shape is drawn by the layer-backed view.
         panel.setBackgroundColor_(NSColor.clearColor())
-        panel.setHasShadow_(True)
+        panel.setHasShadow_(HUD_HAS_SHADOW)
         panel.setIgnoresMouseEvents_(True)
         panel.setHidesOnDeactivate_(False)
         panel.setFloatingPanel_(True)
