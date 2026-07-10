@@ -25,6 +25,7 @@ import app_config
 import vocabulary
 import term_correct
 import dictation_history
+import diagnostics
 import audio_level
 import hud_overlay
 import hotkeys
@@ -125,6 +126,10 @@ BIAS_MIN_WINDOW_SEC = 1.0
 # 들어온 키는 사용자의 수동 편집으로 보지 않아 세션이 중간에 끊기는 것을 막는다.
 SELF_TYPE_GUARD_SETTLE_SEC = 1.25
 IDLE_CAPTURE_RELEASE_SEC = 5.0
+CAPTURE_READY_TIMEOUT_SEC = 2.0
+CAPTURE_STALL_TIMEOUT_SEC = 2.0
+CAPTURE_MAX_CONSECUTIVE_ERRORS = 3
+CAPTURE_WATCHDOG_INTERVAL_SEC = 0.2
 MAC_BACKSPACE_KEYCODE = 51
 NOISE_FILLER_TEXTS = {"아", "어", "응", "음", "네", "예", "그", "그렇죠", "그쵸", "그렇지"}
 
@@ -303,50 +308,6 @@ def reduce_asr_punctuation(text):
         return ""
     without_soft = re.sub(r"(?<!\d)[,.;:·…。]+(?!\d)", "", raw)
     return re.sub(r"\s+", " ", without_soft).strip()
-
-
-def collapse_repeated_hangul_syllables(text):
-    """Collapse cold-start ASR artifacts like '방방법법 찾찾아아봐봐'.
-
-    Real Korean rarely has many adjacent identical syllable pairs across one
-    phrase. Qwen can produce that pattern on the first window after idle, so only
-    collapse when the whole text is dominated by repeated Hangul runs.
-    """
-    raw = text or ""
-    hangul_count = 0
-    duplicate_runs = 0
-    duplicated_chars = 0
-    i = 0
-    while i < len(raw):
-        ch = raw[i]
-        if not ("\uac00" <= ch <= "\ud7a3"):
-            i += 1
-            continue
-        hangul_count += 1
-        run_len = 1
-        j = i + 1
-        while j < len(raw) and raw[j] == ch:
-            hangul_count += 1
-            run_len += 1
-            j += 1
-        if run_len >= 2:
-            duplicate_runs += 1
-            duplicated_chars += run_len - 1
-        i = j
-
-    if hangul_count == 0 or duplicate_runs < 3 or (duplicated_chars / hangul_count) < 0.25:
-        return text
-
-    collapsed = []
-    i = 0
-    while i < len(raw):
-        ch = raw[i]
-        collapsed.append(ch)
-        if "\uac00" <= ch <= "\ud7a3":
-            while i + 1 < len(raw) and raw[i + 1] == ch:
-                i += 1
-        i += 1
-    return "".join(collapsed)
 
 
 def looks_like_pause_noise_filler(text):
@@ -611,17 +572,95 @@ class SpeechTranscriber:
         self.model_1_7b = None
         self.nemotron_mlx_model = None
         self.model_lock = threading.Lock()
+        self._model_state_lock = threading.Lock()
+        self._model_state_changed = threading.Event()
+        self._ready_engines = set()
+        self._loading_engines = set()
+        self._model_errors = {}
         # 모델을 실제로 올리는 중인지(HUD 가 '불러오는 중'을 보여줄 신호). 성공/실패 모두
         # finally 에서 내려, 로드 실패 시 표시가 영원히 남지 않게 한다.
         self.loading = False
 
     def set_engine(self, asr_engine):
-        self.asr_engine = asr_engines.normalize_asr_engine(asr_engine)
+        normalized = asr_engines.normalize_asr_engine(asr_engine)
+        changed = normalized != self.asr_engine
+        self.asr_engine = normalized
+        if changed:
+            self._model_state_changed.set()
+            self.ensure_current_model_loading()
+
+    @staticmethod
+    def _engine_model_key(asr_engine):
+        engine = asr_engines.normalize_asr_engine(asr_engine)
+        if engine == asr_engines.ASR_ENGINE_NEMOTRON_MLX:
+            return asr_engines.ASR_ENGINE_NEMOTRON_MLX
+        # Qwen과 Qwen Original은 같은 모델 인스턴스를 공유한다.
+        return asr_engines.ASR_ENGINE_QWEN
+
+    def current_model_ready(self):
+        key = self._engine_model_key(self.asr_engine)
+        with self._model_state_lock:
+            return key in self._ready_engines
+
+    def current_model_loading(self):
+        key = self._engine_model_key(self.asr_engine)
+        with self._model_state_lock:
+            return key in self._loading_engines
+
+    def ensure_current_model_loading(self):
+        """선택 엔진을 백그라운드에서 한 번만 준비한다."""
+        engine = asr_engines.normalize_asr_engine(self.asr_engine)
+        key = self._engine_model_key(engine)
+        with self._model_state_lock:
+            if key in self._ready_engines or key in self._loading_engines:
+                return
+            self._loading_engines.add(key)
+            self._model_errors.pop(key, None)
+
+        def load():
+            try:
+                if key == asr_engines.ASR_ENGINE_NEMOTRON_MLX:
+                    self.get_nemotron_model()
+                else:
+                    self.get_model()
+                print(f"Model preloaded ({asr_engines.asr_engine_label(engine)}).")
+            except Exception as exc:
+                print(f"Model preload error: {exc}")
+            finally:
+                with self._model_state_lock:
+                    self._loading_engines.discard(key)
+                self._model_state_changed.set()
+
+        threading.Thread(target=load, daemon=True).start()
+
+    def wait_current_model_ready(self, timeout=120.0, cancel_check=None):
+        """첫 실제 오디오 창을 만들기 전에 선택 모델 준비가 끝날 때까지 기다린다.
+
+        캡처는 이 동안 계속되므로 앱을 켜자마자 말한 내용도 버리지 않는다.
+        """
+        self.ensure_current_model_loading()
+        key = self._engine_model_key(self.asr_engine)
+        deadline = time.monotonic() + max(0.0, float(timeout))
+        while True:
+            if callable(cancel_check) and cancel_check():
+                return False
+            with self._model_state_lock:
+                if key in self._ready_engines:
+                    return True
+                error = self._model_errors.get(key)
+            if error is not None:
+                raise RuntimeError(f"ASR model load failed: {error}") from error
+            remaining = deadline - time.monotonic()
+            if remaining <= 0:
+                raise TimeoutError("ASR model load timed out")
+            self._model_state_changed.wait(min(0.1, remaining))
+            self._model_state_changed.clear()
 
     def current_engine_label(self):
         return asr_engines.asr_engine_label(self.asr_engine)
 
     def get_model(self):
+        key = asr_engines.ASR_ENGINE_QWEN
         with self.model_lock:
             if self.model_1_7b is None:
                 self.loading = True
@@ -630,11 +669,27 @@ class SpeechTranscriber:
                     self.model_1_7b = Qwen3ASRModel.from_pretrained(MODEL_1_7B, dtype=self.dtype)
                     self.model_1_7b.model.to(self.device)
                     self.model_1_7b.device = self.device
+                    with self._model_state_lock:
+                        self._ready_engines.add(key)
+                        self._model_errors.pop(key, None)
+                except Exception as exc:
+                    self.model_1_7b = None
+                    with self._model_state_lock:
+                        self._ready_engines.discard(key)
+                        self._model_errors[key] = exc
+                    raise
                 finally:
                     self.loading = False
+                    self._model_state_changed.set()
+            else:
+                with self._model_state_lock:
+                    self._ready_engines.add(key)
+                    self._model_errors.pop(key, None)
+                self._model_state_changed.set()
             return self.model_1_7b
 
     def get_nemotron_model(self):
+        key = asr_engines.ASR_ENGINE_NEMOTRON_MLX
         with self.model_lock:
             if self.nemotron_mlx_model is None:
                 self.loading = True
@@ -651,10 +706,24 @@ class SpeechTranscriber:
                             "Nemotron MLX 엔진을 쓰려면 mlx-audio optional runtime이 필요합니다. "
                             "README의 Nemotron 설치 안내를 먼저 실행하세요."
                         ) from exc
-
                     self.nemotron_mlx_model = load_stt_model(NEMOTRON_MLX_MODEL)
+                    with self._model_state_lock:
+                        self._ready_engines.add(key)
+                        self._model_errors.pop(key, None)
+                except Exception as exc:
+                    self.nemotron_mlx_model = None
+                    with self._model_state_lock:
+                        self._ready_engines.discard(key)
+                        self._model_errors[key] = exc
+                    raise
                 finally:
                     self.loading = False
+                    self._model_state_changed.set()
+            else:
+                with self._model_state_lock:
+                    self._ready_engines.add(key)
+                    self._model_errors.pop(key, None)
+                self._model_state_changed.set()
             return self.nemotron_mlx_model
 
     def _result_text(self, result):
@@ -712,7 +781,7 @@ class SpeechTranscriber:
 
 
 class Recorder:
-    def __init__(self, transcriber, app):
+    def __init__(self, transcriber, app, diagnostic_sink=None, initial_debug_events=None):
         self.transcriber = transcriber
         self.app = app
         self.recording = False
@@ -727,9 +796,15 @@ class Recorder:
         self._stream = None
         self._open_device = None
         self._capture_error_notified = False
+        self._capture_error_count = 0
+        self._capture_ready = threading.Event()
+        self._capture_started_at = 0.0
+        self._last_capture_frame_at = 0.0
+        self._capture_watchdog_thread = None
         # 키 누르기 직전 오디오를 들고 있는 롤링 버퍼(받아쓰기 시작 시 앞에 붙인다).
         self._preroll = collections.deque(maxlen=PREROLL_CHUNKS)
-        self.debug_events = collections.deque(maxlen=200)
+        self.debug_events = collections.deque(initial_debug_events or [], maxlen=200)
+        self._diagnostic_sink = diagnostic_sink
         self.window_start = 0
         self.committed_text = ""
         self.last_typed = ""
@@ -749,6 +824,9 @@ class Recorder:
         self.append_only_until_stop = False
         self._stable_hypo = ""
         self._stable_ticks = 0
+        # 이전 세션이 모델 로딩을 기다리는 사이 새 세션이 시작되어도 두 스트리밍
+        # 스레드가 같은 오디오 상태를 처리하지 않도록 세대 번호를 둔다.
+        self._session_id = 0
         # 스트리밍 루프의 주기 대기를 즉시 깨우는 정지 신호. 키를 떼면 set 되어
         # 다음 확인 주기를 기다리지 않고 곧장 마지막 틱(+Enter)으로 넘어간다.
         self._wake = threading.Event()
@@ -760,15 +838,92 @@ class Recorder:
         event = {"ts": round(time.time(), 3), "reason": reason}
         event.update(fields)
         events.append(event)
+        sink = getattr(self, "_diagnostic_sink", None)
+        if callable(sink):
+            sink(event)
 
     def rebaseline(self):
         """입력창 글자에 대한 소유권을 내려놓는다. 다음 발화는 빈 기준에서 시작해
         백스페이스 없이 커서 위치에 새 글자만 덧붙는다(사용자 수정 보존)."""
         self.rebaseline_pending = True
 
+    def capture_ready(self):
+        return self._capture_ready.is_set()
+
+    def capture_health(self):
+        last = float(getattr(self, "_last_capture_frame_at", 0.0) or 0.0)
+        age_ms = None if last <= 0 else max(0, round((time.monotonic() - last) * 1000))
+        thread = getattr(self, "_capture_thread", None)
+        return {
+            "ready": self.capture_ready(),
+            "capture_on": bool(getattr(self, "_capture_on", False)),
+            "thread_alive": bool(thread and thread.is_alive()),
+            "last_frame_age_ms": age_ms,
+        }
+
+    def _report_capture_failure(self, phase, message, session_id=None):
+        if session_id is not None and session_id != self._session_id:
+            return
+        if not self.recording or self._capture_error_notified:
+            return
+        self._capture_error_notified = True
+        self._debug(
+            "capture_failed",
+            phase=phase,
+            error=str(message),
+            retry_count=self._capture_error_count,
+            session_id=self._session_id,
+        )
+        handler = getattr(self.app, "handle_recording_error", None)
+        dispatch = getattr(self.app, "dispatch_to_main", None)
+        if callable(handler) and callable(dispatch):
+            dispatch(handler, str(message))
+        elif callable(handler):
+            handler(str(message))
+
+    def _capture_watchdog(self, session_id):
+        while self.recording and session_id == self._session_id:
+            now = time.monotonic()
+            if not self._capture_ready.is_set():
+                if now - self._capture_started_at >= CAPTURE_READY_TIMEOUT_SEC:
+                    self._debug(
+                        "capture_timeout",
+                        phase="ready",
+                        age_ms=round((now - self._capture_started_at) * 1000),
+                        session_id=session_id,
+                    )
+                    self._report_capture_failure(
+                        "ready",
+                        "마이크에서 오디오 프레임이 들어오지 않습니다.",
+                        session_id=session_id,
+                    )
+                    return
+            elif self._last_capture_frame_at > 0:
+                age = now - self._last_capture_frame_at
+                if age >= CAPTURE_STALL_TIMEOUT_SEC:
+                    self._debug(
+                        "capture_timeout",
+                        phase="stalled",
+                        age_ms=round(age * 1000),
+                        session_id=session_id,
+                    )
+                    self._report_capture_failure(
+                        "stalled",
+                        "마이크 오디오 입력이 중간에 멈췄습니다.",
+                        session_id=session_id,
+                    )
+                    return
+            time.sleep(CAPTURE_WATCHDOG_INTERVAL_SEC)
+
+    def abort(self):
+        """오류 세션을 완전히 취소하고 막힌 PortAudio 스트림도 즉시 닫는다."""
+        self.stop(finalize=False)
+        self.stop_capture()
+        self._close_stream()
+
     def start(self, language=None, live_typing=True, append_only_live=False):
         if self.recording:
-            return
+            return False
         self.finalize_on_stop = True
         self.send_enter_on_stop = False
         self.defer_typing_until_stop = not bool(live_typing)
@@ -776,6 +931,13 @@ class Recorder:
         self.deferred_text = ""
         self.rebaseline_pending = False
         self._wake.clear()
+        self._session_id += 1
+        session_id = self._session_id
+        self._capture_ready.clear()
+        self._capture_started_at = time.monotonic()
+        self._last_capture_frame_at = 0.0
+        self._capture_error_count = 0
+        self._capture_error_notified = False
         if self._idle_capture_timer is not None:
             self._idle_capture_timer.cancel()
             self._idle_capture_timer = None
@@ -790,20 +952,37 @@ class Recorder:
             engine=asr_engines.normalize_asr_engine(getattr(self.app, "asr_engine", asr_engines.DEFAULT_ASR_ENGINE)),
             min_volume=normalize_min_volume(getattr(self.app, "min_volume", DEFAULT_MIN_VOLUME)),
             input_device=getattr(self.app, "input_device", ""),
+            session_id=session_id,
         )
         self.recording = True
         # 캡처가 아직 안 돌고 있으면(안전망) 지금 띄운다.
         self.start_capture()
-        self.stream_thread = threading.Thread(target=self._stream_loop, args=(language,), daemon=True)
+        self.stream_thread = threading.Thread(
+            target=self._stream_loop,
+            args=(language, session_id),
+            daemon=True,
+        )
         self.stream_thread.start()
+        self._capture_watchdog_thread = threading.Thread(
+            target=self._capture_watchdog,
+            args=(session_id,),
+            daemon=True,
+        )
+        self._capture_watchdog_thread.start()
+        return True
 
     def stop(self, finalize=True, send_enter=False):
         # 정지 후 짧은 유예 동안만 캡처를 유지한다. 바로 다시 말하면 빠르고,
         # 유예가 지나면 macOS 마이크 표시가 사라지도록 스트림을 닫는다.
         self.finalize_on_stop = bool(finalize)
+        if not self.finalize_on_stop:
+            self._session_id += 1
         # 홀드 해제로 정상 종료할 때만 마지막 글자 입력 뒤 Enter 를 보낸다.
         self.send_enter_on_stop = bool(send_enter and finalize)
         self.recording = False
+        set_processing = getattr(self.app, "set_processing", None)
+        if callable(set_processing):
+            set_processing(bool(finalize))
         # 스트리밍 루프가 주기 대기 중이면 즉시 깨워 마지막 처리를 바로 시작한다.
         self._wake.set()
         if self._capture_on:
@@ -840,15 +1019,30 @@ class Recorder:
         # ':default' 는 이 장비에서 'Input/output error' 로 실패해 0프레임이 됐다.)
         self._pa = pyaudio.PyAudio()
         device = getattr(self.app, "input_device", "")
+        if device:
+            device_index = find_input_device_index(self._pa, device)
+            if device_index is None:
+                raise RuntimeError(f"선택한 마이크를 찾을 수 없습니다: {device}")
+            device_info = self._pa.get_device_info_by_index(device_index)
+        else:
+            device_info = self._pa.get_default_input_device_info()
+            device_index = int(device_info.get("index"))
         self._stream = self._pa.open(
             format=pyaudio.paInt16,
             channels=1,
             rate=16000,
             input=True,
-            input_device_index=find_input_device_index(self._pa, device),
+            input_device_index=device_index,
             frames_per_buffer=FRAMES_PER_BUFFER,
         )
         self._open_device = device
+        self._debug(
+            "capture_opened",
+            input_device=device,
+            resolved_device=device_info.get("name", ""),
+            device_index=device_index,
+            session_id=self._session_id,
+        )
 
     def _close_stream(self):
         try:
@@ -874,22 +1068,33 @@ class Recorder:
                     self._close_stream()
                     try:
                         self._open_stream()
-                        self._capture_error_notified = False
                     except Exception as exc:
+                        self._capture_error_count += 1
                         self._debug("capture_error", phase="open", error=str(exc))
-                        if not self._capture_error_notified:
-                            self._capture_error_notified = True
-                            self.app.dispatch_to_main(self.app.handle_recording_error, str(exc))
-                        time.sleep(0.5)
+                        if self._capture_error_count >= CAPTURE_MAX_CONSECUTIVE_ERRORS:
+                            self._report_capture_failure("open", exc)
+                        time.sleep(0.25)
                         continue
                 try:
                     data = self._stream.read(FRAMES_PER_BUFFER, exception_on_overflow=False)
                 except Exception as exc:
                     print(f"Audio read error: {exc}")
+                    self._capture_error_count += 1
                     self._debug("capture_error", phase="read", error=str(exc))
                     self._close_stream()
+                    if self._capture_error_count >= CAPTURE_MAX_CONSECUTIVE_ERRORS:
+                        self._report_capture_failure("read", exc)
                     time.sleep(0.2)
                     continue
+                if not data:
+                    self._capture_error_count += 1
+                    self._debug("capture_error", phase="empty_read", error="empty audio frame")
+                    if self._capture_error_count >= CAPTURE_MAX_CONSECUTIVE_ERRORS:
+                        self._report_capture_failure("empty_read", "마이크가 빈 오디오 프레임을 반환했습니다.")
+                    continue
+                self._capture_error_count = 0
+                self._last_capture_frame_at = time.monotonic()
+                self._capture_ready.set()
                 with self.audio_lock:
                     self._preroll.append(data)
                     if self.recording:
@@ -948,9 +1153,7 @@ class Recorder:
         biased = self._transcribe_window(window, language, context=context)
         if looks_like_context_label_echo(biased):
             return unbiased  # context 머리표 자체가 새어나옴 → 거부
-        biased = collapse_repeated_hangul_syllables(
-            reduce_asr_punctuation(collapse_repeated_sentences(biased))
-        )
+        biased = reduce_asr_punctuation(collapse_repeated_sentences(biased))
         biased = term_correct.correct_terms(biased, vocab)
         if not term_correct.context_bias_is_safe(unbiased, biased, vocab):
             return unbiased  # 근거 없는 등록어가 튀어나옴(누출) → 거부
@@ -1005,9 +1208,7 @@ class Recorder:
             self._debug("empty_hypo", window_ms=round(len(window) / 2.0 / 16.0))
         if not self.recording and not allow_stopped:
             return
-        hypo = collapse_repeated_hangul_syllables(
-            reduce_asr_punctuation(collapse_repeated_sentences(hypo))
-        )
+        hypo = reduce_asr_punctuation(collapse_repeated_sentences(hypo))
         if looks_like_repetition_hallucination(hypo):
             hypo = ""
         if looks_like_punctuation_only(hypo):
@@ -1137,7 +1338,9 @@ class Recorder:
         except Exception as exc:
             print(f"send enter error: {exc}")
 
-    def _stream_loop(self, language):
+    def _stream_loop(self, language, session_id=None):
+        if session_id is None:
+            session_id = getattr(self, "_session_id", 0)
         self.window_start = 0
         self.committed_text = ""
         self.last_typed = ""
@@ -1147,36 +1350,82 @@ class Recorder:
         self._stable_hypo = ""
         self._stable_ticks = 0
         self.session_vocab = vocabulary.load_vocabulary()
-        while self.recording:
-            # 주기마다 한 번씩 틱. 단, 도중에 정지 신호가 오면 즉시 깨어나
-            # 남은 대기 없이 곧장 마지막 틱으로 넘어간다(키 떼고 Enter 지연 최소화).
-            if self._wake.wait(STREAM_INTERVAL):
-                break
-            try:
-                self._stream_tick(language)
-            except Exception as exc:
-                print(f"Streaming tick error: {exc}")
-        # 일반 정지는 남은 말을 한 번 반영한다. Enter 전송으로 멈춘 경우에는
-        # 전송 뒤 새 입력창에 늦은 글자가 들어가지 않도록 마지막 틱을 생략한다.
-        typed_before = self.last_typed
-        if self.finalize_on_stop:
-            try:
-                self._stream_tick(language, allow_stopped=True)
-            except Exception as exc:
-                print(f"Streaming final tick error: {exc}")
-        deferred = getattr(self, "deferred_text", "")
-        if deferred and self.last_typed != deferred:
-            self.self_type_guard_until = time.time() + 30.0
-            try:
-                self.last_typed = self._type(self.last_typed, deferred)
-            finally:
-                self.self_type_guard_until = time.time() + SELF_TYPE_GUARD_SETTLE_SEC
-            self.deferred_text = ""
-        # Enter 를 먼저 보내고(사용자가 체감하는 지연), 기록 저장은 그 뒤로 미룬다.
-        # 마지막 틱에서 새로 친 글자가 있으면 짧은 반영 대기를, 없으면 곧장 보낸다.
-        if getattr(self, "send_enter_on_stop", False) and self.last_typed.strip():
-            self._send_enter(settle=0.03 if self.last_typed != typed_before else 0.0)
-        dictation_history.add_history(self.last_typed)
+        try:
+            # 앱을 켜자마자 받아쓰기를 시작해도 캡처는 즉시 계속하되, 모델 준비 전의
+            # 0.25초짜리 첫 창을 잡아 둔 채 로딩을 기다리지는 않는다. 준비가 끝난 뒤
+            # 그동안 모인 전체 오디오로 첫 창을 만들어 사용자가 말한 내용을 보존한다.
+            transcriber = getattr(self, "transcriber", None)
+            wait_ready = getattr(transcriber, "wait_current_model_ready", None)
+            if callable(wait_ready):
+                try:
+                    ready = wait_ready(
+                        cancel_check=lambda: session_id != getattr(self, "_session_id", session_id)
+                    )
+                    if ready is False:
+                        return
+                except Exception as exc:
+                    self._debug("model_error", error=str(exc))
+                    self.recording = False
+                    self.finalize_on_stop = False
+                    app = getattr(self, "app", None)
+                    handler = getattr(app, "handle_model_error", None)
+                    dispatch = getattr(app, "dispatch_to_main", None)
+                    if callable(handler) and callable(dispatch):
+                        dispatch(handler, str(exc))
+                    elif callable(handler):
+                        handler(str(exc))
+                    return
+
+            if session_id != getattr(self, "_session_id", session_id):
+                return
+
+            while self.recording and session_id == getattr(self, "_session_id", session_id):
+                # 주기마다 한 번씩 틱. 단, 도중에 정지 신호가 오면 즉시 깨어나
+                # 남은 대기 없이 곧장 마지막 틱으로 넘어간다(키 떼고 Enter 지연 최소화).
+                if self._wake.wait(STREAM_INTERVAL):
+                    break
+                try:
+                    self._stream_tick(language)
+                except Exception as exc:
+                    print(f"Streaming tick error: {exc}")
+            if session_id != getattr(self, "_session_id", session_id):
+                return
+            # 일반 정지는 남은 말을 한 번 반영한다. Enter 전송으로 멈춘 경우에는
+            # 전송 뒤 새 입력창에 늦은 글자가 들어가지 않도록 마지막 틱을 생략한다.
+            typed_before = self.last_typed
+            if self.finalize_on_stop:
+                try:
+                    self._stream_tick(language, allow_stopped=True)
+                except Exception as exc:
+                    print(f"Streaming final tick error: {exc}")
+            deferred = getattr(self, "deferred_text", "")
+            if deferred and self.last_typed != deferred:
+                self.self_type_guard_until = time.time() + 30.0
+                try:
+                    self.last_typed = self._type(self.last_typed, deferred)
+                finally:
+                    self.self_type_guard_until = time.time() + SELF_TYPE_GUARD_SETTLE_SEC
+                self.deferred_text = ""
+            # Enter 를 먼저 보내고(사용자가 체감하는 지연), 기록 저장은 그 뒤로 미룬다.
+            # 마지막 틱에서 새로 친 글자가 있으면 짧은 반영 대기를, 없으면 곧장 보낸다.
+            if getattr(self, "send_enter_on_stop", False) and self.last_typed.strip():
+                self._send_enter(settle=0.03 if self.last_typed != typed_before else 0.0)
+            dictation_history.add_history(self.last_typed)
+        finally:
+            app = getattr(self, "app", None)
+            set_processing = getattr(app, "set_processing", None)
+            dispatch = getattr(app, "dispatch_to_main", None)
+
+            def clear_processing_if_current():
+                # 취소된 이전 세션이 늦게 끝나면서 새 세션의 "변환 중" 표시를
+                # 내려 버리지 않도록, 여전히 같은 세션일 때만 정리한다.
+                if session_id == getattr(self, "_session_id", session_id):
+                    set_processing(False)
+
+            if callable(set_processing) and callable(dispatch):
+                dispatch(clear_processing_if_current)
+            elif callable(set_processing):
+                clear_processing_if_current()
 
 
 class MultiHotkeyListener:
@@ -1345,7 +1594,13 @@ class StatusBarApp(rumps.App):
         transcriber.loading 이 finally 에서 내려가므로 표시가 영원히 남지 않는다."""
         rec = getattr(self, "recorder", None)
         tr = getattr(rec, "transcriber", None) if rec else None
-        return bool(tr and getattr(tr, "loading", False))
+        if not tr:
+            return False
+        current_loading = getattr(tr, "current_model_loading", None)
+        return bool(
+            getattr(tr, "loading", False)
+            or (callable(current_loading) and current_loading())
+        )
 
     @staticmethod
     def _loading_pulse():
@@ -1382,9 +1637,12 @@ class StatusBarApp(rumps.App):
                 self.elapsed_time = elapsed
                 minutes, seconds = divmod(elapsed, 60)
                 self.title = f"({minutes:02d}:{seconds:02d}) 🔴"
-                ov.update(audio_level.read_level(), elapsed)
+                recorder = getattr(self, "recorder", None)
+                capture_ready = getattr(recorder, "capture_ready", None)
+                ready = True if not callable(capture_ready) else capture_ready()
+                ov.update(audio_level.read_level() if ready else 0.0, elapsed)
                 ov.set_processing(False)
-                ov.show_status("듣는 중")
+                ov.show_status("듣는 중" if ready else "마이크 준비 중…")
                 if mode == "pinned":
                     origin = ov.current_origin()
                     if origin and (origin[0], origin[1]) != (self.hud_pin_x, self.hud_pin_y):
@@ -1508,20 +1766,26 @@ class StatusBarApp(rumps.App):
     @rumps.clicked("Start Recording")
     def start_app(self, _):
         if self.started or self.processing_active:
-            return
-        print("Listening...")
-        self.started = True
-        self.menu["Start Recording"].set_callback(None)
-        self.menu["Stop Recording"].set_callback(self.stop_app)
+            return False
         live_typing = bool(getattr(self, "_live_typing_for_next_start", True))
         self._live_typing_for_next_start = True
         append_only_live = bool(getattr(self, "_append_only_for_next_start", False))
         self._append_only_for_next_start = False
-        self.recorder.start(
-            self.current_language,
-            live_typing=live_typing,
-            append_only_live=append_only_live,
-        )
+        try:
+            started = self.recorder.start(
+                self.current_language,
+                live_typing=live_typing,
+                append_only_live=append_only_live,
+            )
+        except Exception as exc:
+            self.handle_recording_error(str(exc))
+            return False
+        if started is False:
+            return False
+        print("Listening...")
+        self.started = True
+        self.menu["Start Recording"].set_callback(None)
+        self.menu["Stop Recording"].set_callback(self.stop_app)
         if self.max_time and self.max_time > 0:
             self.timer = threading.Timer(
                 self.max_time,
@@ -1530,6 +1794,7 @@ class StatusBarApp(rumps.App):
             self.timer.start()
         self.start_time = time.time()
         self.update_title()
+        return True
 
     @rumps.clicked("Stop Recording")
     def stop_app(self, _, finalize=True, send_enter=False):
@@ -1546,12 +1811,26 @@ class StatusBarApp(rumps.App):
         print("Stopped.")
 
     def handle_recording_error(self, message):
+        recorder = getattr(self, "recorder", None)
+        if recorder is not None:
+            recorder.abort()
         self.started = False
         self.processing_active = False
         self.title = None
         self.menu["Stop Recording"].set_callback(None)
         self.menu["Start Recording"].set_callback(self.start_app)
         safe_notify("Qwen Dictation", "Microphone error", message)
+
+    def handle_model_error(self, message):
+        recorder = getattr(self, "recorder", None)
+        if recorder is not None:
+            recorder.abort()
+        self.started = False
+        self.processing_active = False
+        self.title = None
+        self.menu["Stop Recording"].set_callback(None)
+        self.menu["Start Recording"].set_callback(self.start_app)
+        safe_notify("Qwen Dictation", "Model error", message)
 
     def set_processing(self, active):
         self.processing_active = bool(active)
@@ -1633,19 +1912,17 @@ def main():
     print(f"Initializing {asr_engines.asr_engine_label(app.asr_engine)} on {device}...")
 
     transcriber = SpeechTranscriber(device, dtype, asr_engine=app.asr_engine)
-    recorder = Recorder(transcriber, app)
+    recorder = Recorder(
+        transcriber,
+        app,
+        diagnostic_sink=diagnostics.record_event,
+        initial_debug_events=diagnostics.load_events(),
+    )
     app.recorder = recorder
 
-    # 선택된 모델을 백그라운드에서 미리 올려둔다(앱 켤 때 cold load 를 첫 받아쓰기
-    # 시점이 아니라 시작 시점에 숨긴다 → 첫 받아쓰기도 바로 빠르게).
-    def _warmup_model():
-        try:
-            transcriber.preload_current_model()
-            print(f"Model preloaded ({transcriber.current_engine_label()}).")
-        except Exception as exc:
-            print(f"Model preload error: {exc}")
-
-    threading.Thread(target=_warmup_model, daemon=True).start()
+    # 선택된 모델을 백그라운드에서 미리 올린다. 즉시 받아쓰기를 시작해도 Recorder는
+    # 오디오를 보관하며 이 준비 신호를 기다린 뒤 첫 추론을 시작한다.
+    transcriber.ensure_current_model_loading()
 
     dashboard.start_server(app)
     app.apply_hotkey_config()

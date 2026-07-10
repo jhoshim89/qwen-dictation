@@ -139,6 +139,10 @@ after 300 seconds by default; set `max_time = 0` in advanced settings for no
 limit.
 The default engine is **Qwen3-ASR 1.7B**. Dashboard engines:
 
+For intermittent capture diagnosis, the app retains up to 200 operational
+events in `~/.qwen-dictation/diagnostics.jsonl`. It never writes audio,
+transcript text, or intermediate recognition hypotheses to that file.
+
 - **Qwen3-ASR 1.7B Original**: rolling WAV transcription for direct Qwen output.
 - **Nemotron 3.5 ASR 0.6B (MLX)**:
   `mlx-community/nemotron-3.5-asr-streaming-0.6b`
@@ -152,6 +156,8 @@ Install the optional Nemotron runtime without letting it replace Qwen's pinned
 
 Avoid plain `pip install mlx-audio` in this environment; its current dependency
 metadata asks pip to upgrade Transformers to a version that breaks `qwen-asr`.
+The supported Qwen environment is pinned in `requirements.txt`; use that file as
+the dependency source of truth when recreating the virtual environment.
 
 ## ASR comparison
 
@@ -200,6 +206,7 @@ Current release target: **developer MVP readiness**, not a signed or notarized c
 - **Dashboard:** verify settings persistence, microphone selection, ASR engine selection, vocabulary, history correction, and candidate approval.
 - **HUD/design:** keep the current text-bearing HUD pill as an intentional `DESIGN.md` exception; verify pill and pinned modes for clipping, contrast, screen-edge overlap, and microphone-level readability.
 - **Packaging:** `./build_app.sh` writes `dist.noindex/Qwen Dictation.app`; signing/notarization, auto-updater, and model manager remain future work unless separately implemented.
+- **Signing:** installable builds require the stable local signing identity from `./setup_signing.sh`. `QWEN_ALLOW_ADHOC_SIGNING=1 ./build_app.sh` is development-only and may require granting permissions again.
 - **Evidence:** record focused pytest, full pytest when appropriate, `py_compile`, CLI smoke, optional LazyCodex/OmO health note, visual QA notes, and manual macOS permission limits.
 
 ### Release readiness diagnosis matrix

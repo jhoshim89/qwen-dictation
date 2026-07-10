@@ -9,6 +9,8 @@ This is a local macOS dictation MVP using Qwen3-ASR 1.7B.
 - Treat approved vocabulary as Qwen context hints, never guaranteed replacement.
 - Store only the latest 50 final transcript texts locally. Never track edits in
   external apps or silently learn vocabulary.
+- Keep only the latest 200 operational diagnostic events. Never include audio,
+  transcript text, or intermediate hypotheses in diagnostics.
 
 ## Runtime and testing
 

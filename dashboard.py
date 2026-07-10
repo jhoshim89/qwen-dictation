@@ -151,9 +151,13 @@ def post_config():
 def get_status():
     if not app_instance:
         return jsonify({"started": False})
+    recorder = getattr(app_instance, "recorder", None)
+    health = recorder.capture_health() if recorder and hasattr(recorder, "capture_health") else {}
     return jsonify({
         "started": app_instance.started,
-        "elapsed_time": getattr(app_instance, 'elapsed_time', 0)
+        "elapsed_time": getattr(app_instance, 'elapsed_time', 0),
+        "processing": bool(getattr(app_instance, "processing_active", False)),
+        "capture": health,
     })
 
 @flask_app.route('/api/selftest', methods=['POST'])
@@ -164,6 +168,8 @@ def selftest():
     localhost(127.0.0.1) 전용. peak/rms 로 실제 소리가 잡혔는지도 함께 확인한다."""
     if not app_instance or not getattr(app_instance, 'recorder', None):
         return jsonify({"ok": False, "error": "app/recorder not ready"}), 503
+    if getattr(app_instance, "started", False) or getattr(app_instance, "processing_active", False):
+        return jsonify({"ok": False, "error": "dictation is active"}), 409
     try:
         import tempfile
         import numpy as np
@@ -182,6 +188,9 @@ def selftest():
             ),
             None,
         )
+        if preferred and selected is None:
+            pa.terminate()
+            raise RuntimeError(f"선택한 마이크를 찾을 수 없습니다: {preferred}")
         dev = selected or pa.get_default_input_device_info()
         st = pa.open(format=pyaudio.paInt16, channels=1, rate=16000, input=True,
                      input_device_index=dev.get("index"), frames_per_buffer=1024)
@@ -214,6 +223,8 @@ def dictate_test():
     포커스된 입력창(예: 크롬 textarea)에서 검증할 수 있다. localhost 전용."""
     if not app_instance or not getattr(app_instance, 'recorder', None):
         return jsonify({"ok": False, "error": "app/recorder not ready"}), 503
+    if getattr(app_instance, "started", False) or getattr(app_instance, "processing_active", False):
+        return jsonify({"ok": False, "error": "dictation is active"}), 409
     try:
         import time
         seconds = float((request.json or {}).get("seconds", 6)) if request.is_json else 6.0
