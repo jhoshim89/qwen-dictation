@@ -228,19 +228,7 @@ def test_repeated_sentence_hallucination_collapses_to_one_sentence():
     assert wd.collapse_repeated_sentences(text) == "검사 코드는 어떻게 연결하는 게 좋을까?"
 
 
-def test_repeated_hangul_syllable_artifact_collapses():
-    wd = _load()
-    text = "싱싱킹킹 폴폴스스로로 하하는는 방방법법 찾찾아아봐봐"
-    assert wd.collapse_repeated_hangul_syllables(text) == "싱킹 폴스로 하는 방법 찾아봐"
-
-
-def test_repeated_hangul_syllable_keeps_small_normal_repetition():
-    wd = _load()
-    assert wd.collapse_repeated_hangul_syllables("아아 그건 아니야") == "아아 그건 아니야"
-    assert wd.collapse_repeated_hangul_syllables("하하 그랬어") == "하하 그랬어"
-
-
-def test_stream_tick_collapses_repeated_hangul_syllable_artifact(monkeypatch):
+def test_stream_tick_does_not_shorten_repeated_hangul_syllables(monkeypatch):
     wd = _load()
     rec = _make_recorder(wd, monkeypatch, ["방방법법 찾찾아아봐봐", "방방법법 찾찾아아봐봐"])
     loud = (np.random.RandomState(0).randn(16000) * 6000).astype(np.int16).tobytes()
@@ -249,7 +237,7 @@ def test_stream_tick_collapses_repeated_hangul_syllable_artifact(monkeypatch):
     wd.Recorder._stream_tick(rec, language="Korean")
     assert rec.last_typed == ""
     wd.Recorder._stream_tick(rec, language="Korean")
-    assert rec.last_typed == "방법 찾아봐"
+    assert rec.last_typed == "방방법법 찾찾아아봐봐"
 
 
 def test_stream_tick_does_not_refresh_type_guard_when_text_is_unchanged(monkeypatch):
@@ -607,6 +595,76 @@ def test_stream_loop_keeps_final_tick_for_regular_stop():
     rec._stream_tick = lambda language, allow_stopped=False: rec.ticks.append(allow_stopped)
     wd.Recorder._stream_loop(rec, language="Korean")
     assert rec.ticks == [True]
+
+
+def test_stream_loop_waits_for_model_before_first_or_final_tick(monkeypatch):
+    wd = _load()
+    rec = _kbd_recorder(wd)
+    rec.recording = False  # 사용자가 모델 준비 전에 홀드 키를 놓은 경우
+    rec.finalize_on_stop = True
+    order = []
+
+    def finish_loading(**_kwargs):
+        order.append("model-ready")
+        with rec.audio_lock:
+            rec.audio_frames.append(b"captured-while-loading")
+
+    rec.transcriber.wait_current_model_ready = finish_loading
+    rec._stream_tick = lambda language, allow_stopped=False: order.append(
+        ("tick", allow_stopped, list(rec.audio_frames))
+    )
+    monkeypatch.setattr(wd.dictation_history, "add_history", lambda *_: None)
+
+    rec._stream_loop("Korean")
+
+    assert order == [
+        "model-ready",
+        ("tick", True, [b"captured-while-loading"]),
+    ]
+
+
+def test_old_stream_loop_exits_if_new_session_starts_while_model_loads(monkeypatch):
+    wd = _load()
+    rec = _kbd_recorder(wd)
+    rec.recording = True
+    rec.finalize_on_stop = True
+    rec._session_id = 2
+    ticks = []
+
+    def wait_until_ready(cancel_check=None):
+        rec._session_id = 3  # 새 받아쓰기 세션이 시작됨
+        assert cancel_check() is True
+        return False
+
+    rec.transcriber.wait_current_model_ready = wait_until_ready
+    rec._stream_tick = lambda *args, **kwargs: ticks.append((args, kwargs))
+    monkeypatch.setattr(wd.dictation_history, "add_history", lambda *_: None)
+
+    rec._stream_loop("Korean", session_id=2)
+
+    assert ticks == []
+
+
+def test_old_stream_loop_does_not_clear_new_session_processing(monkeypatch):
+    wd = _load()
+    processing = []
+
+    class App:
+        def set_processing(self, active):
+            processing.append(active)
+
+        def dispatch_to_main(self, callback, *args):
+            callback(*args)
+
+    rec = wd.Recorder(_FakeTranscriber(), app=App())
+    rec.recording = False
+    rec.finalize_on_stop = False
+    rec._session_id = 2
+    monkeypatch.setattr(wd.dictation_history, "add_history", lambda *_: None)
+
+    rec._stream_loop("Korean", session_id=1)
+
+    assert processing == []
 
 
 class _FakeKeyboard:
@@ -1039,6 +1097,53 @@ def test_capture_loop_appends_to_audio_frames_while_recording():
     rec.recording = True       # 녹음 중 → audio_frames 에도 쌓임
     rec._capture_loop()
     assert len(rec.audio_frames) >= 1
+    assert rec.capture_ready() is True
+
+
+def test_open_stream_rejects_missing_selected_microphone(monkeypatch):
+    import pytest
+    wd = _load()
+    rec = _kbd_recorder(wd)
+    rec.app = type("App", (), {"input_device": "Missing Mic"})()
+
+    class FakePyAudio:
+        def get_device_count(self): return 1
+        def get_device_info_by_index(self, _index):
+            return {"name": "Built-in Mic", "maxInputChannels": 1, "index": 0}
+        def terminate(self): pass
+
+    monkeypatch.setattr(wd.pyaudio, "PyAudio", FakePyAudio)
+
+    with pytest.raises(RuntimeError, match="선택한 마이크를 찾을 수 없습니다"):
+        rec._open_stream()
+
+
+def test_capture_watchdog_reports_no_frames(monkeypatch):
+    wd = _load()
+    errors = []
+    rec = _kbd_recorder(wd)
+    rec.app = type("App", (), {"handle_recording_error": errors.append})()
+    rec.recording = True
+    rec._session_id = 7
+    rec._capture_started_at = 10.0
+    now = [10.0, 12.1]
+    monkeypatch.setattr(wd.time, "monotonic", lambda: now.pop(0) if now else 12.1)
+    monkeypatch.setattr(wd.time, "sleep", lambda _secs: None)
+
+    rec._capture_watchdog(session_id=7)
+
+    assert errors == ["마이크에서 오디오 프레임이 들어오지 않습니다."]
+    assert any(event["reason"] == "capture_timeout" for event in rec.debug_events)
+
+
+def test_capture_health_reports_stale_frame_age(monkeypatch):
+    wd = _load()
+    rec = _kbd_recorder(wd)
+    rec._capture_ready.set()
+    rec._last_capture_frame_at = 20.0
+    monkeypatch.setattr(wd.time, "monotonic", lambda: 20.375)
+
+    assert rec.capture_health()["last_frame_age_ms"] == 375
 
 
 def test_stream_tick_corrects_misheard_term_before_typing(monkeypatch):
@@ -1200,14 +1305,14 @@ def test_biased_commit_accepts_when_guard_passes():
     assert out == "커밋하고 푸시해"   # 가드 통과 → 편향본 채택
 
 
-def test_biased_commit_collapses_repeated_hangul_artifact():
+def test_biased_commit_does_not_shorten_repeated_hangul_syllables():
     wd = _load()
     rec = _bias_recorder(wd, "플플러러스스를를 어어떻떻게게 만만들들지지")
     rec.session_vocab = ["플러스"]
     out = wd.Recorder._biased_commit_hypo(
         rec, b"x", "Korean", unbiased="플러스를 어떻게 만들지", window_secs=2.0
     )
-    assert out == "플러스를 어떻게 만들지"
+    assert out == "플플러러스스를를 어어떻떻게게 만만들들지지"
 
 
 def test_biased_commit_rejects_leak():

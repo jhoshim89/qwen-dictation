@@ -112,10 +112,14 @@ fi
 if [ -n "$SIGN_HASH" ]; then
   echo "Signing with stable identity: $SIGN_CN ($SIGN_HASH)"
   codesign --force --deep -s "$SIGN_HASH" "$APP_BUNDLE"
-else
-  echo "WARNING: stable signing identity 없음 → ad-hoc 서명(재빌드 시 권한 재설정 필요)"
+elif [ "${QWEN_ALLOW_ADHOC_SIGNING:-0}" = "1" ]; then
+  echo "WARNING: QWEN_ALLOW_ADHOC_SIGNING=1 → 개발용 ad-hoc 서명(권한 유지 보장 없음)"
   codesign --force --deep -s - "$APP_BUNDLE"
+else
+  echo "ERROR: stable signing identity 없음. ./setup_signing.sh를 먼저 실행하세요."
+  echo "개발용 임시 빌드만 필요하면 QWEN_ALLOW_ADHOC_SIGNING=1 ./build_app.sh"
+  exit 1
 fi
-codesign --verify --verbose "$APP_BUNDLE" || echo "WARNING: codesign verify failed"
+codesign --verify --deep --strict --verbose=2 "$APP_BUNDLE"
 
 echo "BUILD OK -> $APP_BUNDLE"

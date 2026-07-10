@@ -50,6 +50,8 @@ hotkeys.
 - `~/.qwen-dictation/vocabulary.json`: user-approved context terms.
 - `~/.qwen-dictation/history.json`: latest 50 transcript texts, no audio.
 - `~/.qwen-dictation/vocabulary-candidates.json`: candidate counts and dismissals.
+- `~/.qwen-dictation/diagnostics.jsonl`: latest operational events only; no audio,
+  transcript text, or intermediate hypotheses.
 
 Legacy user `dictionary.json` files are intentionally left untouched but are no
 longer read. The max recording default is 300 seconds; legacy default `0` values

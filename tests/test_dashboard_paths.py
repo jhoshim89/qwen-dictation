@@ -80,6 +80,41 @@ def test_dashboard_debug_returns_recorder_events(monkeypatch):
     assert resp.get_json() == {"events": [{"reason": "below_gate", "peak": 10}]}
 
 
+def test_dashboard_status_includes_capture_health(monkeypatch):
+    from types import SimpleNamespace
+    recorder = SimpleNamespace(
+        capture_health=lambda: {
+            "ready": True,
+            "capture_on": True,
+            "thread_alive": True,
+            "last_frame_age_ms": 12,
+        }
+    )
+    monkeypatch.setattr(
+        dashboard,
+        "app_instance",
+        SimpleNamespace(started=True, elapsed_time=2, processing_active=False, recorder=recorder),
+    )
+
+    payload = dashboard.flask_app.test_client().get("/api/status").get_json()
+
+    assert payload["capture"]["ready"] is True
+    assert payload["capture"]["last_frame_age_ms"] == 12
+
+
+def test_dashboard_selftest_rejects_while_dictating(monkeypatch):
+    from types import SimpleNamespace
+    monkeypatch.setattr(
+        dashboard,
+        "app_instance",
+        SimpleNamespace(started=True, processing_active=False, recorder=SimpleNamespace()),
+    )
+
+    response = dashboard.flask_app.test_client().post("/api/selftest", json={"seconds": 1})
+
+    assert response.status_code == 409
+
+
 def test_dashboard_history_correction_candidate_flow(tmp_path, monkeypatch):
     monkeypatch.setattr(app_paths, "history_path", lambda: str(tmp_path / "history.json"))
     monkeypatch.setattr(app_paths, "vocabulary_candidates_path", lambda: str(tmp_path / "candidates.json"))

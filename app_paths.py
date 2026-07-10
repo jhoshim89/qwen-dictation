@@ -75,3 +75,8 @@ def history_path():
 def vocabulary_candidates_path():
     """승인 전 단어 후보와 숨김 상태 파일 경로."""
     return os.path.join(user_data_dir(), "vocabulary-candidates.json")
+
+
+def diagnostics_path():
+    """텍스트·오디오를 제외한 최근 런타임 진단 이벤트 경로."""
+    return os.path.join(user_data_dir(), "diagnostics.jsonl")

@@ -266,6 +266,14 @@ def test_model_loading_reflects_transcriber_flag():
     assert wd.StatusBarApp._model_loading(app) is True
 
 
+def test_model_loading_reflects_queued_background_load():
+    import types
+    wd = _load()
+    tr = types.SimpleNamespace(loading=False, current_model_loading=lambda: True)
+    app = types.SimpleNamespace(recorder=types.SimpleNamespace(transcriber=tr))
+    assert wd.StatusBarApp._model_loading(app) is True
+
+
 def test_model_loading_false_without_recorder():
     import types
     wd = _load()
@@ -297,6 +305,34 @@ def test_started_overlay_shows_listening_not_cold_start(monkeypatch):
     assert (labels, updates) == (["듣는 중"], [(0.42, 2)])
 
 
+def test_started_overlay_waits_for_first_microphone_frame(monkeypatch):
+    import types
+    wd = _load()
+    labels, updates = [], []
+    ov = types.SimpleNamespace(
+        set_mode=lambda *args: None,
+        update=lambda level, elapsed: updates.append((level, elapsed)),
+        set_processing=lambda flag: None,
+        show_status=labels.append,
+        hide=lambda: None,
+    )
+    rec = types.SimpleNamespace(
+        transcriber=types.SimpleNamespace(loading=False),
+        capture_ready=lambda: False,
+    )
+    app = types.SimpleNamespace(
+        recorder=rec, hud_mode="pill", hud_pin_x=None, hud_pin_y=None, started=True,
+        start_time=100.0, elapsed_time=0, title=None, processing_active=False, _applied_hud=None,
+    )
+    app._model_loading = wd.StatusBarApp._model_loading.__get__(app, type(app))
+    monkeypatch.setattr(wd.hud_overlay, "get_overlay", lambda: ov)
+    monkeypatch.setattr(wd.time, "time", lambda: 101.0)
+
+    wd.StatusBarApp._tick_overlay(app, None)
+
+    assert (labels, updates) == (["마이크 준비 중…"], [(0.0, 1)])
+
+
 def test_loading_pulse_in_unit_range():
     wd = _load()
     for _ in range(20):
@@ -323,6 +359,7 @@ def test_get_model_clears_loading_flag_on_success(monkeypatch):
     tr.get_model()
     assert tr.loading is False           # 끝나면 내려간다
     assert tr.model_1_7b is not None
+    assert tr.current_model_ready() is True
 
 
 def test_get_model_clears_loading_flag_on_failure(monkeypatch):
@@ -340,3 +377,6 @@ def test_get_model_clears_loading_flag_on_failure(monkeypatch):
     with pytest.raises(RuntimeError):
         tr.get_model()
     assert tr.loading is False           # 실패해도 표시가 영원히 남지 않게 내려간다
+    assert tr.current_model_ready() is False
+    with pytest.raises(RuntimeError, match="ASR model load failed"):
+        tr.wait_current_model_ready(timeout=0.2)
