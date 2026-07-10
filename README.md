@@ -120,8 +120,8 @@ Example `vocabulary.json`:
 
 ## Recent dictation and vocabulary suggestions
 
-The dashboard stores the latest 50 final transcript texts locally, without
-audio. Correct a recent transcript inside the dashboard to create vocabulary
+The dashboard can store the latest 50 final transcript texts locally, without
+audio. History can be disabled or cleared from the dashboard. Correct a recent transcript inside the dashboard to create vocabulary
 candidates. A candidate is only added to the Qwen context after explicit
 approval. Repeated edits are recommended after two separate transcript records;
 nothing is learned from typing performed in other apps.
@@ -137,11 +137,17 @@ Settings (language, microphone, max recording time, and hotkeys) are saved to
 `~/.qwen-dictation/config.json` and restored on next launch. Recording stops
 after 300 seconds by default; set `max_time = 0` in advanced settings for no
 limit.
+All user-data files use owner-only permissions and crash-safe atomic writes.
+Audio passed to the ASR engine uses a private temporary WAV that is deleted as
+soon as each transcription call finishes.
 The default engine is **Qwen3-ASR 1.7B**. Dashboard engines:
 
 For intermittent capture diagnosis, the app retains up to 200 operational
 events in `~/.qwen-dictation/diagnostics.jsonl`. It never writes audio,
 transcript text, or intermediate recognition hypotheses to that file.
+Dashboard APIs require a per-launch token embedded in the local settings page;
+the focused-app typing test endpoint is disabled unless explicitly enabled for
+development.
 
 - **Qwen3-ASR 1.7B Original**: rolling WAV transcription for direct Qwen output.
 - **Nemotron 3.5 ASR 0.6B (MLX)**:

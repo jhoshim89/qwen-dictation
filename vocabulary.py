@@ -8,6 +8,7 @@ import json
 import os
 
 import app_paths
+import secure_store
 
 
 def load_vocabulary():
@@ -15,6 +16,7 @@ def load_vocabulary():
     if not os.path.exists(path):
         return []
     try:
+        secure_store.ensure_private_file(path)
         with open(path, "r", encoding="utf-8") as f:
             data = json.load(f)
         if isinstance(data, list):
@@ -33,8 +35,7 @@ def save_vocabulary(words):
             seen.add(w)
             cleaned.append(w)
     try:
-        with open(app_paths.vocabulary_path(), "w", encoding="utf-8") as f:
-            json.dump(cleaned, f, ensure_ascii=False, indent=2)
+        secure_store.atomic_write_json(app_paths.vocabulary_path(), cleaned)
     except Exception as exc:
         print(f"Vocabulary save error: {exc}")
     return cleaned

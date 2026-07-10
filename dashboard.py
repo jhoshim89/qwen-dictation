@@ -1,6 +1,7 @@
 import json
 import logging
 import os
+import secrets
 import threading
 from flask import Flask, jsonify, request, render_template_string, send_from_directory
 
@@ -9,6 +10,7 @@ import app_config
 import asr_engines
 import dictation_history
 import hotkeys
+import temporary_audio
 import vocabulary
 
 # Suppress flask output logs to keep the console clean
@@ -17,6 +19,30 @@ log.setLevel(logging.ERROR)
 
 flask_app = Flask(__name__)
 app_instance = None  # Global reference to StatusBarApp
+_API_TOKEN = secrets.token_urlsafe(32)
+_ALLOWED_HOSTS = {"127.0.0.1", "127.0.0.1:5001", "localhost", "localhost:5001"}
+_ALLOWED_ORIGINS = {"http://127.0.0.1:5001", "http://localhost:5001"}
+_DIAGNOSTIC_LOCK = threading.Lock()
+_TEST_API_ENABLED = os.environ.get("QWEN_ENABLE_TEST_API") == "1"
+
+
+@flask_app.before_request
+def protect_local_api():
+    """Keep localhost APIs private to the dashboard page served by this process."""
+    if not request.path.startswith("/api/"):
+        return None
+    if request.host.lower() not in _ALLOWED_HOSTS:
+        return jsonify({"error": "invalid local host"}), 403
+    supplied = request.headers.get("X-Qwen-Token", "")
+    if not secrets.compare_digest(supplied, _API_TOKEN):
+        return jsonify({"error": "unauthorized local request"}), 403
+    if request.method in {"POST", "PUT", "PATCH", "DELETE"}:
+        origin = request.headers.get("Origin")
+        if origin and origin.rstrip("/") not in _ALLOWED_ORIGINS:
+            return jsonify({"error": "invalid request origin"}), 403
+        if not request.is_json:
+            return jsonify({"error": "application/json required"}), 415
+    return None
 
 
 def list_input_devices():
@@ -43,7 +69,7 @@ def home():
         html_path = app_paths.resource_path('templates', 'dashboard.html')
         with open(html_path, 'r', encoding='utf-8') as f:
             content = f.read()
-        return render_template_string(content)
+        return render_template_string(content, api_token=_API_TOKEN)
     except Exception as e:
         return f"Error loading dashboard: {e}", 500
 
@@ -71,6 +97,7 @@ def get_config():
         "asr_engines": asr_engines.available_asr_engines(),
         "edit_interrupt_mode": getattr(app_instance, 'edit_interrupt_mode', app_config.DEFAULTS["edit_interrupt_mode"]),
         "hold_send_enter": bool(getattr(app_instance, 'hold_send_enter', True)),
+        "save_history": bool(getattr(app_instance, 'save_history', True)),
         "domain_context": getattr(app_instance, 'domain_context', ''),
         "hud_mode": getattr(app_instance, 'hud_mode', 'pill'),
         "hud_pin_x": getattr(app_instance, 'hud_pin_x', None),
@@ -87,7 +114,7 @@ def post_config():
     if not app_instance:
         return jsonify({"error": "App instance not initialized"}), 500
 
-    data = request.json
+    data = request.get_json(silent=True)
     if not data:
         return jsonify({"error": "Invalid request payload"}), 400
 
@@ -125,6 +152,8 @@ def post_config():
             app_instance.edit_interrupt_mode = mode if mode in ("continue", "stop") else app_config.DEFAULTS["edit_interrupt_mode"]
         if 'hold_send_enter' in data:
             app_instance.hold_send_enter = bool(data['hold_send_enter'])
+        if 'save_history' in data:
+            app_instance.save_history = bool(data['save_history'])
         if hotkey_changed:
             hold = data.get("hold_key", getattr(app_instance, "hold_key", "ctrl_r"))
             toggle = data.get("toggle_key", getattr(app_instance, "toggle_key", "alt_r"))
@@ -170,12 +199,19 @@ def selftest():
         return jsonify({"ok": False, "error": "app/recorder not ready"}), 503
     if getattr(app_instance, "started", False) or getattr(app_instance, "processing_active", False):
         return jsonify({"ok": False, "error": "dictation is active"}), 409
+    if not _DIAGNOSTIC_LOCK.acquire(blocking=False):
+        return jsonify({"ok": False, "error": "diagnostic is active"}), 409
+    pa = None
+    stream = None
+    set_processing = getattr(app_instance, "set_processing", None)
+    if callable(set_processing):
+        set_processing(True)
     try:
-        import tempfile
         import numpy as np
         import pyaudio
         import soundfile as sf
-        seconds = float((request.json or {}).get("seconds", 5)) if request.is_json else 5.0
+        payload = request.get_json(silent=True) or {}
+        seconds = float(payload.get("seconds", 5))
         seconds = max(1.0, min(15.0, seconds))
         pa = pyaudio.PyAudio()
         preferred = getattr(app_instance, "input_device", "")
@@ -189,23 +225,26 @@ def selftest():
             None,
         )
         if preferred and selected is None:
-            pa.terminate()
             raise RuntimeError(f"선택한 마이크를 찾을 수 없습니다: {preferred}")
         dev = selected or pa.get_default_input_device_info()
-        st = pa.open(format=pyaudio.paInt16, channels=1, rate=16000, input=True,
-                     input_device_index=dev.get("index"), frames_per_buffer=1024)
+        stream = pa.open(format=pyaudio.paInt16, channels=1, rate=16000, input=True,
+                         input_device_index=dev.get("index"), frames_per_buffer=1024)
         frames = []
         for _ in range(int(16000 / 1024 * seconds)):
-            frames.append(st.read(1024, exception_on_overflow=False))
-        st.stop_stream(); st.close(); pa.terminate()
+            frames.append(stream.read(1024, exception_on_overflow=False))
+        stream.stop_stream()
+        stream.close()
+        stream = None
+        pa.terminate()
+        pa = None
         raw = b"".join(frames)
         a = np.frombuffer(raw, dtype=np.int16)
         peak = int(np.max(np.abs(a.astype(np.int32)))) if a.size else 0
         rms = int(np.sqrt(np.mean(a.astype(np.float64) ** 2))) if a.size else 0
-        path = tempfile.gettempdir() + "/qwen_selftest.wav"
-        sf.write(path, a.astype(np.float32) / 32768.0, 16000)
-        text = app_instance.recorder.transcriber.transcribe_file(
-            path, language=app_instance.current_language)
+        with temporary_audio.temporary_wav(prefix="qwen-selftest-") as path:
+            sf.write(path, a.astype(np.float32) / 32768.0, 16000)
+            text = app_instance.recorder.transcriber.transcribe_file(
+                path, language=app_instance.current_language)
         return jsonify({"ok": True, "device": dev.get("name"), "seconds": seconds,
                         "peak": peak, "rms": rms, "text": text,
                         "language": app_instance.current_language,
@@ -214,6 +253,26 @@ def selftest():
                         )})
     except Exception as e:
         return jsonify({"ok": False, "error": repr(e)}), 500
+    finally:
+        if stream is not None:
+            try:
+                stream.stop_stream()
+            except Exception:
+                pass
+            try:
+                stream.close()
+            except Exception:
+                pass
+        if pa is not None:
+            try:
+                pa.terminate()
+            except Exception:
+                pass
+        try:
+            if callable(set_processing):
+                set_processing(False)
+        finally:
+            _DIAGNOSTIC_LOCK.release()
 
 @flask_app.route('/api/dictate_test', methods=['POST'])
 def dictate_test():
@@ -221,25 +280,48 @@ def dictate_test():
     start_app → N초 녹음·스트리밍 타이핑(포커스된 앱에 type_diff) → stop_app.
     원격(SSH)에서 스피커로 소리를 내며 호출하면, 마이크→변환→실제 타이핑까지 전 구간을
     포커스된 입력창(예: 크롬 textarea)에서 검증할 수 있다. localhost 전용."""
+    if not _TEST_API_ENABLED:
+        return jsonify({"ok": False, "error": "test API disabled"}), 404
     if not app_instance or not getattr(app_instance, 'recorder', None):
         return jsonify({"ok": False, "error": "app/recorder not ready"}), 503
     if getattr(app_instance, "started", False) or getattr(app_instance, "processing_active", False):
         return jsonify({"ok": False, "error": "dictation is active"}), 409
+    if not _DIAGNOSTIC_LOCK.acquire(blocking=False):
+        return jsonify({"ok": False, "error": "diagnostic is active"}), 409
+    started_by_test = False
     try:
         import time
-        seconds = float((request.json or {}).get("seconds", 6)) if request.is_json else 6.0
+        seconds = float((request.get_json(silent=True) or {}).get("seconds", 6))
         seconds = max(2.0, min(15.0, seconds))
-        app_instance.dispatch_to_main(app_instance.start_app, None, wait=True)
+        started_by_test = bool(
+            app_instance.dispatch_to_main(app_instance.start_app, None, wait=True)
+        )
+        if not started_by_test:
+            raise RuntimeError("dictation did not start")
         time.sleep(seconds)
         app_instance.dispatch_to_main(app_instance.stop_app, None, wait=True)
+        started_by_test = False
         time.sleep(1.2)  # 정지 후 마지막 스트리밍 tick 이 타이핑을 끝내도록
         rec = app_instance.recorder
-        typed = (getattr(rec, 'committed_text', '') or '') + (getattr(rec, 'last_typed', '') or '')
         return jsonify({"ok": True, "seconds": seconds,
                         "committed": getattr(rec, 'committed_text', ''),
                         "last_typed": getattr(rec, 'last_typed', '')})
     except Exception as e:
         return jsonify({"ok": False, "error": repr(e)}), 500
+    finally:
+        if started_by_test:
+            try:
+                if getattr(app_instance, "started", False):
+                    app_instance.dispatch_to_main(
+                        app_instance.stop_app, None, False, False, wait=True
+                    )
+            except Exception:
+                pass
+            try:
+                app_instance.recorder.abort()
+            except Exception:
+                pass
+        _DIAGNOSTIC_LOCK.release()
 
 @flask_app.route('/api/vocabulary', methods=['GET'])
 def get_vocabulary():
@@ -247,7 +329,7 @@ def get_vocabulary():
 
 @flask_app.route('/api/vocabulary', methods=['POST'])
 def post_vocabulary():
-    data = request.json
+    data = request.get_json(silent=True)
     if not isinstance(data, list):
         return jsonify({"error": "expected a list of words"}), 400
     cleaned = vocabulary.save_vocabulary(data)
@@ -259,9 +341,15 @@ def get_history():
     return jsonify(dictation_history.load_history())
 
 
+@flask_app.route('/api/history/clear', methods=['POST'])
+def clear_history():
+    dictation_history.clear_history()
+    return jsonify([])
+
+
 @flask_app.route('/api/history/<history_id>/correction', methods=['POST'])
 def post_history_correction(history_id):
-    corrected_text = (request.json or {}).get("corrected_text", "")
+    corrected_text = (request.get_json(silent=True) or {}).get("corrected_text", "")
     try:
         return jsonify({"candidates": dictation_history.record_correction(history_id, corrected_text)})
     except ValueError as exc:
@@ -276,7 +364,9 @@ def get_vocabulary_candidates():
 @flask_app.route('/api/vocabulary/candidates/accept', methods=['POST'])
 def accept_vocabulary_candidate():
     try:
-        words = dictation_history.accept_candidate((request.json or {}).get("term"))
+        words = dictation_history.accept_candidate(
+            (request.get_json(silent=True) or {}).get("term")
+        )
         return jsonify({"vocabulary": words, "candidates": dictation_history.list_candidates()})
     except ValueError as exc:
         return jsonify({"error": str(exc)}), 400
@@ -285,7 +375,9 @@ def accept_vocabulary_candidate():
 @flask_app.route('/api/vocabulary/candidates/dismiss', methods=['POST'])
 def dismiss_vocabulary_candidate():
     try:
-        dictation_history.dismiss_candidate((request.json or {}).get("term"))
+        dictation_history.dismiss_candidate(
+            (request.get_json(silent=True) or {}).get("term")
+        )
         return jsonify(dictation_history.list_candidates())
     except ValueError as exc:
         return jsonify({"error": str(exc)}), 400

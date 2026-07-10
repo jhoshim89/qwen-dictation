@@ -25,7 +25,11 @@ DATA_FILES = [
         "assets/fonts/PretendardVariable.woff2",
         "assets/fonts/LICENSE.txt",
     ]),
-    ("", ["app_paths.py", "asr_engines.py", "dashboard.py", "dictation_history.py", "hotkeys.py", "audio_level.py"]),
+    ("", [
+        "app_paths.py", "asr_engines.py", "dashboard.py", "dictation_history.py",
+        "diagnostics.py", "secure_store.py", "temporary_audio.py", "hotkeys.py",
+        "audio_level.py",
+    ]),
 ]
 
 PACKAGES = [

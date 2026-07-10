@@ -7,6 +7,7 @@ import time
 import uuid
 
 import app_paths
+import secure_store
 import vocabulary
 
 HISTORY_LIMIT = 50
@@ -18,6 +19,7 @@ def _load(path, default):
     if not os.path.exists(path):
         return default
     try:
+        secure_store.ensure_private_file(path)
         with open(path, "r", encoding="utf-8") as f:
             data = json.load(f)
         return data
@@ -27,8 +29,7 @@ def _load(path, default):
 
 
 def _save(path, data):
-    with open(path, "w", encoding="utf-8") as f:
-        json.dump(data, f, ensure_ascii=False, indent=2)
+    secure_store.atomic_write_json(path, data)
 
 
 def load_history():
@@ -44,6 +45,10 @@ def add_history(text):
     entry = {"id": uuid.uuid4().hex, "text": text, "created_at": int(time.time())}
     _save(app_paths.history_path(), ([entry] + entries)[:HISTORY_LIMIT])
     return entry
+
+
+def clear_history():
+    _save(app_paths.history_path(), [])
 
 
 def _candidate_state():

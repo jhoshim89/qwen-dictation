@@ -30,6 +30,7 @@ import audio_level
 import hud_overlay
 import hotkeys
 import settings_window
+import temporary_audio
 import text_normalize
 
 try:
@@ -1130,10 +1131,10 @@ class Recorder:
             self.self_type_guard_until = time.time() + SELF_TYPE_GUARD_SETTLE_SEC
 
     def _transcribe_window(self, window_bytes, language, context=""):
-        path = "/tmp/qwen_dictation_stream.wav"
         audio = np.frombuffer(window_bytes, dtype=np.int16).astype(np.float32) / 32768.0
-        sf.write(path, audio, 16000)
-        return self.transcriber.transcribe_file(path, language=language, context=context)
+        with temporary_audio.temporary_wav() as path:
+            sf.write(path, audio, 16000)
+            return self.transcriber.transcribe_file(path, language=language, context=context)
 
     def _biased_commit_hypo(self, window, language, unbiased, window_secs):
         """확정 시점에만, 충분히 긴 창에 한해 등록 용어를 모델에 귀띔해 다시 받아쓴다.
@@ -1410,7 +1411,8 @@ class Recorder:
             # 마지막 틱에서 새로 친 글자가 있으면 짧은 반영 대기를, 없으면 곧장 보낸다.
             if getattr(self, "send_enter_on_stop", False) and self.last_typed.strip():
                 self._send_enter(settle=0.03 if self.last_typed != typed_before else 0.0)
-            dictation_history.add_history(self.last_typed)
+            if getattr(getattr(self, "app", None), "save_history", True):
+                dictation_history.add_history(self.last_typed)
         finally:
             app = getattr(self, "app", None)
             set_processing = getattr(app, "set_processing", None)
@@ -1671,6 +1673,7 @@ class StatusBarApp(rumps.App):
             ),
             "edit_interrupt_mode": getattr(self, "edit_interrupt_mode", "stop"),
             "hold_send_enter": getattr(self, "hold_send_enter", True),
+            "save_history": getattr(self, "save_history", True),
             "domain_context": getattr(self, "domain_context", ""),
             "hud_mode": getattr(self, "hud_mode", "pill"),
             "hud_pin_x": getattr(self, "hud_pin_x", None),
@@ -1718,6 +1721,7 @@ class StatusBarApp(rumps.App):
         mode = cfg.get("edit_interrupt_mode", "stop")
         self.edit_interrupt_mode = mode if mode in ("continue", "stop") else "stop"
         self.hold_send_enter = bool(cfg.get("hold_send_enter", True))
+        self.save_history = bool(cfg.get("save_history", True))
         self.domain_context = str(cfg.get("domain_context", "") or "")
         self.hud_mode = hud_overlay.normalize_hud_mode(cfg.get("hud_mode", "pill"))
         self.hud_pin_x = cfg.get("hud_pin_x")

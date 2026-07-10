@@ -1,5 +1,6 @@
 # test_streaming.py
 import importlib.util
+import os
 import numpy as np
 
 
@@ -806,6 +807,40 @@ def test_history_saved_after_enter(monkeypatch):
     monkeypatch.setattr(wd.dictation_history, "add_history", lambda *_: order.append("history"))
     rec._stream_loop("ko")
     assert order == ["enter", "history"]  # 엔터가 기록 저장보다 먼저
+
+
+def test_history_not_saved_when_disabled(monkeypatch):
+    wd = _load()
+    rec = _kbd_recorder(wd)
+    rec.app = type("App", (), {"save_history": False})()
+    rec.recording = False
+    rec.finalize_on_stop = True
+    monkeypatch.setattr(rec, "_stream_tick", lambda *a, **k: setattr(rec, "last_typed", "끝말"))
+    saved = []
+    monkeypatch.setattr(wd.dictation_history, "add_history", saved.append)
+
+    rec._stream_loop("ko")
+
+    assert saved == []
+
+
+def test_transcribe_window_removes_private_temporary_audio():
+    wd = _load()
+    seen = []
+
+    class Transcriber(_FakeTranscriber):
+        def transcribe_file(self, path, language=None, context=""):
+            seen.append(path)
+            assert os.path.exists(path)
+            assert os.stat(path).st_mode & 0o777 == 0o600
+            return "ok"
+
+    rec = wd.Recorder(Transcriber(), app=None)
+    result = rec._transcribe_window(b"\x00\x00" * 200, "Korean")
+
+    assert result == "ok"
+    assert len(seen) == 1
+    assert not os.path.exists(seen[0])
 
 
 def test_hold_deferred_text_is_typed_before_enter(monkeypatch):

@@ -1,6 +1,8 @@
 import app_paths
 import dictation_history
 import vocabulary
+import os
+import stat
 
 
 def _paths(tmp_path, monkeypatch):
@@ -41,3 +43,13 @@ def test_dismiss_and_reset_candidate(tmp_path, monkeypatch):
     assert dictation_history.list_candidates() == []
     dictation_history.reset_dismissed()
     assert dictation_history.list_candidates()[0]["term"] == "Qwen"
+
+
+def test_history_clear_and_private_permissions(tmp_path, monkeypatch):
+    _paths(tmp_path, monkeypatch)
+    dictation_history.add_history("private text")
+    path = tmp_path / "history.json"
+
+    assert stat.S_IMODE(os.stat(path).st_mode) == 0o600
+    dictation_history.clear_history()
+    assert dictation_history.load_history() == []

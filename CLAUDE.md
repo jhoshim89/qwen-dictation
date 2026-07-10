@@ -40,7 +40,8 @@ hotkeys.
   It never applies find-replace rules.
 - `hud_overlay.py` draws the in-process coral jelly-bar HUD. There is no
   subprocess HUD or review card.
-- `dictation_history.py` stores the latest 50 final transcript texts locally.
+- `dictation_history.py` stores the latest 50 final transcript texts locally
+  when history is enabled.
   Dashboard edits create candidate context terms; explicit approval is required
   before a term enters `vocabulary.json`.
 
@@ -48,10 +49,14 @@ hotkeys.
 
 - `~/.qwen-dictation/config.json`: live settings only.
 - `~/.qwen-dictation/vocabulary.json`: user-approved context terms.
-- `~/.qwen-dictation/history.json`: latest 50 transcript texts, no audio.
+- `~/.qwen-dictation/history.json`: optional latest 50 transcript texts, no audio.
 - `~/.qwen-dictation/vocabulary-candidates.json`: candidate counts and dismissals.
 - `~/.qwen-dictation/diagnostics.jsonl`: latest operational events only; no audio,
   transcript text, or intermediate hypotheses.
+
+User-data files are atomically replaced with mode 0600. ASR WAV inputs are
+private temporary files removed immediately after each transcription. Local
+dashboard APIs require the per-process token embedded in the dashboard page.
 
 Legacy user `dictionary.json` files are intentionally left untouched but are no
 longer read. The max recording default is 300 seconds; legacy default `0` values

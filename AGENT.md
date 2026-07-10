@@ -7,10 +7,14 @@ This is a local macOS dictation MVP using Qwen3-ASR 1.7B.
 - Keep one live-streaming input flow: hold-to-talk and toggle start/stop.
 - Keep the menu-bar app and local dashboard at `http://127.0.0.1:5001`.
 - Treat approved vocabulary as Qwen context hints, never guaranteed replacement.
-- Store only the latest 50 final transcript texts locally. Never track edits in
-  external apps or silently learn vocabulary.
+- Store only the latest 50 final transcript texts locally when history is
+  enabled. Never track edits in external apps or silently learn vocabulary.
 - Keep only the latest 200 operational diagnostic events. Never include audio,
   transcript text, or intermediate hypotheses in diagnostics.
+- Create ASR path inputs only with `temporary_audio.temporary_wav`; never leave
+  microphone audio behind in `/tmp` or another persistent location.
+- Keep dashboard APIs protected by the per-process token and local Host/Origin
+  checks. The focused-app typing test API must stay disabled by default.
 
 ## Runtime and testing
 
@@ -34,3 +38,4 @@ This is a local macOS dictation MVP using Qwen3-ASR 1.7B.
 - Keep the app small and local-first. Do not add paid cloud STT APIs.
 - Do not reintroduce Whisper, batch, review-card, or find-replace paths.
 - Preserve user files under `~/.qwen-dictation/`.
+- Write user data through `secure_store` with atomic replacement and mode 0600.
