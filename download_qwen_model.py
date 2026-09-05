@@ -13,7 +13,7 @@ def main():
     parser.add_argument("--model", default=DEFAULT_MODEL)
     parser.add_argument(
         "--engine",
-        choices=[asr_engines.ASR_ENGINE_QWEN, asr_engines.ASR_ENGINE_NEMOTRON_MLX],
+        choices=[asr_engines.ASR_ENGINE_QWEN, asr_engines.ASR_ENGINE_QWEN_MLX, asr_engines.ASR_ENGINE_NEMOTRON_MLX],
         help="Download the configured default model for this engine.",
     )
     args = parser.parse_args()
@@ -21,7 +21,7 @@ def main():
     os.environ.setdefault("HF_HUB_DISABLE_XET", "1")
     os.environ.setdefault(
         "HF_HUB_ENABLE_HF_TRANSFER",
-        "0" if args.engine == asr_engines.ASR_ENGINE_NEMOTRON_MLX else "1",
+        "0" if args.engine and asr_engines.is_mlx_engine(args.engine) else "1",
     )
 
     model = asr_engines.asr_engine_model(args.engine) if args.engine else args.model

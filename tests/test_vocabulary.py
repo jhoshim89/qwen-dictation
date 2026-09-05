@@ -62,3 +62,22 @@ def test_build_context_domain_not_counted_in_term_limit():
     out = vocabulary.build_context(words, domain="DOM")
     expected = "DOM. 전문 용어: " + ", ".join(f"w{i}" for i in range(vocabulary.MAX_CONTEXT_TERMS))
     assert out == expected   # domain 은 한도에 안 들어가고, 단어는 w0..w23 만
+
+
+def test_save_drops_overlong_terms(tmp_path, monkeypatch):
+    monkeypatch.setattr(app_paths, "vocabulary_path", lambda: str(tmp_path / "vocabulary.json"))
+    long_term = "가" * (vocabulary.MAX_TERM_CHARS + 1)
+    assert vocabulary.save_vocabulary(["각막", long_term]) == ["각막"]
+
+
+def test_save_caps_total_term_count(tmp_path, monkeypatch):
+    monkeypatch.setattr(app_paths, "vocabulary_path", lambda: str(tmp_path / "vocabulary.json"))
+    saved = vocabulary.save_vocabulary([f"w{i}" for i in range(vocabulary.MAX_VOCABULARY_TERMS + 50)])
+    assert len(saved) == vocabulary.MAX_VOCABULARY_TERMS
+    assert vocabulary.load_vocabulary() == saved
+
+
+def test_append_vocabulary_keeps_existing_terms(tmp_path, monkeypatch):
+    monkeypatch.setattr(app_paths, "vocabulary_path", lambda: str(tmp_path / "vocabulary.json"))
+    vocabulary.save_vocabulary(["각막"])
+    assert vocabulary.append_vocabulary(["궤양", "각막"]) == ["각막", "궤양"]

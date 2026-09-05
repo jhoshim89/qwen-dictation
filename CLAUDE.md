@@ -3,8 +3,10 @@
 ## What this is
 
 Qwen Dictation is a local-first macOS menu-bar dictation app powered by
-switchable local ASR engines. **Qwen3-ASR 1.7B** is the default; **Qwen
-Original** and **Nemotron 3.5 ASR 0.6B (MLX)** can be selected for comparison/use.
+switchable local ASR engines. **Qwen3-ASR 1.7B** (torch/MPS) is the default;
+**Qwen3-ASR 1.7B (MLX)** (same weights, 8-bit, faster load and first
+inference), **Qwen Original** and **Nemotron 3.5 ASR 0.6B (MLX)** can be
+selected. The MLX engines need the optional `./install_mlx_runtime.sh`.
 It records microphone audio, transcribes locally, and types the visible diff
 into the focused input field. The Flask dashboard at
 `http://127.0.0.1:5001` edits live settings and user vocabulary.
@@ -35,9 +37,11 @@ hotkeys.
 - `Recorder._stream_loop` wakes every `STREAM_INTERVAL` (0.8s), transcribes the
   current audio window, and uses `type_diff` to update focused text. Pauses
   commit spans and trim the window.
-- `SpeechTranscriber` lazy-loads the selected ASR engine. Qwen supports
-  commit-time `context=` bias; Nemotron MLX uses the shared post-correction path.
-  It never applies find-replace rules.
+- `SpeechTranscriber` lazy-loads the selected ASR engine and runs a synthetic
+  warm-up transcription before marking it ready (first MPS inference otherwise
+  costs ~10s). Qwen torch and Qwen MLX support commit-time `context=` bias (MLX
+  maps it to `system_prompt`); Nemotron MLX uses the shared post-correction
+  path. It never applies find-replace rules.
 - `hud_overlay.py` draws the in-process coral jelly-bar HUD. There is no
   subprocess HUD or review card.
 - `dictation_history.py` stores the latest 50 final transcript texts locally

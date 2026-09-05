@@ -233,6 +233,16 @@ def test_transcribe_file_uses_nemotron_mlx_stream_generate(tmp_path, monkeypatch
     fake = FakeNemotron()
     tr = wd.SpeechTranscriber("cpu", None, asr_engine="nemotron")
     monkeypatch.setattr(tr, "get_nemotron_model", lambda: fake)
+    # mlx 는 선택 설치 런타임이다. 없는 환경에서도 이 경로의 로직을 검증할 수 있게
+    # `mlx.core.array` 만 흉내 낸다(실제 배열 변환은 이 테스트의 관심사가 아니다).
+    import sys
+    import types
+    fake_mx = types.ModuleType("mlx.core")
+    fake_mx.array = lambda samples: samples
+    fake_mlx = types.ModuleType("mlx")
+    fake_mlx.core = fake_mx
+    monkeypatch.setitem(sys.modules, "mlx", fake_mlx)
+    monkeypatch.setitem(sys.modules, "mlx.core", fake_mx)
 
     out = tr.transcribe_file(str(wav), language="ko", context="전문 용어: 커밋")
     assert out == "네모트론 결과"
@@ -380,3 +390,154 @@ def test_get_model_clears_loading_flag_on_failure(monkeypatch):
     assert tr.current_model_ready() is False
     with pytest.raises(RuntimeError, match="ASR model load failed"):
         tr.wait_current_model_ready(timeout=0.2)
+
+
+def test_get_model_warms_up_before_ready(monkeypatch):
+    # MPS 첫 추론은 컴파일 때문에 10초 안팎 걸린다. 준비 완료로 표시하기 전에 합성
+    # 오디오로 예열해 첫 실제 받아쓰기가 다음 틱과 같은 속도로 나오게 한다.
+    import os
+    import types
+    wd = _load()
+    tr = wd.SpeechTranscriber("cpu", None)
+    calls = []
+
+    class FakeModel:
+        def __init__(self):
+            self.model = types.SimpleNamespace(to=lambda dev: None)
+
+        @classmethod
+        def from_pretrained(cls, name, dtype=None):
+            return cls()
+
+        def transcribe(self, path, context="", language=None):
+            assert tr.current_model_ready() is False   # 예열은 준비 표시 전에 돈다
+            assert tr.loading is True                  # 예열 중에도 HUD 는 '불러오는 중'
+            assert os.path.exists(path) and path.endswith(".wav")
+            calls.append((os.path.getsize(path), context))
+            return []
+
+    monkeypatch.setattr(wd, "Qwen3ASRModel", FakeModel)
+    monkeypatch.setattr(wd, "safe_notify", lambda *a, **k: None)
+    tr.get_model()
+    assert len(calls) == len(wd.WARMUP_WINDOW_SECS)
+    assert all(context == "" for _, context in calls)   # 등록 용어를 예열에 쓰지 않는다
+    assert calls[0][0] < calls[1][0]                    # 짧은 창, 긴 창 순서
+    assert tr.current_model_ready() is True
+
+
+def test_get_model_survives_warm_up_failure(monkeypatch):
+    import types
+    wd = _load()
+    tr = wd.SpeechTranscriber("cpu", None)
+
+    class FakeModel:
+        def __init__(self):
+            self.model = types.SimpleNamespace(to=lambda dev: None)
+
+        @classmethod
+        def from_pretrained(cls, name, dtype=None):
+            return cls()
+
+        def transcribe(self, path, context="", language=None):
+            raise RuntimeError("warm-up boom")
+
+    monkeypatch.setattr(wd, "Qwen3ASRModel", FakeModel)
+    monkeypatch.setattr(wd, "safe_notify", lambda *a, **k: None)
+    tr.get_model()                                       # 예열 실패는 로드 실패가 아니다
+    assert tr.current_model_ready() is True
+    assert tr.loading is False
+
+
+def test_warmup_audio_is_deterministic_and_bounded():
+    wd = _load()
+    a = wd.warmup_audio(1.6)
+    b = wd.warmup_audio(1.6)
+    assert a.shape == (int(1.6 * 16000),)
+    assert (a == b).all()
+    assert float(abs(a).max()) < 0.2                    # 조용하지만 무음 게이트보다는 큼
+
+
+def _fake_mlx_qwen(calls):
+    class FakeMlxQwen:
+        def generate(self, audio, **kw):
+            calls.append({"audio": audio, "kw": kw})
+            return type("Out", (), {"text": " 엠엘엑스 결과 "})()
+    return FakeMlxQwen()
+
+
+def test_qwen_mlx_transcribe_maps_context_to_system_prompt(tmp_path, monkeypatch):
+    # qwen-asr 는 context 를 system 메시지로 넣는다. MLX 경로도 같은 자리(system_prompt)
+    # 에 넣어야 확정 시점 편향이 torch 엔진과 같은 방식으로 동작한다.
+    import numpy as np
+    wd = _load()
+    wav = tmp_path / "speech.wav"
+    _write_wav(wav, (np.random.RandomState(4).randn(16000) * 5000))
+    calls = []
+    tr = wd.SpeechTranscriber("cpu", None, asr_engine="qwen_mlx")
+    monkeypatch.setattr(tr, "get_qwen_mlx_model", lambda: _fake_mlx_qwen(calls))
+
+    out = tr.transcribe_file(str(wav), language="ko", context="전문 용어: 각막")
+    assert out == "엠엘엑스 결과"
+    assert calls[0]["kw"]["language"] == "Korean"
+    assert calls[0]["kw"]["system_prompt"] == "전문 용어: 각막"
+
+    calls.clear()
+    tr.transcribe_file(str(wav), language="auto", context="")
+    assert calls[0]["kw"]["language"] is None          # auto → 언어 자동 감지
+    assert calls[0]["kw"]["system_prompt"] is None     # 빈 context 는 system 없이
+
+
+def test_qwen_mlx_model_loads_and_warms_up_before_ready(monkeypatch):
+    wd = _load()
+    tr = wd.SpeechTranscriber("cpu", None, asr_engine="qwen_mlx")
+    calls = []
+    fake = _fake_mlx_qwen(calls)
+    loaded = []
+
+    def fake_load(model_id):
+        assert tr.loading is True
+        loaded.append(model_id)
+        return fake
+
+    monkeypatch.setattr(wd, "load_mlx_stt_model", fake_load)
+    monkeypatch.setattr(wd, "safe_notify", lambda *a, **k: None)
+    assert tr.current_model_ready() is False
+    assert tr.get_qwen_mlx_model() is fake
+    assert loaded == [wd.QWEN_MLX_MODEL]
+    assert len(calls) == len(wd.WARMUP_WINDOW_SECS)   # 예열이 돌았다
+    assert tr.current_model_ready() is True
+    assert tr.loading is False
+    assert tr.get_qwen_mlx_model() is fake            # 두 번째는 재로드 없음
+    assert loaded == [wd.QWEN_MLX_MODEL]
+
+
+def test_qwen_mlx_missing_runtime_gives_install_hint(monkeypatch):
+    import builtins
+    import pytest
+    wd = _load()
+    real_import = builtins.__import__
+
+    def no_mlx(name, *a, **k):
+        if name.startswith("mlx_audio"):
+            raise ImportError("no mlx_audio")
+        return real_import(name, *a, **k)
+
+    monkeypatch.setattr(builtins, "__import__", no_mlx)
+    with pytest.raises(RuntimeError, match="install_mlx_runtime"):
+        wd.load_mlx_stt_model("mlx-community/anything")
+
+
+def test_ensure_loading_routes_qwen_mlx(monkeypatch):
+    wd = _load()
+    tr = wd.SpeechTranscriber("cpu", None, asr_engine="qwen_mlx")
+    called = []
+    monkeypatch.setattr(tr, "get_qwen_mlx_model", lambda: called.append("mlx"))
+    monkeypatch.setattr(tr, "get_model", lambda: called.append("torch"))
+    tr.ensure_current_model_loading()
+    tr._model_state_changed.wait(2.0)
+    import time
+    for _ in range(50):
+        if called:
+            break
+        time.sleep(0.02)
+    assert called == ["mlx"]

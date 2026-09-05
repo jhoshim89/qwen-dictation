@@ -18,12 +18,18 @@ log = logging.getLogger('werkzeug')
 log.setLevel(logging.ERROR)
 
 flask_app = Flask(__name__)
+# Local APIs only ever carry small JSON settings payloads. Cap the body so a
+# runaway or malformed client cannot exhaust memory in the app process.
+flask_app.config["MAX_CONTENT_LENGTH"] = 1 * 1024 * 1024
 app_instance = None  # Global reference to StatusBarApp
 _API_TOKEN = secrets.token_urlsafe(32)
 _ALLOWED_HOSTS = {"127.0.0.1", "127.0.0.1:5001", "localhost", "localhost:5001"}
 _ALLOWED_ORIGINS = {"http://127.0.0.1:5001", "http://localhost:5001"}
 _DIAGNOSTIC_LOCK = threading.Lock()
 _TEST_API_ENABLED = os.environ.get("QWEN_ENABLE_TEST_API") == "1"
+MAX_TIME_LIMIT_SEC = 24 * 60 * 60
+MAX_DOMAIN_CONTEXT_CHARS = 500
+MAX_CORRECTION_CHARS = 10_000
 
 
 @flask_app.before_request
@@ -71,7 +77,8 @@ def home():
             content = f.read()
         return render_template_string(content, api_token=_API_TOKEN)
     except Exception as e:
-        return f"Error loading dashboard: {e}", 500
+        print(f"Dashboard render error: {e}")
+        return "Error loading dashboard. See the app console for details.", 500
 
 @flask_app.route('/assets/<path:filename>')
 def assets(filename):
@@ -125,7 +132,9 @@ def post_config():
             app_instance.current_language = data['language']
             app_instance.sync_menu_state()
         if 'max_time' in data:
-            app_instance.max_time = max(0, float(data['max_time']))
+            # 0 은 무제한. 그 외에는 정수 초로 고정한다 — inf/NaN 이 config.json 에
+            # 들어가면 다음 실행에서 설정 로드가 깨진다.
+            app_instance.max_time = max(0, min(MAX_TIME_LIMIT_SEC, int(float(data['max_time']))))
         if 'input_device' in data:
             app_instance.input_device = str(data['input_device'] or "")
         if 'min_volume' in data:
@@ -141,7 +150,7 @@ def post_config():
                     app_instance.recorder.transcriber.set_engine(app_instance.asr_engine)
                 app_instance.sync_menu_state()
         if 'domain_context' in data:
-            app_instance.domain_context = str(data['domain_context'] or "")
+            app_instance.domain_context = str(data['domain_context'] or "")[:MAX_DOMAIN_CONTEXT_CHARS]
             if getattr(app_instance, "recorder", None) is not None:
                 app_instance.recorder.transcriber.domain_context = app_instance.domain_context
         if 'hud_mode' in data:
@@ -349,7 +358,9 @@ def clear_history():
 
 @flask_app.route('/api/history/<history_id>/correction', methods=['POST'])
 def post_history_correction(history_id):
-    corrected_text = (request.get_json(silent=True) or {}).get("corrected_text", "")
+    corrected_text = str((request.get_json(silent=True) or {}).get("corrected_text", "") or "")
+    if len(corrected_text) > MAX_CORRECTION_CHARS:
+        return jsonify({"error": "corrected_text is too long"}), 400
     try:
         return jsonify({"candidates": dictation_history.record_correction(history_id, corrected_text)})
     except ValueError as exc:

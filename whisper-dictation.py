@@ -88,6 +88,7 @@ SafeKeyboardListener = _safe_keyboard_listener_class()
 
 MODEL_1_7B = asr_engines.QWEN_MODEL_ID
 NEMOTRON_MLX_MODEL = asr_engines.NEMOTRON_MLX_MODEL_ID
+QWEN_MLX_MODEL = asr_engines.QWEN_MLX_MODEL_ID
 
 # int16 진폭(최대 32767). 이 값보다 peak 가 작으면 말소리가 없는 버퍼로 보고
 # 받아쓰기를 건너뛴다. 무음/작은 잡음(peak 수백 이하) vs 실제 말(peak 1만 이상)
@@ -133,6 +134,24 @@ CAPTURE_MAX_CONSECUTIVE_ERRORS = 3
 CAPTURE_WATCHDOG_INTERVAL_SEC = 0.2
 MAC_BACKSPACE_KEYCODE = 51
 NOISE_FILLER_TEXTS = {"아", "어", "응", "음", "네", "예", "그", "그렇죠", "그쵸", "그렇지"}
+
+
+# 예열용 창 길이(초). 실제 라이브 틱(짧은 창)과 확정 시점(긴 창) 양쪽 모양을 한 번씩
+# 미리 돌려 두 경로 모두 첫 호출 지연을 없앤다.
+WARMUP_WINDOW_SECS = (1.6, 4.8)
+
+
+def warmup_audio(seconds, sample_rate=16000):
+    """예열용 합성 오디오. 말소리 대역의 몇 개 배음에 느린 진폭 변조를 준 결정적 신호.
+
+    출력 텍스트는 버리므로 내용은 상관없다. 마이크·사용자 데이터를 전혀 쓰지 않는다.
+    """
+    t = np.arange(int(seconds * sample_rate), dtype=np.float32) / float(sample_rate)
+    envelope = 0.5 * (1.0 + np.sin(2.0 * np.pi * 3.0 * t))
+    signal = np.zeros_like(t)
+    for freq in (140.0, 280.0, 560.0, 1120.0):
+        signal += np.sin(2.0 * np.pi * freq * t)
+    return (0.08 * envelope * signal / 4.0).astype(np.float32)
 
 
 def audio_peak(audio_path):
@@ -390,6 +409,18 @@ def normalize_language(language):
     return asr_engines.normalize_qwen_language(language)
 
 
+def load_mlx_stt_model(model_id):
+    """mlx-audio 는 선택 설치 런타임이다. 없으면 설치 안내가 담긴 오류로 바꾼다."""
+    try:
+        from mlx_audio.stt import load as load_stt_model
+    except Exception as exc:
+        raise RuntimeError(
+            "MLX 엔진을 쓰려면 mlx-audio optional runtime이 필요합니다. "
+            "README의 MLX 설치 안내(install_mlx_runtime.sh)를 먼저 실행하세요."
+        ) from exc
+    return load_stt_model(model_id)
+
+
 def dispatch_app(app, callback, *args):
     dispatch = getattr(app, "dispatch_to_main", None)
     if dispatch is None:
@@ -572,6 +603,7 @@ class SpeechTranscriber:
         self.asr_engine = asr_engines.normalize_asr_engine(asr_engine)
         self.model_1_7b = None
         self.nemotron_mlx_model = None
+        self.qwen_mlx_model = None
         self.model_lock = threading.Lock()
         self._model_state_lock = threading.Lock()
         self._model_state_changed = threading.Event()
@@ -595,6 +627,8 @@ class SpeechTranscriber:
         engine = asr_engines.normalize_asr_engine(asr_engine)
         if engine == asr_engines.ASR_ENGINE_NEMOTRON_MLX:
             return asr_engines.ASR_ENGINE_NEMOTRON_MLX
+        if engine == asr_engines.ASR_ENGINE_QWEN_MLX:
+            return asr_engines.ASR_ENGINE_QWEN_MLX
         # Qwen과 Qwen Original은 같은 모델 인스턴스를 공유한다.
         return asr_engines.ASR_ENGINE_QWEN
 
@@ -622,6 +656,8 @@ class SpeechTranscriber:
             try:
                 if key == asr_engines.ASR_ENGINE_NEMOTRON_MLX:
                     self.get_nemotron_model()
+                elif key == asr_engines.ASR_ENGINE_QWEN_MLX:
+                    self.get_qwen_mlx_model()
                 else:
                     self.get_model()
                 print(f"Model preloaded ({asr_engines.asr_engine_label(engine)}).")
@@ -670,6 +706,10 @@ class SpeechTranscriber:
                     self.model_1_7b = Qwen3ASRModel.from_pretrained(MODEL_1_7B, dtype=self.dtype)
                     self.model_1_7b.model.to(self.device)
                     self.model_1_7b.device = self.device
+                    # 준비 완료로 표시하기 전에 예열한다. 그래야 첫 실제 받아쓰기가
+                    # 컴파일 지연 없이 다음 틱들과 같은 속도로 나온다.
+                    model = self.model_1_7b
+                    self._warm_up(lambda path: model.transcribe(path, context="", language=None))
                     with self._model_state_lock:
                         self._ready_engines.add(key)
                         self._model_errors.pop(key, None)
@@ -689,6 +729,75 @@ class SpeechTranscriber:
                 self._model_state_changed.set()
             return self.model_1_7b
 
+    def _warm_up(self, run):
+        """로드 직후 합성 오디오로 한두 번 돌려 첫 실제 받아쓰기의 지연을 없앤다.
+
+        `run(path)` 는 해당 엔진으로 WAV 하나를 받아쓰는 호출. 결과는 버린다.
+
+        MPS 에서는 가중치 로드가 끝나도 첫 추론이 셰이더 컴파일 때문에 10초 안팎
+        걸린다(실측: 1.6초 창 첫 추론 11.7초, 두 번째 0.16초). 예열 없이는 앱을 켠
+        뒤 첫 문장이 한참 동안 화면에 안 나와 "안 된다"고 느끼게 된다. 예열 중에도
+        self.loading 이 True 라 HUD 는 계속 '불러오는 중'을 보여 준다. 예열 실패는
+        경고만 남기고 모델은 그대로 쓴다 — 실제 받아쓰기 경로에는 영향을 주지 않는다.
+        """
+        if not callable(run):
+            return
+        started = time.time()
+        for seconds in WARMUP_WINDOW_SECS:
+            try:
+                with temporary_audio.temporary_wav(prefix="qwen-dictation-warmup-") as path:
+                    sf.write(path, warmup_audio(seconds), 16000)
+                    run(path)
+            except Exception as exc:
+                print(f"Model warm-up skipped: {exc}")
+                return
+        print(f"Model warm-up done in {time.time() - started:.1f}s.")
+
+    def get_qwen_mlx_model(self):
+        """Qwen3-ASR 1.7B 의 MLX 8bit 변환본. Nemotron 과 같은 mlx-audio 런타임을 쓴다."""
+        key = asr_engines.ASR_ENGINE_QWEN_MLX
+        with self.model_lock:
+            if self.qwen_mlx_model is None:
+                self.loading = True
+                try:
+                    safe_notify("Qwen Dictation", "Loading model", "Qwen3-ASR-1.7B (MLX) 모델을 불러옵니다.")
+                    model = load_mlx_stt_model(QWEN_MLX_MODEL)
+                    # MLX 도 첫 추론은 커널 컴파일로 1~2초 더 걸린다(실측 1.55초 → 0.10초).
+                    self._warm_up(lambda path: model.generate(path, language=None))
+                    self.qwen_mlx_model = model
+                    with self._model_state_lock:
+                        self._ready_engines.add(key)
+                        self._model_errors.pop(key, None)
+                except Exception as exc:
+                    self.qwen_mlx_model = None
+                    with self._model_state_lock:
+                        self._ready_engines.discard(key)
+                        self._model_errors[key] = exc
+                    raise
+                finally:
+                    self.loading = False
+                    self._model_state_changed.set()
+            else:
+                with self._model_state_lock:
+                    self._ready_engines.add(key)
+                    self._model_errors.pop(key, None)
+                self._model_state_changed.set()
+            return self.qwen_mlx_model
+
+    def _transcribe_qwen_mlx(self, audio_path, language, context=""):
+        # qwen-asr 는 context 를 system 메시지로 넣는다. mlx-audio 의 Qwen3 구현도
+        # system_prompt 를 같은 자리(system 역할)에 넣으므로 그대로 옮기면 확정 시점
+        # 편향(등록 용어 귀띔)이 torch 경로와 같은 방식으로 동작한다.
+        model = self.get_qwen_mlx_model()
+        result = model.generate(
+            audio_path,
+            language=normalize_language(language),
+            system_prompt=context or None,
+        )
+        if isinstance(result, list):
+            result = result[0] if result else ""
+        return self._result_text(result)
+
     def get_nemotron_model(self):
         key = asr_engines.ASR_ENGINE_NEMOTRON_MLX
         with self.model_lock:
@@ -700,14 +809,7 @@ class SpeechTranscriber:
                         "Loading model",
                         "Nemotron 3.5 ASR MLX 모델을 불러옵니다.",
                     )
-                    try:
-                        from mlx_audio.stt import load as load_stt_model
-                    except Exception as exc:
-                        raise RuntimeError(
-                            "Nemotron MLX 엔진을 쓰려면 mlx-audio optional runtime이 필요합니다. "
-                            "README의 Nemotron 설치 안내를 먼저 실행하세요."
-                        ) from exc
-                    self.nemotron_mlx_model = load_stt_model(NEMOTRON_MLX_MODEL)
+                    self.nemotron_mlx_model = load_mlx_stt_model(NEMOTRON_MLX_MODEL)
                     with self._model_state_lock:
                         self._ready_engines.add(key)
                         self._model_errors.pop(key, None)
@@ -759,6 +861,8 @@ class SpeechTranscriber:
         engine = asr_engines.normalize_asr_engine(self.asr_engine)
         if engine == asr_engines.ASR_ENGINE_NEMOTRON_MLX:
             return self.get_nemotron_model()
+        if engine == asr_engines.ASR_ENGINE_QWEN_MLX:
+            return self.get_qwen_mlx_model()
         return self.get_model()
 
     def transcribe_file(self, audio_path, language=None, context=""):
@@ -772,6 +876,8 @@ class SpeechTranscriber:
         engine = asr_engines.normalize_asr_engine(self.asr_engine)
         if engine == asr_engines.ASR_ENGINE_NEMOTRON_MLX:
             return self._transcribe_nemotron_stream(audio_path, language)
+        if engine == asr_engines.ASR_ENGINE_QWEN_MLX:
+            return self._transcribe_qwen_mlx(audio_path, language, context=context)
 
         model = self.get_model()
         language = normalize_language(language)
@@ -816,6 +922,9 @@ class Recorder:
         # 우리가 type_diff 로 타이핑하는 동안 발생하는 합성 키 이벤트를 사용자의 수동
         # 입력으로 오인하지 않도록, 이 시각 전까지는 들어오는 키를 합성으로 간주한다.
         self.self_type_guard_until = 0.0
+        # 타이핑 도중 예외가 났는지 표시한다. True 로 남아 있으면 화면 상태를 믿을
+        # 수 없다는 뜻이라, 다음 틱에서 기준점을 리셋한다(_recover_after_tick_error).
+        self._typing_in_progress = False
         # 홀드 키를 떼서 정상 종료할 때만, 마지막 글자 입력 뒤 Enter 를 보낼지.
         self.send_enter_on_stop = False
         # Ctrl/Cmd 같은 modifier 를 홀드 키로 쓰는 동안 합성 backspace 가 섞이지
@@ -931,6 +1040,7 @@ class Recorder:
         self.append_only_until_stop = bool(append_only_live and live_typing)
         self.deferred_text = ""
         self.rebaseline_pending = False
+        self._typing_in_progress = False
         self._wake.clear()
         self._session_id += 1
         session_id = self._session_id
@@ -1160,7 +1270,18 @@ class Recorder:
             return unbiased  # 근거 없는 등록어가 튀어나옴(누출) → 거부
         return biased
 
-    def _stream_tick(self, language, allow_stopped=False):
+    def _stream_tick(self, language, allow_stopped=False, session_id=None):
+        # 받아쓰기 한 번은 추론을 한두 번 도는 동안 수백 ms 이상 걸린다. 그 사이에
+        # 사용자가 다시 홀드 키를 눌러 새 세션이 시작되면, 이 틱의 결과는 이미 지난
+        # 세션 것이다. 그대로 진행하면 새 세션이 초기화한 last_typed("")와 비교해
+        # 지난 문장을 통째로 다시 타이핑하고, window_start 까지 덮어써 새 세션의
+        # 기준점을 망가뜨린다. 세션이 바뀌면 조용히 버린다.
+        if session_id is None:
+            session_id = getattr(self, "_session_id", 0)
+
+        def session_changed():
+            return session_id != getattr(self, "_session_id", session_id)
+
         # 사용자가 직접 고친 직후라면 기준점을 현재로 리셋한다. 리스너 스레드와의
         # 경합을 피하려 플래그만 받아 스트리밍 스레드인 여기서 실제 상태를 바꾼다.
         if self.rebaseline_pending:
@@ -1208,6 +1329,8 @@ class Recorder:
         if not hypo:
             self._debug("empty_hypo", window_ms=round(len(window) / 2.0 / 16.0))
         if not self.recording and not allow_stopped:
+            return
+        if session_changed():
             return
         hypo = reduce_asr_punctuation(collapse_repeated_sentences(hypo))
         if looks_like_repetition_hallucination(hypo):
@@ -1300,6 +1423,10 @@ class Recorder:
             and self.recording
             and not allow_stopped
         )
+        # 확정 편향 재받아쓰기/한국어 재받아쓰기로 추론이 한 번 더 돌았을 수 있다.
+        # 실제로 키를 치기 직전에 세션을 다시 확인한다.
+        if session_changed():
+            return
         append_only = False
         if not defer_typing:
             append_only = (
@@ -1308,7 +1435,11 @@ class Recorder:
             )
             if target != self.last_typed:
                 old_len = len(self.last_typed)
+                # 키를 치는 도중에 실패하면 화면에 몇 글자가 남았는지 알 수 없다.
+                # 성공했을 때만 플래그를 내려, 실패 시 루프가 기준점을 리셋하게 한다.
+                self._typing_in_progress = True
                 self.last_typed = self._type(self.last_typed, target, append_only=append_only)
+                self._typing_in_progress = False
                 self._debug("typed", old_len=old_len, new_len=len(self.last_typed), append_only=append_only)
             self.deferred_text = ""
         elif target:
@@ -1321,6 +1452,21 @@ class Recorder:
             self._stable_ticks = 0
             with self.audio_lock:
                 self.window_start = frame_count
+
+    def _recover_after_tick_error(self):
+        """틱이 실패했을 때 다음 틱이 사용자 글자를 지우지 않도록 정리한다.
+
+        키를 치는 도중에 실패했다면(예: 세션 중간에 손쉬운 사용 권한이 회수됨)
+        화면에 몇 글자가 반영됐는지 알 수 없다. 그 상태에서 last_typed 를 그대로
+        믿으면 다음 틱이 실제보다 많은 backspace 를 보내 사용자가 원래 쓰고 있던
+        글자까지 지운다. 기준점을 현재로 리셋해 그 구간을 포기하는 쪽을 택한다 —
+        남의 글자를 지우는 것보다 안전하다. 타이핑 전에 실패했으면 손대지 않는다.
+        """
+        if not getattr(self, "_typing_in_progress", False):
+            return
+        self._typing_in_progress = False
+        self.rebaseline_pending = True
+        self._debug("tick_error_rebaseline")
 
     def _send_enter(self, settle=0.03):
         """마지막 글자까지 입력된 뒤 Enter 를 보낸다(홀드 떼면 자동 전송).
@@ -1386,9 +1532,10 @@ class Recorder:
                 if self._wake.wait(STREAM_INTERVAL):
                     break
                 try:
-                    self._stream_tick(language)
+                    self._stream_tick(language, session_id=session_id)
                 except Exception as exc:
                     print(f"Streaming tick error: {exc}")
+                    self._recover_after_tick_error()
             if session_id != getattr(self, "_session_id", session_id):
                 return
             # 일반 정지는 남은 말을 한 번 반영한다. Enter 전송으로 멈춘 경우에는
@@ -1396,7 +1543,7 @@ class Recorder:
             typed_before = self.last_typed
             if self.finalize_on_stop:
                 try:
-                    self._stream_tick(language, allow_stopped=True)
+                    self._stream_tick(language, allow_stopped=True, session_id=session_id)
                 except Exception as exc:
                     print(f"Streaming final tick error: {exc}")
             deferred = getattr(self, "deferred_text", "")

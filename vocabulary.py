@@ -6,9 +6,19 @@
 """
 import json
 import os
+import threading
 
 import app_paths
 import secure_store
+
+# 등록 목록은 사람이 관리하는 짧은 용어 모음이다. 대시보드/후보 승인이 잘못된
+# 입력을 보내도 디스크와 메모리가 불어나지 않도록 상한을 둔다.
+MAX_VOCABULARY_TERMS = 500
+MAX_TERM_CHARS = 100
+
+# load → 수정 → save 순서가 겹치면 한쪽 저장이 통째로 사라진다. 받아쓰기 스레드와
+# 대시보드 스레드가 같은 파일을 만지므로 읽고-쓰는 구간을 직렬화한다.
+_LOCK = threading.RLock()
 
 
 def load_vocabulary():
@@ -31,14 +41,24 @@ def save_vocabulary(words):
     cleaned = []
     for w in words:
         w = str(w).strip()
-        if w and w not in seen:
-            seen.add(w)
-            cleaned.append(w)
+        if not w or w in seen or len(w) > MAX_TERM_CHARS:
+            continue
+        seen.add(w)
+        cleaned.append(w)
+        if len(cleaned) >= MAX_VOCABULARY_TERMS:
+            break
     try:
-        secure_store.atomic_write_json(app_paths.vocabulary_path(), cleaned)
+        with _LOCK:
+            secure_store.atomic_write_json(app_paths.vocabulary_path(), cleaned)
     except Exception as exc:
         print(f"Vocabulary save error: {exc}")
     return cleaned
+
+
+def append_vocabulary(words):
+    """Add terms to the stored list as one atomic read-modify-write."""
+    with _LOCK:
+        return save_vocabulary(load_vocabulary() + [str(w) for w in words])
 
 
 # 문맥 단어가 많으면 받아쓰기가 느려지고, 약한 소리에 목록이 통째로 새는 echo 위험이

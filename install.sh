@@ -49,10 +49,12 @@ python -m pip install --upgrade pip
 python -m pip install -r requirements.txt
 
 echo "==> Downloading speech model: $MODEL_ID"
-HF_HUB_DISABLE_XET=1 HF_HUB_ENABLE_HF_TRANSFER=1 python - <<PY
+QWEN_MODEL_ID="$MODEL_ID" HF_HUB_DISABLE_XET=1 HF_HUB_ENABLE_HF_TRANSFER=1 python - <<'PY'
+import os
+
 from huggingface_hub import snapshot_download
 
-model_id = "${MODEL_ID}"
+model_id = os.environ["QWEN_MODEL_ID"]
 path = snapshot_download(repo_id=model_id)
 print(f"Model ready: {path}")
 PY

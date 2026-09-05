@@ -295,3 +295,66 @@ def test_selftest_releases_audio_resources_after_read_error(monkeypatch):
     ]
     assert dashboard._DIAGNOSTIC_LOCK.acquire(blocking=False) is True
     dashboard._DIAGNOSTIC_LOCK.release()
+
+
+def _fake_app():
+    from types import SimpleNamespace
+    fake = SimpleNamespace(
+        current_language="ko", languages=["ko"], max_time=300, input_device="",
+        hold_key="cmd_r", toggle_key="alt_r", min_volume=35,
+        asr_engine="qwen", edit_interrupt_mode="continue", hold_send_enter=True,
+        domain_context="", hud_mode="pill", hud_pin_x=None, hud_pin_y=None,
+    )
+    fake.sync_menu_state = lambda: None
+    fake.save_settings = lambda: None
+    return fake
+
+
+def test_dashboard_config_max_time_is_bounded_int(monkeypatch):
+    fake = _fake_app()
+    monkeypatch.setattr(dashboard, "app_instance", fake)
+    client = dashboard.flask_app.test_client()
+
+    assert client.post("/api/config", json={"max_time": 120.7}, headers=_headers()).status_code == 200
+    assert fake.max_time == 120
+
+    client.post("/api/config", json={"max_time": -5}, headers=_headers())
+    assert fake.max_time == 0
+
+    client.post("/api/config", json={"max_time": 10**12}, headers=_headers())
+    assert fake.max_time == dashboard.MAX_TIME_LIMIT_SEC
+
+
+def test_dashboard_config_rejects_non_finite_max_time(monkeypatch):
+    # inf/NaN 이 config.json 에 들어가면 다음 실행에서 설정 로드가 깨진다.
+    fake = _fake_app()
+    monkeypatch.setattr(dashboard, "app_instance", fake)
+    client = dashboard.flask_app.test_client()
+
+    response = client.post("/api/config", json={"max_time": "inf"}, headers=_headers())
+    assert response.status_code == 400
+    assert fake.max_time == 300
+
+
+def test_dashboard_config_truncates_domain_context(monkeypatch):
+    fake = _fake_app()
+    monkeypatch.setattr(dashboard, "app_instance", fake)
+    client = dashboard.flask_app.test_client()
+
+    client.post(
+        "/api/config",
+        json={"domain_context": "가" * (dashboard.MAX_DOMAIN_CONTEXT_CHARS + 100)},
+        headers=_headers(),
+    )
+    assert len(fake.domain_context) == dashboard.MAX_DOMAIN_CONTEXT_CHARS
+
+
+def test_dashboard_rejects_oversized_request_body():
+    client = dashboard.flask_app.test_client()
+    response = client.post(
+        "/api/vocabulary",
+        data=b'["' + b'a' * (dashboard.flask_app.config["MAX_CONTENT_LENGTH"] + 10) + b'"]',
+        content_type="application/json",
+        headers=_headers(),
+    )
+    assert response.status_code == 413
