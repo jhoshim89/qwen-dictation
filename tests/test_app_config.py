@@ -7,7 +7,7 @@ def test_defaults_only_have_live_settings():
     assert set(app_config.DEFAULTS) == {
         "language", "max_time", "input_device", "hold_key", "toggle_key",
         "min_volume", "asr_engine", "edit_interrupt_mode", "max_time_zero_migrated",
-        "hold_send_enter", "domain_context",
+        "hold_send_enter", "save_history", "domain_context",
         "hud_mode", "hud_pin_x", "hud_pin_y",
     }
     assert app_config.DEFAULTS["max_time"] == 300
@@ -16,6 +16,7 @@ def test_defaults_only_have_live_settings():
     assert app_config.DEFAULTS["asr_engine"] == "qwen"
     assert app_config.DEFAULTS["edit_interrupt_mode"] == "stop"
     assert app_config.DEFAULTS["hold_send_enter"] is True
+    assert app_config.DEFAULTS["save_history"] is True
     assert app_config.DEFAULTS["domain_context"] == ""
     assert app_config.DEFAULTS["hud_mode"] == "pill"
     assert app_config.DEFAULTS["hud_pin_x"] is None
@@ -63,6 +64,12 @@ def test_hold_send_enter_roundtrips(tmp_path, monkeypatch):
     monkeypatch.setattr(app_config, "config_path", lambda: str(tmp_path / "config.json"))
     app_config.save_config({"hold_send_enter": False})
     assert app_config.load_config()["hold_send_enter"] is False
+
+
+def test_save_history_roundtrips(tmp_path, monkeypatch):
+    monkeypatch.setattr(app_config, "config_path", lambda: str(tmp_path / "config.json"))
+    app_config.save_config({"save_history": False})
+    assert app_config.load_config()["save_history"] is False
 
 
 def test_domain_context_defaults_empty(tmp_path, monkeypatch):

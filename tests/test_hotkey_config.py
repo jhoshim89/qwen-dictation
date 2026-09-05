@@ -125,13 +125,14 @@ def test_api_config_sets_and_applies_hotkeys(monkeypatch):
     dashboard.app_instance = fake
     client = dashboard.flask_app.test_client()
 
-    r = client.post("/api/config", json={"hold_key": "shift_r+k", "toggle_key": "cmd_r+space"})
+    headers = {"X-Qwen-Token": dashboard._API_TOKEN}
+    r = client.post("/api/config", json={"hold_key": "shift_r+k", "toggle_key": "cmd_r+space"}, headers=headers)
     assert r.status_code == 200
     assert fake.hold_key == "shift_r+k"
     assert fake.applied == 1
 
     before = fake.applied
-    r2 = client.post("/api/config", json={"hold_key": "cmd_r", "toggle_key": "cmd_r"})
+    r2 = client.post("/api/config", json={"hold_key": "cmd_r", "toggle_key": "cmd_r"}, headers=headers)
     assert r2.status_code == 400
     assert fake.applied == before
 
@@ -170,26 +171,27 @@ def test_api_config_sets_min_volume():
     dashboard.app_instance = fake
     client = dashboard.flask_app.test_client()
 
-    r = client.post("/api/config", json={"min_volume": 0})
+    headers = {"X-Qwen-Token": dashboard._API_TOKEN}
+    r = client.post("/api/config", json={"min_volume": 0}, headers=headers)
     assert r.status_code == 200
     assert fake.min_volume == 1
     assert fake.recorder.transcriber.min_volume == 1
 
-    r = client.post("/api/config", json={"min_volume": 120})
+    r = client.post("/api/config", json={"min_volume": 120}, headers=headers)
     assert r.status_code == 200
     assert fake.min_volume == 100
 
-    r = client.post("/api/config", json={"asr_engine": "nemotron"})
+    r = client.post("/api/config", json={"asr_engine": "nemotron"}, headers=headers)
     assert r.status_code == 200
     assert fake.asr_engine == "nemotron_mlx"
     assert fake.recorder.transcriber.asr_engine == "nemotron_mlx"
 
-    r = client.post("/api/config", json={"asr_engine": "qwen-original"})
+    r = client.post("/api/config", json={"asr_engine": "qwen-original"}, headers=headers)
     assert r.status_code == 200
     assert fake.asr_engine == "qwen_original"
     assert fake.recorder.transcriber.asr_engine == "qwen_original"
 
-    r = client.post("/api/config", json={"asr_engine": "google"})
+    r = client.post("/api/config", json={"asr_engine": "google"}, headers=headers)
     assert r.status_code == 200
     assert fake.asr_engine == "qwen"
     assert fake.recorder.transcriber.asr_engine == "qwen"

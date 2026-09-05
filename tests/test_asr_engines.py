@@ -15,7 +15,7 @@ def test_engine_metadata_marks_context_support():
     assert asr_engines.asr_engine_supports_context("qwen_original") is True
     assert asr_engines.asr_engine_supports_context("nemotron") is False
     ids = [item["id"] for item in asr_engines.available_asr_engines()]
-    assert ids == ["qwen", "qwen_original", "nemotron_mlx"]
+    assert ids == ["qwen", "qwen_mlx", "qwen_original", "nemotron_mlx"]
 
 
 def test_removed_engine_aliases_fall_back_to_default():
@@ -31,3 +31,13 @@ def test_language_mapping_for_each_engine():
     assert asr_engines.normalize_nemotron_language("ko") == "ko-KR"
     assert asr_engines.normalize_nemotron_language("English") == "en-US"
     assert asr_engines.normalize_nemotron_language("auto") == "auto"
+
+
+def test_qwen_mlx_engine_definition():
+    assert asr_engines.normalize_asr_engine("qwen_mlx") == "qwen_mlx"
+    assert asr_engines.normalize_asr_engine("Qwen-MLX") == "qwen_mlx"
+    assert asr_engines.asr_engine_supports_context("qwen_mlx") is True
+    assert asr_engines.asr_engine_model("qwen_mlx").startswith("mlx-community/Qwen3-ASR-1.7B")
+    assert asr_engines.is_mlx_engine("qwen_mlx") is True
+    assert asr_engines.is_mlx_engine("nemotron") is True
+    assert asr_engines.is_mlx_engine("qwen") is False

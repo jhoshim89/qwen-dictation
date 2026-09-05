@@ -120,8 +120,8 @@ Example `vocabulary.json`:
 
 ## Recent dictation and vocabulary suggestions
 
-The dashboard stores the latest 50 final transcript texts locally, without
-audio. Correct a recent transcript inside the dashboard to create vocabulary
+The dashboard can store the latest 50 final transcript texts locally, without
+audio. History can be disabled or cleared from the dashboard. Correct a recent transcript inside the dashboard to create vocabulary
 candidates. A candidate is only added to the Qwen context after explicit
 approval. Repeated edits are recommended after two separate transcript records;
 nothing is learned from typing performed in other apps.
@@ -137,22 +137,40 @@ Settings (language, microphone, max recording time, and hotkeys) are saved to
 `~/.qwen-dictation/config.json` and restored on next launch. Recording stops
 after 300 seconds by default; set `max_time = 0` in advanced settings for no
 limit.
+All user-data files use owner-only permissions and crash-safe atomic writes.
+Audio passed to the ASR engine uses a private temporary WAV that is deleted as
+soon as each transcription call finishes.
 The default engine is **Qwen3-ASR 1.7B**. Dashboard engines:
 
 For intermittent capture diagnosis, the app retains up to 200 operational
 events in `~/.qwen-dictation/diagnostics.jsonl`. It never writes audio,
 transcript text, or intermediate recognition hypotheses to that file.
+Dashboard APIs require a per-launch token embedded in the local settings page;
+the focused-app typing test endpoint is disabled unless explicitly enabled for
+development.
 
+- **Qwen3-ASR 1.7B (MLX)**: `mlx-community/Qwen3-ASR-1.7B-8bit`, the same
+  1.7B weights converted to Apple Silicon MLX 8-bit. Measured on one Korean
+  9-second sentence: model load 12s → 3s, first transcription 12s → 1.5s,
+  steady-state 0.16s → 0.10s, identical transcript. Recommended when the
+  cold start of the default engine feels slow.
 - **Qwen3-ASR 1.7B Original**: rolling WAV transcription for direct Qwen output.
 - **Nemotron 3.5 ASR 0.6B (MLX)**:
   `mlx-community/nemotron-3.5-asr-streaming-0.6b`
 
-Install the optional Nemotron runtime without letting it replace Qwen's pinned
-`transformers==4.57.6`:
+Both MLX engines share one optional runtime. Install it without letting it
+replace Qwen's pinned `transformers==4.57.6`:
 
 ```bash
-./install_nemotron_mlx.sh
+./install_mlx_runtime.sh
 ```
+
+Pass `nemotron` or `all` to also fetch the Nemotron weights. Then pick the
+engine in the dashboard's speech-recognition section.
+
+After any model finishes loading, the app runs a short synthetic warm-up
+transcription before reporting the model ready, so the first real dictation
+does not pay the several-second first-inference penalty.
 
 Avoid plain `pip install mlx-audio` in this environment; its current dependency
 metadata asks pip to upgrade Transformers to a version that breaks `qwen-asr`.
@@ -180,7 +198,7 @@ Run the default local comparison engines on the same files:
 Compare all dashboard engines after installing Nemotron:
 
 ```bash
-./venv/bin/python compare_asr.py bench_audio --engines qwen,qwen_original,nemotron_mlx --language ko --output asr_compare.csv
+./venv/bin/python compare_asr.py bench_audio --engines qwen,qwen_mlx,qwen_original,nemotron_mlx --language ko --output asr_compare.csv
 ```
 
 Use `--context app` to include the current vocabulary/domain context where an
@@ -258,10 +276,10 @@ Pre-download the default model without launching the app:
 HF_HUB_DISABLE_XET=1 HF_HUB_ENABLE_HF_TRANSFER=1 ./venv/bin/huggingface-cli download Qwen/Qwen3-ASR-1.7B
 ```
 
-Pre-download Nemotron MLX:
+Pre-download the MLX runtime and Nemotron weights:
 
 ```bash
-HF_HUB_DISABLE_XET=1 HF_HUB_ENABLE_HF_TRANSFER=1 ./install_nemotron_mlx.sh
+HF_HUB_DISABLE_XET=1 HF_HUB_ENABLE_HF_TRANSFER=0 ./install_mlx_runtime.sh nemotron
 ```
 
 Equivalent Python helper:

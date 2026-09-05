@@ -1,5 +1,6 @@
 # test_streaming.py
 import importlib.util
+import os
 import numpy as np
 
 
@@ -581,7 +582,7 @@ def test_stream_loop_skips_final_tick_after_enter_send():
     rec.committed_text = "old"
     rec.last_typed = "old"
     rec.ticks = []
-    rec._stream_tick = lambda language, allow_stopped=False: rec.ticks.append(allow_stopped)
+    rec._stream_tick = lambda language, allow_stopped=False, session_id=None: rec.ticks.append(allow_stopped)
     wd.Recorder._stream_loop(rec, language="Korean")
     assert rec.ticks == []
 
@@ -592,7 +593,7 @@ def test_stream_loop_keeps_final_tick_for_regular_stop():
     rec.recording = False
     rec.finalize_on_stop = True
     rec.ticks = []
-    rec._stream_tick = lambda language, allow_stopped=False: rec.ticks.append(allow_stopped)
+    rec._stream_tick = lambda language, allow_stopped=False, session_id=None: rec.ticks.append(allow_stopped)
     wd.Recorder._stream_loop(rec, language="Korean")
     assert rec.ticks == [True]
 
@@ -610,7 +611,7 @@ def test_stream_loop_waits_for_model_before_first_or_final_tick(monkeypatch):
             rec.audio_frames.append(b"captured-while-loading")
 
     rec.transcriber.wait_current_model_ready = finish_loading
-    rec._stream_tick = lambda language, allow_stopped=False: order.append(
+    rec._stream_tick = lambda language, allow_stopped=False, session_id=None: order.append(
         ("tick", allow_stopped, list(rec.audio_frames))
     )
     monkeypatch.setattr(wd.dictation_history, "add_history", lambda *_: None)
@@ -806,6 +807,40 @@ def test_history_saved_after_enter(monkeypatch):
     monkeypatch.setattr(wd.dictation_history, "add_history", lambda *_: order.append("history"))
     rec._stream_loop("ko")
     assert order == ["enter", "history"]  # 엔터가 기록 저장보다 먼저
+
+
+def test_history_not_saved_when_disabled(monkeypatch):
+    wd = _load()
+    rec = _kbd_recorder(wd)
+    rec.app = type("App", (), {"save_history": False})()
+    rec.recording = False
+    rec.finalize_on_stop = True
+    monkeypatch.setattr(rec, "_stream_tick", lambda *a, **k: setattr(rec, "last_typed", "끝말"))
+    saved = []
+    monkeypatch.setattr(wd.dictation_history, "add_history", saved.append)
+
+    rec._stream_loop("ko")
+
+    assert saved == []
+
+
+def test_transcribe_window_removes_private_temporary_audio():
+    wd = _load()
+    seen = []
+
+    class Transcriber(_FakeTranscriber):
+        def transcribe_file(self, path, language=None, context=""):
+            seen.append(path)
+            assert os.path.exists(path)
+            assert os.stat(path).st_mode & 0o777 == 0o600
+            return "ok"
+
+    rec = wd.Recorder(Transcriber(), app=None)
+    result = rec._transcribe_window(b"\x00\x00" * 200, "Korean")
+
+    assert result == "ok"
+    assert len(seen) == 1
+    assert not os.path.exists(seen[0])
 
 
 def test_hold_deferred_text_is_typed_before_enter(monkeypatch):
@@ -1421,3 +1456,100 @@ def test_stream_tick_redoes_in_korean_when_commit_is_foreign():
     wd.Recorder._stream_tick(rec, language="auto")
     assert rec.committed_text == "안녕하세요"            # 외국어 확정 대신 한국어로 다시
     assert "你" not in "".join(rec.typed_log)            # 중국어가 확정/타이핑되지 않음
+
+
+def _loud_second():
+    import numpy as np
+    return (np.random.RandomState(0).randn(16000) * 6000).astype(np.int16).tobytes()
+
+
+def test_stream_tick_discards_result_when_session_changed(monkeypatch):
+    # 마지막 틱이 추론 중일 때 사용자가 다시 홀드 키를 눌러 새 세션이 시작되면,
+    # 지난 세션의 결과를 타이핑해선 안 된다. 새 세션은 last_typed 를 "" 로
+    # 리셋하므로, 그대로 진행하면 지난 문장이 통째로 다시 입력된다.
+    wd = _load()
+    rec = _make_recorder(wd, monkeypatch, ["안녕하세요", "안녕하세요"])
+    rec.session_vocab = []
+    rec._session_id = 7
+    rec.recording = False  # 홀드 키를 뗀 직후 = 마지막 틱
+    with rec.audio_lock:
+        rec.audio_frames = [_loud_second()]
+
+    original = rec._transcribe_window
+
+    def transcribe_then_new_session(window_bytes, language, context=""):
+        text = original(window_bytes, language, context)
+        rec._session_id = 8  # 추론 중에 사용자가 다시 홀드 키를 누름
+        return text
+
+    rec._transcribe_window = transcribe_then_new_session
+    wd.Recorder._stream_tick(rec, language="Korean", allow_stopped=True, session_id=7)
+
+    assert rec.typed_log == []
+    assert rec.last_typed == ""
+    assert rec.window_start == 0  # 새 세션의 기준점을 덮어쓰지 않았다
+
+
+def test_stream_tick_finalizes_normally_for_current_session(monkeypatch):
+    # 같은 세션이면 마지막 틱이 정상적으로 확정·타이핑한다(가드가 정상 경로를 막지 않음).
+    wd = _load()
+    rec = _make_recorder(wd, monkeypatch, ["안녕하세요", "안녕하세요"])
+    rec.session_vocab = []
+    rec._session_id = 7
+    rec.recording = False
+    with rec.audio_lock:
+        rec.audio_frames = [_loud_second()]
+    wd.Recorder._stream_tick(rec, language="Korean", allow_stopped=True, session_id=7)
+    assert rec.typed_log == ["안녕하세요"]
+    assert rec.last_typed == "안녕하세요"
+
+
+def test_stream_tick_discards_when_session_changes_during_biased_commit(monkeypatch):
+    # 확정 시점의 편향 재받아쓰기도 추론을 한 번 더 돈다. 그 사이에 세션이 바뀌면
+    # 타이핑 직전 가드가 결과를 버려야 한다.
+    wd = _load()
+    rec = _make_recorder(wd, monkeypatch, ["안녕하세요", "안녕하세요"])
+    rec.session_vocab = ["Qwen"]
+    rec._session_id = 7
+    rec.recording = False
+    with rec.audio_lock:
+        rec.audio_frames = [_loud_second()]
+
+    original = rec._transcribe_window
+    calls = {"n": 0}
+
+    def transcribe(window_bytes, language, context=""):
+        calls["n"] += 1
+        text = original(window_bytes, language, context)
+        if calls["n"] == 2:  # 편향 재받아쓰기 도중 새 세션 시작
+            rec._session_id = 8
+        return text
+
+    rec._transcribe_window = transcribe
+    wd.Recorder._stream_tick(rec, language="Korean", allow_stopped=True, session_id=7)
+
+    assert calls["n"] >= 2  # 편향 호출까지 실제로 진행됐다
+    assert rec.typed_log == []
+    assert rec.last_typed == ""
+
+
+def test_tick_error_during_typing_rebaselines(monkeypatch):
+    # 타이핑 도중 실패하면 화면에 몇 글자가 남았는지 알 수 없다. last_typed 를
+    # 그대로 믿고 다음 틱이 backspace 를 보내면 사용자 글자까지 지운다.
+    wd = _load()
+    rec = _make_recorder(wd, monkeypatch, [])
+    rec._typing_in_progress = True
+    wd.Recorder._recover_after_tick_error(rec)
+    assert rec.rebaseline_pending is True
+    assert rec._typing_in_progress is False
+
+
+def test_tick_error_before_typing_keeps_state(monkeypatch):
+    # 타이핑 전에 실패했으면(예: 추론 오류) 화면은 그대로이므로 기준점을 건드리지 않는다.
+    wd = _load()
+    rec = _make_recorder(wd, monkeypatch, [])
+    rec._typing_in_progress = False
+    rec.committed_text = "이미 확정"
+    wd.Recorder._recover_after_tick_error(rec)
+    assert rec.rebaseline_pending is False
+    assert rec.committed_text == "이미 확정"

@@ -9,6 +9,7 @@ import threading
 import time
 
 import app_paths
+import secure_store
 
 
 MAX_EVENTS = 200
@@ -61,6 +62,7 @@ def _load_unlocked(limit):
         return []
     events = []
     try:
+        secure_store.ensure_private_file(path)
         with open(path, "r", encoding="utf-8") as handle:
             for line in handle:
                 try:
@@ -84,16 +86,16 @@ def record_event(event):
     path = app_paths.diagnostics_path()
     with _LOCK:
         try:
-            with open(path, "a", encoding="utf-8") as handle:
-                handle.write(json.dumps(payload, ensure_ascii=False) + "\n")
+            secure_store.append_private_text(
+                path, json.dumps(payload, ensure_ascii=False) + "\n"
+            )
             if os.path.getsize(path) <= ROTATE_BYTES:
                 return
             recent = _load_unlocked(MAX_EVENTS)
-            tmp = path + ".tmp"
-            with open(tmp, "w", encoding="utf-8") as handle:
-                for item in recent:
-                    handle.write(json.dumps(item, ensure_ascii=False) + "\n")
-            os.replace(tmp, path)
+            content = "".join(
+                json.dumps(item, ensure_ascii=False) + "\n" for item in recent
+            )
+            secure_store.atomic_write_text(path, content)
         except OSError:
             # Diagnostics must never break dictation.
             return

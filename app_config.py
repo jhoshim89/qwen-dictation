@@ -8,6 +8,7 @@ import os
 
 import app_paths
 import asr_engines
+import secure_store
 
 # max_time=0 은 "자동중단 없음(무제한)" 을 뜻한다.
 DEFAULTS = {
@@ -23,6 +24,8 @@ DEFAULTS = {
     "edit_interrupt_mode": "stop",
     # 홀드 키를 떼면 마지막 글자까지 입력한 뒤 자동으로 Enter 를 보낼지.
     "hold_send_enter": True,
+    # 최근 받아쓰기 텍스트를 로컬 기록에 남길지. 음성 파일은 어느 경우에도 남기지 않는다.
+    "save_history": True,
     # 받아쓰기 분야 머리말(자유 문장). 매 변환의 context 앞에 붙어 모델을 그 분야로
     # 편향한다. 예: "수의안과 진료. 안과 질환과 검사 용어 위주". 빈 문자열이면 미사용.
     "domain_context": "",
@@ -46,6 +49,7 @@ def load_config():
     try:
         p = config_path()
         if os.path.exists(p):
+            secure_store.ensure_private_file(p)
             with open(p, "r", encoding="utf-8") as f:
                 saved = json.load(f)
             if isinstance(saved, dict):
@@ -69,7 +73,6 @@ def save_config(cfg):
     """DEFAULTS 의 키만 추려서 저장(미지의 키 무시)."""
     try:
         data = {k: cfg.get(k, DEFAULTS[k]) for k in DEFAULTS}
-        with open(config_path(), "w", encoding="utf-8") as f:
-            json.dump(data, f, ensure_ascii=False, indent=2)
+        secure_store.atomic_write_json(config_path(), data)
     except Exception as exc:
         print(f"Config save error: {exc}")

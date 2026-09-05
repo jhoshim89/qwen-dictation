@@ -23,14 +23,21 @@ cd "$(dirname "$0")"
 cp whisper-dictation.py app_main.py
 
 NAGISA_DIR="$(./venv/bin/python -c 'import os, nagisa; print(os.path.dirname(nagisa.__file__))')"
+QWEN_ASR_DIR="$(./venv/bin/python -c 'import os, qwen_asr; print(os.path.dirname(qwen_asr.__file__))')"
 EXTRA_COLLECT_ARGS=()
 if ./venv/bin/python -c 'import mlx_audio' >/dev/null 2>&1; then
-  EXTRA_COLLECT_ARGS+=(--collect-all mlx_audio)
-fi
-if ./venv/bin/python -c 'import mlx_lm' >/dev/null 2>&1; then
-  EXTRA_COLLECT_ARGS+=(--collect-all mlx_lm)
+  # mlx-audio 는 TTS/codec/VAD 등 전체 제품군을 포함한다. 앱에서 동적으로
+  # import 하는 Nemotron STT 구현과 공용 로더만 명시해 번들 과수집을 막는다.
+  EXTRA_COLLECT_ARGS+=(
+    --hidden-import mlx_audio.stt
+    --hidden-import mlx_audio.stt.utils
+    --hidden-import mlx_audio.audio_io
+    --hidden-import mlx_audio.utils
+    --hidden-import mlx_audio.stt.models.nemotron_asr
+  )
 fi
 if ./venv/bin/python -c 'import mlx' >/dev/null 2>&1; then
+  # MLX 네이티브 라이브러리와 mlx.metallib 은 런타임에 필요하다.
   EXTRA_COLLECT_ARGS+=(--collect-all mlx)
 fi
 
@@ -52,21 +59,32 @@ rm -rf build dist "$DIST_DIR"
   --add-data "hotkeys.py:." \
   --add-data "audio_level.py:." \
   --add-data "app_paths.py:." \
+  --add-data "diagnostics.py:." \
+  --add-data "secure_store.py:." \
+  --add-data "temporary_audio.py:." \
   --add-data "${NAGISA_DIR}/__init__.py:nagisa" \
   --add-data "${NAGISA_DIR}/train.py:nagisa" \
   --add-data "${NAGISA_DIR}/tagger.py:nagisa" \
   --add-data "${NAGISA_DIR}/model.py:nagisa" \
   --add-data "${NAGISA_DIR}/prepro.py:nagisa" \
   --add-data "${NAGISA_DIR}/mecab_system_eval.py:nagisa" \
-  --collect-all qwen_asr \
+  --add-data "${QWEN_ASR_DIR}/inference/assets:qwen_asr/inference/assets" \
+  --collect-submodules qwen_asr.core.transformers_backend \
+  --hidden-import qwen_asr.inference.qwen3_asr \
+  --hidden-import qwen_asr.inference.qwen3_forced_aligner \
+  --hidden-import qwen_asr.inference.utils \
   "${EXTRA_COLLECT_ARGS[@]}" \
-  --collect-all transformers \
   --collect-all nagisa \
-  --collect-all librosa \
-  --collect-submodules torch \
-  --collect-submodules torchaudio \
-  --collect-submodules sklearn \
-  --collect-submodules scipy \
+  --exclude-module qwen_asr.cli \
+  --exclude-module qwen_asr.core.vllm_backend \
+  --exclude-module vllm \
+  --exclude-module modelscope \
+  --exclude-module av \
+  --exclude-module gradio \
+  --exclude-module pandas \
+  --exclude-module sklearn \
+  --exclude-module matplotlib \
+  --exclude-module pytest \
   --hidden-import rumps \
   --hidden-import hud_overlay \
   --hidden-import settings_window \

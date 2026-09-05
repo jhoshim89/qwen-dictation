@@ -10,6 +10,7 @@ import sys
 APP_NAME = "Qwen Dictation"
 
 _THIS_DIR = os.path.dirname(os.path.abspath(__file__))
+_PRIVATE_DIRS = set()
 
 
 def is_frozen():
@@ -58,7 +59,13 @@ def resource_path(*parts):
 def user_data_dir():
     """사용자가 쓰기 가능한 데이터 디렉터리. 없으면 만든다."""
     d = os.path.join(os.path.expanduser("~"), ".qwen-dictation")
-    os.makedirs(d, exist_ok=True)
+    os.makedirs(d, mode=0o700, exist_ok=True)
+    if d not in _PRIVATE_DIRS:
+        try:
+            os.chmod(d, 0o700)
+        except OSError:
+            pass
+        _PRIVATE_DIRS.add(d)
     return d
 
 
