@@ -27,13 +27,15 @@ QWEN_ASR_DIR="$(./venv/bin/python -c 'import os, qwen_asr; print(os.path.dirname
 EXTRA_COLLECT_ARGS=()
 if ./venv/bin/python -c 'import mlx_audio' >/dev/null 2>&1; then
   # mlx-audio 는 TTS/codec/VAD 등 전체 제품군을 포함한다. 앱에서 동적으로
-  # import 하는 Nemotron STT 구현과 공용 로더만 명시해 번들 과수집을 막는다.
+  # import 하는 Nemotron/Qwen3 STT 구현과 공용 로더만 명시해 번들 과수집을 막는다.
+  # (mlx_audio 는 config 의 model_type 으로 모듈을 동적 import 하므로 명시 필수)
   EXTRA_COLLECT_ARGS+=(
     --hidden-import mlx_audio.stt
     --hidden-import mlx_audio.stt.utils
     --hidden-import mlx_audio.audio_io
     --hidden-import mlx_audio.utils
     --hidden-import mlx_audio.stt.models.nemotron_asr
+    --collect-submodules mlx_audio.stt.models.qwen3_asr
   )
 fi
 if ./venv/bin/python -c 'import mlx' >/dev/null 2>&1; then
