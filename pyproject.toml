@@ -2,7 +2,7 @@
 name = "qwen-dictation"
 version = "0.1.0"
 description = "Local macOS dictation app based on Qwen3-ASR"
-authors = ["Your Name <you@example.com>"]
+authors = ["Jaeho Shim <jhoshim@gnu.ac.kr>"]
 readme = "README.md"
 
 [tool.poetry.dependencies]
