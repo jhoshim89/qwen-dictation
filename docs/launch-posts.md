@@ -16,19 +16,19 @@ Show HN: Qwen Dictation – local push-to-talk dictation for macOS using Qwen3-A
 
 **Text:**
 
-I'm a veterinary ophthalmologist, not a developer, and I got tired of cloud dictation tools mangling medical terms and shipping my audio off-device. So I forked whisper-dictation and swapped the STT stack for Qwen3-ASR (1.7B), running fully local on Apple silicon.
+I dictate a lot of Korean/English mixed text with technical vocabulary, and every Whisper-based tool I tried kept mangling the terms or shipping audio off-device. So I forked whisper-dictation and swapped the STT stack for Qwen3-ASR (1.7B), running fully local on Apple silicon.
 
 Hold Right Ctrl, speak, release. Text streams into whatever app has focus — Cursor, Slack, a browser textarea, anything.
 
 What's different from the usual Whisper wrappers:
 
-- Qwen3-ASR handles Korean/English code-switching and specialist vocabulary noticeably better than Whisper in my daily use (medical terms, drug names). No cloud, no API key.
+- Qwen3-ASR handles Korean/English code-switching and specialist vocabulary noticeably better than Whisper in my daily use. No cloud, no API key.
 - Live streaming: it retranscribes a rolling audio window every 0.8 s and types only the diff, so you see text appear while you speak instead of after you stop.
 - User vocabulary: you register names/terms once and they're fed as context bias at commit time, not as find-and-replace.
 - Optional MLX engines (8-bit Qwen3-ASR, Nemotron 3.5 ASR 0.6B) for faster load and first inference.
 - Privacy hardening: temp WAVs deleted per pass, diagnostics log contains no transcript text, dashboard APIs bound to localhost with a per-process token.
 
-Honest caveats: install is a terminal one-liner, not a signed .app yet. macOS only. Needs Microphone + Accessibility permissions. It's an MVP I built with heavy help from Claude Code and Codex — I review behavior, not every line.
+Honest caveats: install is a terminal one-liner, not a signed .app yet. macOS only. Needs Microphone + Accessibility permissions. It's an MVP built with heavy help from AI coding agents — I review behavior, not every line.
 
 MIT licensed. Would love feedback from people running other local ASR models on Mac.
 
@@ -43,7 +43,7 @@ I replaced Whisper with Qwen3-ASR in a macOS push-to-talk dictation app — full
 
 Repo: https://github.com/jhoshim89/qwen-dictation
 
-Background: I'm a vet ophthalmologist who dictates a lot of Korean/English mixed clinical notes. Whisper-based tools kept butchering drug names and terminology, so I forked `foges/whisper-dictation` and rebuilt the STT path around **Qwen3-ASR 1.7B**.
+Background: I dictate a lot of Korean/English mixed notes full of technical terms. Whisper-based tools kept butchering the vocabulary, so I forked `foges/whisper-dictation` and rebuilt the STT path around **Qwen3-ASR 1.7B**.
 
 How it works:
 - Menu-bar app. Hold **Right Ctrl** to dictate, **Right Option** to toggle a session.
@@ -86,7 +86,7 @@ Qwen Dictation: local push-to-talk dictation for macOS.
 
 Hold Right Ctrl → speak → text streams into any app.
 Qwen3-ASR 1.7B on Apple silicon, zero cloud.
-Handles Korean/English mixing and medical vocab far better than Whisper in my daily use.
+Handles Korean/English mixing and technical vocab far better than Whisper in my daily use.
 
 Free, MIT. Star if useful ⭐
 https://github.com/jhoshim89/qwen-dictation
@@ -100,7 +100,7 @@ Qwen Dictation — Qwen3-ASR로 만든 완전 로컬 macOS 받아쓰기 앱 (오
 
 **본문:**
 
-수의안과 전공 교수입니다. 개발자는 아니고, 진료기록을 한영 혼용으로 받아쓰기하다가 Whisper 계열 도구가 의학 용어를 계속 틀려서 직접 만들었습니다. `foges/whisper-dictation`을 포크해 음성인식 부분을 Qwen3-ASR 1.7B로 교체했습니다.
+한영 혼용에 전문용어가 많은 글을 받아쓰기로 자주 쓰는데, Whisper 계열 도구가 용어를 계속 틀려서 직접 만들었습니다. `foges/whisper-dictation`을 포크해 음성인식 부분을 Qwen3-ASR 1.7B로 교체했습니다.
 
 - 오른쪽 Ctrl을 누른 채 말하면, 지금 포커스된 앱에 글자가 실시간으로 입력됩니다.
 - 0.8초마다 다시 인식해서 바뀐 부분만 타이핑하는 방식이라 말하는 도중에 글자가 나타납니다.
@@ -110,7 +110,7 @@ Qwen Dictation — Qwen3-ASR로 만든 완전 로컬 macOS 받아쓰기 앱 (오
 
 한계: 터미널 한 줄 설치, 서명된 .app은 아직 없음, macOS 전용.
 
-Claude Code와 Codex 도움을 많이 받아 만든 MVP입니다. 피드백 환영합니다.
+AI 코딩 에이전트 도움을 많이 받아 만든 MVP입니다. 피드백 환영합니다.
 
 https://github.com/jhoshim89/qwen-dictation
 
