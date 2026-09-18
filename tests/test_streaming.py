@@ -1292,6 +1292,116 @@ def test_live_pause_commit_does_not_backspace_rewrite_visible_text():
     assert rec.window_start == 2
 
 
+def test_live_pause_commit_rewrites_when_recommit_changes_front_and_adds_tail():
+    """확정 재인식이 앞말을 바꾸고 뒷말을 더 들었으면, 뒷말을 버리지 않고 갈라지는
+    지점부터 지우고 다시 쓴다(예전엔 여기서 뒷말이 통째로 씹혔다)."""
+    wd = _load()
+    import numpy as np
+
+    rec = _make_recorder(wd, None, ["안녕 반갑", "안녕 반갑", "안녕 잘가 그리고 뒷말"])
+    kb = _FakeKeyboard()
+    inserted = []
+    rec._type = lambda old, new, append_only=False: wd.type_diff(
+        old, new, kb, insert=inserted.append, append_only=append_only
+    )
+    loud = (np.random.RandomState(0).randn(16000) * 6000).astype(np.int16).tobytes()
+    quiet = np.zeros(16000, dtype=np.int16).tobytes()
+    with rec.audio_lock:
+        rec.audio_frames = [loud]
+    wd.Recorder._stream_tick(rec, language="Korean")
+    wd.Recorder._stream_tick(rec, language="Korean")
+    assert rec.last_typed == "안녕 반갑"
+
+    with rec.audio_lock:
+        rec.audio_frames = [loud, quiet]
+    wd.Recorder._stream_tick(rec, language="Korean")
+
+    assert rec.last_typed == "안녕 잘가 그리고 뒷말"
+    assert rec.committed_text == "안녕 잘가 그리고 뒷말"
+    assert inserted == ["안녕 반갑", "잘가 그리고 뒷말"]
+    assert len([e for e in kb.events if e[0] == "press"]) == len("반갑")
+    assert rec.window_start == 2
+    event = [e for e in rec.debug_events if e["reason"] == "typed"][-1]
+    assert event["rewrite"] is True
+
+
+def test_live_pause_commit_appends_tail_when_only_spacing_differs():
+    """띄어쓰기만 다르게 다시 들린 앞말은 그대로 두고 새 뒷말만 덧붙인다(backspace 없음)."""
+    wd = _load()
+    import numpy as np
+
+    rec = _make_recorder(wd, None, ["병원 에", "병원 에", "병원에 갔다"])
+    kb = _FakeKeyboard()
+    inserted = []
+    rec._type = lambda old, new, append_only=False: wd.type_diff(
+        old, new, kb, insert=inserted.append, append_only=append_only
+    )
+    loud = (np.random.RandomState(0).randn(16000) * 6000).astype(np.int16).tobytes()
+    quiet = np.zeros(16000, dtype=np.int16).tobytes()
+    with rec.audio_lock:
+        rec.audio_frames = [loud]
+    wd.Recorder._stream_tick(rec, language="Korean")
+    wd.Recorder._stream_tick(rec, language="Korean")
+    assert rec.last_typed == "병원 에"
+
+    with rec.audio_lock:
+        rec.audio_frames = [loud, quiet]
+    wd.Recorder._stream_tick(rec, language="Korean")
+
+    assert rec.last_typed == "병원 에 갔다"
+    assert rec.committed_text == "병원 에 갔다"
+    assert inserted == ["병원 에", " 갔다"]
+    assert kb.events == []
+    event = [e for e in rec.debug_events if e["reason"] == "typed"][-1]
+    assert event["rewrite"] is False
+
+
+def test_live_pause_commit_keeps_screen_when_recommit_is_shorter():
+    """재인식이 앞말만 바꾸고 내용이 더 짧으면(모델이 단어를 빠뜨린 쪽) 화면을 지우지 않는다."""
+    wd = _load()
+    import numpy as np
+
+    rec = _make_recorder(wd, None, ["안녕 반갑 오늘", "안녕 반갑 오늘", "안녕 잘가"])
+    kb = _FakeKeyboard()
+    inserted = []
+    rec._type = lambda old, new, append_only=False: wd.type_diff(
+        old, new, kb, insert=inserted.append, append_only=append_only
+    )
+    loud = (np.random.RandomState(0).randn(16000) * 6000).astype(np.int16).tobytes()
+    quiet = np.zeros(16000, dtype=np.int16).tobytes()
+    with rec.audio_lock:
+        rec.audio_frames = [loud]
+    wd.Recorder._stream_tick(rec, language="Korean")
+    wd.Recorder._stream_tick(rec, language="Korean")
+    with rec.audio_lock:
+        rec.audio_frames = [loud, quiet]
+    wd.Recorder._stream_tick(rec, language="Korean")
+
+    assert rec.last_typed == "안녕 반갑 오늘"
+    assert rec.committed_text == "안녕 반갑 오늘"
+    assert kb.events == []
+
+
+def test_append_ignoring_spaces_returns_only_new_tail():
+    wd = _load()
+    assert wd.append_ignoring_spaces("병원 에", "병원에 갔다") == " 갔다"
+    assert wd.append_ignoring_spaces("안녕 반갑", "안녕반갑습니다") == "습니다"
+    assert wd.append_ignoring_spaces("안녕 반갑", "안녕 잘가") == ""      # 앞말이 바뀜
+    assert wd.append_ignoring_spaces("안녕 반갑", "안녕반갑") == ""        # 새 내용 없음
+    assert wd.append_ignoring_spaces("안녕 반갑 오늘", "안녕 반갑") == ""  # 더 짧음
+    assert wd.append_ignoring_spaces("", "안녕") == ""
+
+
+def test_type_diff_append_only_appends_across_spacing_difference():
+    wd = _load()
+    inserted = []
+    kb = _FakeKeyboard()
+    result = wd.type_diff("병원 에", "병원에 갔다", kb, insert=inserted.append, append_only=True)
+    assert result == "병원 에 갔다"
+    assert inserted == [" 갔다"]
+    assert kb.events == []
+
+
 def test_live_pause_commit_separates_next_spoken_span():
     wd = _load()
     import numpy as np

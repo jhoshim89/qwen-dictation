@@ -61,6 +61,17 @@ def append_vocabulary(words):
         return save_vocabulary(load_vocabulary() + [str(w) for w in words])
 
 
+def prepend_vocabulary(words):
+    """새 단어를 목록 맨 앞에 넣는다.
+
+    모델에 귀띔하는 문맥 단어는 앞에서부터 MAX_CONTEXT_TERMS 개만 쓴다. 사용자가
+    지금 자주 고치는 말일수록 모델이 알아야 하므로 자동 등록분은 앞에 둔다.
+    (뒤로 밀린 단어도 사후 교정에는 계속 쓰이므로 효력이 사라지지는 않는다.)
+    """
+    with _LOCK:
+        return save_vocabulary([str(w) for w in words] + load_vocabulary())
+
+
 # 문맥 단어가 많으면 받아쓰기가 느려지고, 약한 소리에 목록이 통째로 새는 echo 위험이
 # 커진다. Deepgram 등은 "가장 중요한 20~50개만"을 권장한다 — 그 하단으로 제한한다.
 MAX_CONTEXT_TERMS = 24

@@ -45,16 +45,27 @@ hotkeys.
 - `hud_overlay.py` draws the in-process coral jelly-bar HUD. There is no
   subprocess HUD or review card.
 - `dictation_history.py` stores the latest 50 final transcript texts locally
-  when history is enabled.
-  Dashboard edits create candidate context terms; explicit approval is required
-  before a term enters `vocabulary.json`.
+  when history is enabled. Dashboard edits create candidate context terms, which
+  need explicit approval before entering `vocabulary.json`.
+- `focus_text.py` reads the field the app just typed into, via the Accessibility
+  permission the app already holds for synthesizing keys. It is not a watcher: a
+  session reads that one field twice, once right after typing and once at the
+  next session start. Field contents stay in memory and are never written to disk.
+- `auto_learn.py` diffs those two reads, keeps only word changes inside the span
+  this app typed, and filters them down to sound-alike mishearings (measured:
+  real mishearings score 0.67-0.88, user rewrites 0.21-0.60). The same corrected
+  term repeating `AUTO_LEARN_THRESHOLD` (3) times registers it without asking and
+  posts a notification; below that it stays a dashboard candidate. This is the one
+  path that bypasses explicit approval, added at the user's explicit request, and
+  the `auto_learn` setting turns the whole thing off including the field reads.
 
 ## User data
 
 - `~/.qwen-dictation/config.json`: live settings only.
 - `~/.qwen-dictation/vocabulary.json`: user-approved context terms.
 - `~/.qwen-dictation/history.json`: optional latest 50 transcript texts, no audio.
-- `~/.qwen-dictation/vocabulary-candidates.json`: candidate counts and dismissals.
+- `~/.qwen-dictation/vocabulary-candidates.json`: candidate counts and dismissals,
+  counting both dashboard corrections and in-place edits; no field text is stored.
 - `~/.qwen-dictation/diagnostics.jsonl`: latest operational events only; no audio,
   transcript text, or intermediate hypotheses.
 

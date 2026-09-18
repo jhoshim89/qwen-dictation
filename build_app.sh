@@ -51,6 +51,7 @@ rm -rf build dist "$DIST_DIR"
   --distpath "$DIST_DIR" \
   --osx-bundle-identifier com.shimjaeho.qwendictation \
   --icon assets/AppIcon.icns \
+  --hidden-import ApplicationServices \
   --add-data "assets/menubar.png:assets" \
   --add-data "assets/logo-mark.svg:assets" \
   --add-data "assets/fonts:assets/fonts" \
@@ -58,6 +59,10 @@ rm -rf build dist "$DIST_DIR"
   --add-data "dashboard.py:." \
   --add-data "asr_engines.py:." \
   --add-data "dictation_history.py:." \
+  --add-data "auto_learn.py:." \
+  --add-data "focus_text.py:." \
+  --add-data "term_correct.py:." \
+  --add-data "vocabulary.py:." \
   --add-data "hotkeys.py:." \
   --add-data "audio_level.py:." \
   --add-data "app_paths.py:." \

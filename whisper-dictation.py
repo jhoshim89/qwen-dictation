@@ -25,6 +25,8 @@ import app_config
 import vocabulary
 import term_correct
 import dictation_history
+import auto_learn
+import focus_text
 import diagnostics
 import audio_level
 import hud_overlay
@@ -133,6 +135,8 @@ CAPTURE_STALL_TIMEOUT_SEC = 2.0
 CAPTURE_MAX_CONSECUTIVE_ERRORS = 3
 CAPTURE_WATCHDOG_INTERVAL_SEC = 0.2
 MAC_BACKSPACE_KEYCODE = 51
+# 자동 등록된 단어가 아직 없을 때 메뉴에 보여 줄 문구.
+LEARNED_MENU_EMPTY = "자동 등록된 단어 없음"
 NOISE_FILLER_TEXTS = {"아", "어", "응", "음", "네", "예", "그", "그렇죠", "그쵸", "그렇지"}
 
 
@@ -542,6 +546,33 @@ def plain_backspace(_post=None):
     post(kCGHIDEventTap, up)
 
 
+def append_ignoring_spaces(old_text, new_text):
+    """old 가 new 의 '공백 무시' 앞부분이면 new 에서 그 뒤에 새로 붙은 글자를 돌려준다.
+
+    아니면(앞말 자체가 바뀌었거나 new 가 더 짧으면) "" 를 돌려준다.
+    예) ('병원 에', '병원에 갔다') -> ' 갔다', ('안녕 반갑', '안녕반갑습니다') -> '습니다'
+    """
+    compact_old = "".join(ch for ch in (old_text or "") if not ch.isspace())
+    if not compact_old:
+        return ""
+    consumed = 0
+    for idx, ch in enumerate(new_text or ""):
+        if ch.isspace():
+            continue
+        if ch != compact_old[consumed]:
+            return ""
+        consumed += 1
+        if consumed == len(compact_old):
+            remainder = new_text[idx + 1:]
+            return remainder if remainder.strip() else ""
+    return ""
+
+
+def compact_length(text):
+    """공백을 뺀 글자 수. 재인식 결과에 '새 내용'이 더 들어 있는지 비교할 때 쓴다."""
+    return sum(1 for ch in (text or "") if not ch.isspace())
+
+
 def type_diff(
     old_text,
     new_text,
@@ -581,6 +612,13 @@ def type_diff(
         return old_text
 
     if append_only:
+        # 앞부분이 띄어쓰기만 다르게 다시 들렸다면(한국어 띄어쓰기는 가설마다 흔들린다:
+        # '병원 에' ↔ '병원에') 화면 글자는 그대로 두고 새로 늘어난 뒷말만 덧붙인다.
+        # 예전엔 여기서 뒷말까지 통째로 버려 '말이 한 번씩 씹히는' 원인이 됐다.
+        appended = append_ignoring_spaces(old_text, new_text)
+        if appended:
+            insert(appended)
+            return old_text + appended
         return old_text
 
     common_prefix = os.path.commonprefix([old_text, new_text])
@@ -925,6 +963,9 @@ class Recorder:
         # 타이핑 도중 예외가 났는지 표시한다. True 로 남아 있으면 화면 상태를 믿을
         # 수 없다는 뜻이라, 다음 틱에서 기준점을 리셋한다(_recover_after_tick_error).
         self._typing_in_progress = False
+        # 받아쓴 직후의 입력창 참조와 그때 내용(자동 학습용). 메모리에만 두고
+        # 다음 세션 시작 때 한 번 다시 읽은 뒤 버린다 — 디스크에 쓰지 않는다.
+        self._edit_watch = None
         # 홀드 키를 떼서 정상 종료할 때만, 마지막 글자 입력 뒤 Enter 를 보낼지.
         self.send_enter_on_stop = False
         # Ctrl/Cmd 같은 modifier 를 홀드 키로 쓰는 동안 합성 backspace 가 섞이지
@@ -956,6 +997,64 @@ class Recorder:
         """입력창 글자에 대한 소유권을 내려놓는다. 다음 발화는 빈 기준에서 시작해
         백스페이스 없이 커서 위치에 새 글자만 덧붙는다(사용자 수정 보존)."""
         self.rebaseline_pending = True
+
+    def _auto_learn_enabled(self):
+        return bool(getattr(getattr(self, "app", None), "auto_learn", True))
+
+    def _capture_edit_baseline(self):
+        """받아쓴 직후, 글자를 넣은 입력창과 그때 내용을 기억해 둔다.
+
+        다음 받아쓰기를 시작할 때 이 칸을 한 번 더 읽어 사용자가 고친 부분을 찾는다.
+        기억은 메모리에만 두고 디스크에 쓰지 않는다 — 입력창 내용은 저장하지 않는다.
+        """
+        self._edit_watch = None
+        if not self._auto_learn_enabled():
+            return
+        typed = (self.last_typed or "").strip()
+        if not typed:
+            return
+        try:
+            element, before = focus_text.capture_focused_field()
+        except Exception as exc:
+            print(f"Auto-learn capture error: {exc}")
+            return
+        if element is None or not before:
+            return
+        self._edit_watch = {"element": element, "before": before, "typed": typed}
+
+    def _learn_from_previous_edit(self):
+        """직전 받아쓰기 뒤 사용자가 직접 고친 것을 세고, 세 번 쌓인 말은 등록한다.
+
+        받아쓰기 스레드를 붙잡지 않도록 세션 시작 때 별도 스레드에서 부른다.
+        """
+        watch = getattr(self, "_edit_watch", None)
+        self._edit_watch = None
+        if not watch or not self._auto_learn_enabled():
+            return
+        try:
+            after = focus_text.read_field(watch["element"])
+            if not after:
+                return
+            pairs = auto_learn.extract_corrections(
+                watch["typed"], watch["before"], after
+            )
+            if not pairs:
+                return
+            learned = dictation_history.record_live_corrections(pairs)
+            # 고친 글자 자체는 남기지 않는다 — 개수만 기록한다.
+            self._debug(
+                "edit_learned", term_count=len(pairs), learned_count=len(learned)
+            )
+            if learned:
+                app = getattr(self, "app", None)
+                notify = getattr(app, "notify_learned_terms", None)
+                dispatch = getattr(app, "dispatch_to_main", None)
+                if callable(notify) and callable(dispatch):
+                    dispatch(notify, learned)
+                elif callable(notify):
+                    notify(learned)
+        except Exception as exc:
+            print(f"Auto-learn error: {exc}")
 
     def capture_ready(self):
         return self._capture_ready.is_set()
@@ -1041,6 +1140,12 @@ class Recorder:
         self.deferred_text = ""
         self.rebaseline_pending = False
         self._typing_in_progress = False
+        # 직전 받아쓰기 뒤 사용자가 고친 것이 있으면 여기서 배운다. 대상 앱이 늦게
+        # 응답해도 녹음 시작이 밀리지 않도록 별도 스레드로 보낸다.
+        if getattr(self, "_edit_watch", None) is not None:
+            threading.Thread(
+                target=self._learn_from_previous_edit, daemon=True
+            ).start()
         self._wake.clear()
         self._session_id += 1
         session_id = self._session_id
@@ -1438,9 +1543,30 @@ class Recorder:
                 # 키를 치는 도중에 실패하면 화면에 몇 글자가 남았는지 알 수 없다.
                 # 성공했을 때만 플래그를 내려, 실패 시 루프가 기준점을 리셋하게 한다.
                 self._typing_in_progress = True
-                self.last_typed = self._type(self.last_typed, target, append_only=append_only)
+                typed = self._type(self.last_typed, target, append_only=append_only)
+                rewrite = False
+                if (
+                    committing
+                    and append_only
+                    and typed == self.last_typed
+                    and compact_length(target) > compact_length(typed)
+                ):
+                    # 확정 재인식이 이미 친 앞말을 바꿔서(띄어쓰기 차이가 아니라 단어가
+                    # 달라져) 덧붙이기로는 못 넣는 경우. 예전엔 여기서 새 뒷말까지 통째로
+                    # 버려 '말이 씹혔다'. 쉼 중이라 잠깐 깜빡이더라도 갈라지는 지점부터
+                    # 지우고 다시 쓴다. 단, 재인식이 더 짧으면(모델이 단어를 빠뜨린 쪽)
+                    # 화면 글자를 지우지 않고 그대로 둔다 — 새로 넣을 내용도 없다.
+                    typed = self._type(self.last_typed, target, append_only=False)
+                    rewrite = True
+                self.last_typed = typed
                 self._typing_in_progress = False
-                self._debug("typed", old_len=old_len, new_len=len(self.last_typed), append_only=append_only)
+                self._debug(
+                    "typed",
+                    old_len=old_len,
+                    new_len=len(self.last_typed),
+                    append_only=append_only,
+                    rewrite=rewrite,
+                )
             self.deferred_text = ""
         elif target:
             self.deferred_text = target
@@ -1560,6 +1686,9 @@ class Recorder:
                 self._send_enter(settle=0.03 if self.last_typed != typed_before else 0.0)
             if getattr(getattr(self, "app", None), "save_history", True):
                 dictation_history.add_history(self.last_typed)
+            # 방금 글자를 넣은 입력창을 기억해 둔다. 사용자가 여기서 직접 고치면
+            # 다음 받아쓰기를 시작할 때 그 차이를 읽어 학습한다.
+            self._capture_edit_baseline()
         finally:
             app = getattr(self, "app", None)
             set_processing = getattr(app, "set_processing", None)
@@ -1718,8 +1847,14 @@ class StatusBarApp(rumps.App):
             item = rumps.MenuItem(self._asr_engine_menu_title(engine), callback=self.change_asr_engine)
             item.engine_id = engine["id"]
             menu.append(item)
+        # 자동 등록된 단어를 메뉴에서 바로 보여 준다. 알림은 지나가면 사라지므로,
+        # 무엇이 등록됐는지 나중에도 확인할 자리가 필요하다.
+        self._learned_menu_item = rumps.MenuItem(
+            LEARNED_MENU_EMPTY, callback=self.open_dashboard
+        )
         menu.extend([
             None,
+            self._learned_menu_item,
             rumps.MenuItem("Open Settings Dashboard", callback=self.open_dashboard),
             None,
         ])
@@ -1728,6 +1863,7 @@ class StatusBarApp(rumps.App):
         self.menu = menu
         self.menu["Stop Recording"].set_callback(None)
         self.sync_menu_state()
+        self.refresh_learned_menu()
         self._apply_saved_config()
         if max_time is not None:
             self.max_time = max(0, float(max_time))
@@ -1821,6 +1957,7 @@ class StatusBarApp(rumps.App):
             "edit_interrupt_mode": getattr(self, "edit_interrupt_mode", "stop"),
             "hold_send_enter": getattr(self, "hold_send_enter", True),
             "save_history": getattr(self, "save_history", True),
+            "auto_learn": getattr(self, "auto_learn", True),
             "domain_context": getattr(self, "domain_context", ""),
             "hud_mode": getattr(self, "hud_mode", "pill"),
             "hud_pin_x": getattr(self, "hud_pin_x", None),
@@ -1869,6 +2006,7 @@ class StatusBarApp(rumps.App):
         self.edit_interrupt_mode = mode if mode in ("continue", "stop") else "stop"
         self.hold_send_enter = bool(cfg.get("hold_send_enter", True))
         self.save_history = bool(cfg.get("save_history", True))
+        self.auto_learn = bool(cfg.get("auto_learn", True))
         self.domain_context = str(cfg.get("domain_context", "") or "")
         self.hud_mode = hud_overlay.normalize_hud_mode(cfg.get("hud_mode", "pill"))
         self.hud_pin_x = cfg.get("hud_pin_x")
@@ -1918,6 +2056,9 @@ class StatusBarApp(rumps.App):
     def start_app(self, _):
         if self.started or self.processing_active:
             return False
+        # 메뉴의 '자동 등록' 줄을 여기서 한 번 맞춰 둔다. 대시보드에서 되돌린 뒤에도
+        # 다음 받아쓰기 때는 메뉴가 실제 목록과 일치한다.
+        self.refresh_learned_menu()
         live_typing = bool(getattr(self, "_live_typing_for_next_start", True))
         self._live_typing_for_next_start = True
         append_only_live = bool(getattr(self, "_append_only_for_next_start", False))
@@ -1982,6 +2123,39 @@ class StatusBarApp(rumps.App):
         self.menu["Stop Recording"].set_callback(None)
         self.menu["Start Recording"].set_callback(self.start_app)
         safe_notify("Qwen Dictation", "Model error", message)
+
+    def refresh_learned_menu(self):
+        """메뉴의 '자동 등록' 줄을 최근 등록 단어로 갱신한다. 메인 스레드에서만 부른다."""
+        item = getattr(self, "_learned_menu_item", None)
+        if item is None:
+            return
+        try:
+            learned = [row["term"] for row in dictation_history.list_learned() if row.get("active")]
+        except Exception:
+            learned = []
+        if not learned:
+            item.title = LEARNED_MENU_EMPTY
+            return
+        shown = ", ".join(learned[:3])
+        if len(learned) > 3:
+            shown += f" 외 {len(learned) - 3}개"
+        item.title = f"자동 등록됨: {shown}"
+
+    def notify_learned_terms(self, terms):
+        """같은 고침이 반복돼 자동 등록된 단어를 알린다. 조용히 등록하지 않는다 —
+        사용자가 알아야 대시보드에서 지울 수 있다."""
+        words = [str(t).strip() for t in (terms or []) if str(t).strip()]
+        if not words:
+            return
+        shown = ", ".join(words[:3])
+        if len(words) > 3:
+            shown += f" 외 {len(words) - 3}개"
+        safe_notify(
+            "Qwen Dictation",
+            "단어를 등록했습니다",
+            f"{shown} — 자주 고치셔서 추가했습니다. 메뉴에서 되돌릴 수 있습니다.",
+        )
+        self.refresh_learned_menu()
 
     def set_processing(self, active):
         self.processing_active = bool(active)

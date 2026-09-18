@@ -105,6 +105,7 @@ def get_config():
         "edit_interrupt_mode": getattr(app_instance, 'edit_interrupt_mode', app_config.DEFAULTS["edit_interrupt_mode"]),
         "hold_send_enter": bool(getattr(app_instance, 'hold_send_enter', True)),
         "save_history": bool(getattr(app_instance, 'save_history', True)),
+        "auto_learn": bool(getattr(app_instance, 'auto_learn', True)),
         "domain_context": getattr(app_instance, 'domain_context', ''),
         "hud_mode": getattr(app_instance, 'hud_mode', 'pill'),
         "hud_pin_x": getattr(app_instance, 'hud_pin_x', None),
@@ -163,6 +164,8 @@ def post_config():
             app_instance.hold_send_enter = bool(data['hold_send_enter'])
         if 'save_history' in data:
             app_instance.save_history = bool(data['save_history'])
+        if 'auto_learn' in data:
+            app_instance.auto_learn = bool(data['auto_learn'])
         if hotkey_changed:
             hold = data.get("hold_key", getattr(app_instance, "hold_key", "ctrl_r"))
             toggle = data.get("toggle_key", getattr(app_instance, "toggle_key", "alt_r"))
@@ -398,6 +401,22 @@ def dismiss_vocabulary_candidate():
 def reset_dismissed_vocabulary_candidates():
     dictation_history.reset_dismissed()
     return jsonify(dictation_history.list_candidates())
+
+
+@flask_app.route('/api/vocabulary/learned', methods=['GET'])
+def get_learned_vocabulary():
+    """자주 고쳐서 자동 등록된 단어 목록(최근 것부터)."""
+    return jsonify(dictation_history.list_learned())
+
+
+@flask_app.route('/api/vocabulary/learned/undo', methods=['POST'])
+def undo_learned_vocabulary():
+    """자동 등록을 되돌린다 — 단어를 빼고 다시 등록되지 않게 한다."""
+    try:
+        words = dictation_history.undo_learned((request.json or {}).get("term"))
+        return jsonify({"vocabulary": words, "learned": dictation_history.list_learned()})
+    except ValueError as exc:
+        return jsonify({"error": str(exc)}), 400
 
 def start_server(app):
     global app_instance
