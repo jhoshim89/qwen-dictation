@@ -12,8 +12,11 @@ into the focused input field. The Flask dashboard at
 `http://127.0.0.1:5001` edits live settings and user vocabulary.
 
 The historical entry point remains `whisper-dictation.py`. Do not reintroduce
-Whisper, batch paste, review cards, string replacement dictionaries, or paid
-cloud STT paths unless explicitly requested.
+Whisper, batch paste, review cards, free-form find-and-replace dictionaries, or
+paid cloud STT paths unless explicitly requested. The one allowed exception is a
+user-typed pronunciation on a vocabulary entry (`GitHub(깃허브)`): a word that
+sounds like it is written as the English form (sound-similarity match, particles
+kept), requested by the user on 2026-09-29.
 
 ## Run and verify
 
@@ -62,7 +65,12 @@ hotkeys.
 ## User data
 
 - `~/.qwen-dictation/config.json`: live settings only.
-- `~/.qwen-dictation/vocabulary.json`: user-approved context terms.
+- `~/.qwen-dictation/vocabulary.json`: user-approved context terms, plain strings.
+  An entry may carry Korean pronunciations, `GitHub(깃허브, 깃헙)` (`vocabulary.parse_term`):
+  the hint sends only the Korean pronunciation (`깃허브`; mixing the English form into the hint made
+  Qwen rewrite neighbouring unregistered words to English), `term_correct` rewrites sound-alikes
+  (space-split and particle-attached forms included) to `GitHub`,
+  and the bias guard accepts the pronunciation as acoustic evidence.
 - `~/.qwen-dictation/history.json`: optional latest 50 transcript texts, no audio.
 - `~/.qwen-dictation/vocabulary-candidates.json`: candidate counts and dismissals,
   counting both dashboard corrections and in-place edits; no field text is stored.

@@ -3,7 +3,8 @@
 마이크 없이 스트리밍 경로(틱 → 확정 → 타이핑)를 회귀 검증할 때 쓴다. 가짜 키보드가
 insert/backspace 를 받아 '화면 글자'를 재구성하고, 전체 파일을 한 번에 받아쓴 결과와 비교한다.
 
-usage: ./venv/bin/python tools/sim_stream.py <whisper-dictation.py 경로> <16kHz mono wav> [틱당 프레임수]
+usage: [SIM_VOCAB='["GitHub(깃허브)"]'] ./venv/bin/python tools/sim_stream.py <whisper-dictation.py 경로> <16kHz mono wav> [틱당 프레임수]
+SIM_VOCAB(JSON 글자 목록)를 주면 그 등록 단어로 확정 편향·사후 교정 경로까지 지나간다.
 
 테스트 음성 만들기(한국어 TTS): say -v Yuna -o s1.aiff "문장" → ffmpeg -i s1.aiff -ac 1 -ar 16000 s1.wav
 문장 사이에 sox 로 0.7초 무음을 넣어 이어붙이면 쉼 확정 경로까지 지나간다.
@@ -38,7 +39,7 @@ rec.committed_text = ""; rec.last_typed = ""; rec.recording = True
 rec.rebaseline_pending = False; rec.self_type_guard_until = 0.0
 rec.defer_typing_until_stop = False; rec.append_only_until_stop = False
 rec.app = App(); rec.transcriber = transcriber; rec._session_id = 1
-rec.session_vocab = []
+rec.session_vocab = json.loads(os.environ.get("SIM_VOCAB", "[]"))
 rec.debug_events = collections.deque(maxlen=5000)
 rec._debug = lambda reason, **kw: rec.debug_events.append(dict(reason=reason, **kw))
 
