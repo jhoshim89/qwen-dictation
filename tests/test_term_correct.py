@@ -104,3 +104,108 @@ def test_context_bias_unsafe_on_empty_unbiased():
     # 무음/빈 무편향본 위에 등록어가 생기면 근거가 없으므로 거부(고전적 누출 상황)
     assert term_correct.context_bias_is_safe("", "커밋", ["커밋"]) is False
     assert term_correct.context_bias_is_safe("뭐라고", "", ["커밋"]) is False
+
+
+# ---- 발음이 붙은 항목: 소리가 같으면 대표 표기로 ----
+
+def test_alias_exact_pronunciation_becomes_canonical():
+    assert term_correct.correct_terms("코드를 깃허브 저장소에 올렸다", ["GitHub(깃허브)"]) == (
+        "코드를 GitHub 저장소에 올렸다"
+    )
+
+
+def test_alias_keeps_particle():
+    assert term_correct.correct_terms("깃허브에 올렸다", ["GitHub(깃허브)"]) == "GitHub에 올렸다"
+    assert term_correct.correct_terms("큐드란트를 켰다", ["Qdrant(큐드란트)"]) == "Qdrant를 켰다"
+
+
+def test_alias_that_ends_in_a_particle_shaped_syllable_still_matches():
+    # '조테로'의 끝 '로'는 조사 모양이다. 통째로도, 조사가 붙어도 맞아야 한다.
+    entries = ["Zotero(조테로)"]
+    assert term_correct.correct_terms("조테로 라이브러리", entries) == "Zotero 라이브러리"
+    assert term_correct.correct_terms("조테로에 정리했다", entries) == "Zotero에 정리했다"
+    assert term_correct.correct_terms("조태로 라이브러리", entries) == "Zotero 라이브러리"
+
+
+def test_alias_near_miss_pronunciation_is_matched_by_sound():
+    assert term_correct.correct_terms("옥시디언 노트", ["Obsidian(옵시디언)"]) == "Obsidian 노트"
+
+
+def test_alias_uses_any_of_several_pronunciations():
+    entries = ["GitHub(깃허브, 깃헙)"]
+    assert term_correct.correct_terms("깃헙에 올림", entries) == "GitHub에 올림"
+
+
+def test_alias_does_not_touch_look_alike_real_words():
+    entries = ["Claude(클로드)", "Qdrant(큐드란트)", "Python(파이썬)", "PubMed(퍼브메드)"]
+    for sentence in [
+        "클라우드 서버에 백업했다",
+        "클로버 잎을 봤다",
+        "큐브 모양 조각",
+        "파이 모양 그래프",
+        "퍼블릭 도메인 이미지",
+    ]:
+        assert term_correct.correct_terms(sentence, entries) == sentence
+
+
+def test_alias_registered_term_is_never_rewritten_by_alias():
+    # 등록된 원어(`커밋`)는 다른 항목의 발음 규칙보다 앞선다.
+    entries = ["커밋", "commit(커밋)"]
+    assert term_correct.correct_terms("커밋했다", entries) == "커밋했다"
+
+
+def test_plain_entries_behave_as_before_when_mixed_with_alias_entries():
+    entries = ["각막궤양", "GitHub(깃허브)"]
+    assert term_correct.correct_terms("각막계양 소견, 깃허브", entries) == "각막궤양 소견, GitHub"
+
+
+def test_multiword_pronunciation_is_replaced():
+    assert term_correct.correct_terms("챗 지피티 답변", ["ChatGPT(챗 지피티)"]) == "ChatGPT 답변"
+
+
+def test_context_bias_guard_accepts_pronunciation_as_evidence():
+    # 편향본이 Qdrant 를 냈고, 무편향본에는 한글 발음(큐드란) 근처 소리가 있다 → 근거 있음.
+    entries = ["Qdrant(큐드란트)"]
+    assert term_correct.context_bias_is_safe("큐드란 컬렉션", "Qdrant 컬렉션", entries)
+    # 소리 근거가 전혀 없는 등록어는 여전히 거부한다.
+    assert not term_correct.context_bias_is_safe("오늘 날씨 좋다", "Qdrant 날씨 좋다", entries)
+
+
+def test_pronunciation_split_by_spaces_is_still_matched():
+    # ASR 이 붙여 쓰는 말을 띄어 쓰는 경우('오픈 알렉스'), 조사가 붙은 경우까지.
+    entries = ["OpenAlex(오픈알렉스)"]
+    assert term_correct.correct_terms("오픈 알렉스에서 가져왔다", entries) == "OpenAlex에서 가져왔다"
+    assert term_correct.correct_terms("오픈알렉스 저자", entries) == "OpenAlex 저자"
+
+
+def test_split_words_are_not_joined_across_punctuation():
+    entries = ["OpenAlex(오픈알렉스)"]
+    assert term_correct.correct_terms("오픈, 알렉스", entries) == "오픈, 알렉스"
+
+
+def test_alias_can_be_an_english_misrecognition_and_ignores_case():
+    # 모델이 '큐웬'을 'Qn' 으로 적는 경우 — 그 표기를 발음 목록에 넣어 두면 잡는다.
+    entries = ["Qwen(큐웬, Qn)"]
+    assert term_correct.correct_terms("QN 모델로 돌렸다", entries) == "Qwen 모델로 돌렸다"
+    assert term_correct.correct_terms("큐웬 모델", entries) == "Qwen 모델"
+
+
+def test_mixed_script_pronunciation_matches_exactly():
+    entries = ["ChatGPT(챗지피티, 챗GPT, 챗 GPT)"]
+    assert term_correct.correct_terms("챗GPT가 만들었다", entries) == "ChatGPT가 만들었다"
+    assert term_correct.correct_terms("챗 GPT가 만들었다", entries) == "ChatGPT가 만들었다"
+
+
+def test_context_bias_guard_still_rejects_when_pronunciation_is_absent_from_unbiased():
+    entries = ["Qdrant(큐드란트)", "GitHub(깃허브)"]
+    # Qdrant 는 무편향본의 소리(큐드란)에서 비롯됐지만, GitHub 는 근거가 없다.
+    assert not term_correct.context_bias_is_safe(
+        "큐드란 컬렉션", "Qdrant GitHub 컬렉션", entries
+    )
+
+
+def test_particle_is_kept_even_when_the_whole_word_is_also_close():
+    # '챗지피티가' 는 통째로도 발음('챗지피티')과 닮았지만 줄기가 정확히 맞으므로 조사를 살린다.
+    entries = ["ChatGPT(챗지피티)"]
+    assert term_correct.correct_terms("챗지피티가 만든 글", entries) == "ChatGPT가 만든 글"
+    assert term_correct.correct_terms("챗지피티를 썼다", entries) == "ChatGPT를 썼다"

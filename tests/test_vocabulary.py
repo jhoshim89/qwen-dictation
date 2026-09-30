@@ -81,3 +81,61 @@ def test_append_vocabulary_keeps_existing_terms(tmp_path, monkeypatch):
     monkeypatch.setattr(app_paths, "vocabulary_path", lambda: str(tmp_path / "vocabulary.json"))
     vocabulary.save_vocabulary(["각막"])
     assert vocabulary.append_vocabulary(["궤양", "각막"]) == ["각막", "궤양"]
+
+
+# ---- 발음이 붙은 항목: `GitHub(깃허브)` ----
+
+def test_parse_term_reads_pronunciation_in_parentheses():
+    assert vocabulary.parse_term("GitHub(깃허브)") == ("GitHub", ["깃허브"])
+    assert vocabulary.parse_term("GitHub (깃허브)") == ("GitHub", ["깃허브"])
+    assert vocabulary.parse_term("GitHub（깃허브）") == ("GitHub", ["깃허브"])
+
+
+def test_parse_term_supports_several_pronunciations():
+    assert vocabulary.parse_term("GitHub(깃허브, 깃헙)") == ("GitHub", ["깃허브", "깃헙"])
+    assert vocabulary.parse_term("GitHub(깃허브/깃헙)") == ("GitHub", ["깃허브", "깃헙"])
+
+
+def test_parse_term_plain_and_degenerate_entries():
+    assert vocabulary.parse_term("각막") == ("각막", [])
+    assert vocabulary.parse_term("vet ophthalmology") == ("vet ophthalmology", [])
+    assert vocabulary.parse_term("GitHub()") == ("GitHub", [])
+    assert vocabulary.parse_term("(깃허브)") == ("(깃허브)", [])  # 앞이 비면 괄호를 발음으로 보지 않는다
+    assert vocabulary.parse_term("GitHub(github)") == ("GitHub", [])  # 자기 자신은 발음이 아니다
+
+
+def test_hint_form_sends_only_the_korean_pronunciation():
+    # 영어 표기를 섞어 귀띔하면 모델이 주변 말('컬렉션')까지 영어로 바꾸는 부작용이 있어
+    # 모델에는 한글 발음만 알려 준다. 영어로 바꾸는 일은 받아쓴 뒤 소리 매칭이 한다.
+    assert vocabulary.hint_form("GitHub(깃허브, 깃헙)") == "깃허브"
+    assert vocabulary.hint_form("Qwen(Qn, 큐웬)") == "큐웬"  # 영어 오인식 표기는 귀띔하지 않는다
+    assert vocabulary.hint_form("Qwen(Qn)") == "Qwen"  # 한글 발음이 없으면 항목 그대로
+    assert vocabulary.hint_form("각막") == "각막"
+
+
+def test_build_context_sends_pronunciation_as_one_slot():
+    assert (
+        vocabulary.build_context(["Qdrant(큐드란트)", "각막"])
+        == "전문 용어: 큐드란트, 각막"
+    )
+    # 발음이 붙어도 자리는 항목 하나만 쓴다.
+    words = [f"w{i}(발음{i})" for i in range(40)]
+    context = vocabulary.build_context(words)
+    assert "(" not in context and context.count("발음") == vocabulary.MAX_CONTEXT_TERMS
+
+
+def test_save_merges_same_term_and_drops_bare_pronunciation(tmp_path, monkeypatch):
+    monkeypatch.setattr(app_paths, "vocabulary_path", lambda: str(tmp_path / "vocabulary.json"))
+    saved = vocabulary.save_vocabulary(
+        ["Qdrant", "큐드란트", "Qdrant(큐드란트)", "GitHub(깃허브)", "GitHub(깃헙)", "각막"]
+    )
+    # 발음으로 들어간 `큐드란트` 는 따로 남지 않고, 같은 대표 표기는 발음을 모아 하나가 된다.
+    assert saved == ["Qdrant(큐드란트)", "GitHub(깃허브, 깃헙)", "각막"]
+    assert vocabulary.load_vocabulary() == saved
+
+
+def test_alias_map_and_surface_forms():
+    words = ["GitHub(깃허브, 깃헙)", "각막"]
+    assert vocabulary.alias_map(words) == {"GitHub": ["깃허브", "깃헙"]}
+    assert vocabulary.canonical_terms(words) == ["GitHub", "각막"]
+    assert vocabulary.surface_forms(words) == {"GitHub", "깃허브", "깃헙", "각막"}

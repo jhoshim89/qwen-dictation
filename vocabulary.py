@@ -6,6 +6,7 @@
 """
 import json
 import os
+import re
 import threading
 
 import app_paths
@@ -15,6 +16,83 @@ import secure_store
 # 입력을 보내도 디스크와 메모리가 불어나지 않도록 상한을 둔다.
 MAX_VOCABULARY_TERMS = 500
 MAX_TERM_CHARS = 100
+
+# 항목은 그냥 글자 하나다. 영어 이름이 한글 소리로 적히는 말은 `GitHub(깃허브)` 처럼
+# 영어 표기 뒤 괄호에 한글 발음을 붙여 적는다. 저장 형식은 그대로 글자 목록이라 옛 앱과
+# 이 목록을 읽는 다른 코드(후보 판정 등)가 깨지지 않는다. 모델에는 한글 발음만 귀띔한다
+# (hint_form 참고).
+MAX_ALIASES_PER_TERM = 5
+MAX_ALIAS_CHARS = 40
+_ENTRY_RE = re.compile(r"^(?P<term>.*?)\s*[(（](?P<alias>[^()（）]*)[)）]\s*$")
+_ALIAS_SPLIT_RE = re.compile(r"\s*[,，/、·]\s*")
+_HANGUL_RE = re.compile(r"[가-힣]")
+
+
+def parse_term(entry):
+    """항목 글자 → (영어 또는 대표 표기, [발음 목록]). 발음이 없으면 목록은 비어 있다.
+
+    `GitHub(깃허브)` → ("GitHub", ["깃허브"]), `GitHub(깃허브, 깃헙)` → 발음 둘.
+    괄호 앞뒤 어느 쪽이 비었으면 괄호를 발음 표시로 보지 않고 항목 전체를 그대로 둔다.
+    """
+    text = str(entry).strip()
+    match = _ENTRY_RE.match(text)
+    if not match or not match.group("term").strip():
+        return text, []
+    term = match.group("term").strip()
+    aliases = []
+    for alias in _ALIAS_SPLIT_RE.split(match.group("alias").strip()):
+        alias = alias.strip()
+        if (
+            alias
+            and len(alias) <= MAX_ALIAS_CHARS
+            and alias.lower() != term.lower()
+            and alias not in aliases
+        ):
+            aliases.append(alias)
+    return term, aliases[:MAX_ALIASES_PER_TERM]
+
+
+def format_entry(term, aliases):
+    return f"{term}({', '.join(aliases)})" if aliases else term
+
+
+def hint_form(entry):
+    """모델에 귀띔하는 글자 — 발음이 있으면 한글 발음 하나(첫 번째), 없으면 항목 그대로.
+
+    영어 표기를 섞어 귀띔하면(`Qdrant(큐드란트)`) 모델이 주변의 등록하지 않은 말까지 영어로
+    바꿔 적는 부작용이 있었다('컬렉션'→'Collection', 실제 스트리밍 경로 실측). 그래서 모델에는
+    한글 발음만 알려 소리를 정확히 듣게 하고, 영어 표기로 바꾸는 일은 받아쓴 뒤의 소리
+    매칭(term_correct)이 맡는다."""
+    term, aliases = parse_term(entry)
+    for alias in aliases:
+        if _HANGUL_RE.search(alias):
+            return alias  # 'Qn' 같은 영어 오인식 표기는 귀띔에 쓰지 않는다
+    return term
+
+
+def canonical_terms(words):
+    return [parse_term(w)[0] for w in words if str(w).strip()]
+
+
+def alias_map(words):
+    """{대표 표기: [발음, ...]} — 발음이 붙은 항목만."""
+    out = {}
+    for w in words:
+        term, aliases = parse_term(w)
+        if aliases:
+            out[term] = aliases
+    return out
+
+
+def surface_forms(words):
+    """대표 표기와 발음을 모두 펼친 집합 — '이미 등록된 말인가' 판정용."""
+    forms = set()
+    for w in words:
+        term, aliases = parse_term(w)
+        if term:
+            forms.add(term)
+        forms.update(aliases)
+    return forms
 
 # load → 수정 → save 순서가 겹치면 한쪽 저장이 통째로 사라진다. 받아쓰기 스레드와
 # 대시보드 스레드가 같은 파일을 만지므로 읽고-쓰는 구간을 직렬화한다.
@@ -37,14 +115,26 @@ def load_vocabulary():
 
 
 def save_vocabulary(words):
-    seen = set()
-    cleaned = []
+    # 같은 대표 표기는 하나로 합치고 발음은 모은다(`GitHub` + `GitHub(깃허브)`).
+    merged = {}
     for w in words:
         w = str(w).strip()
-        if not w or w in seen or len(w) > MAX_TERM_CHARS:
+        if not w or len(w) > MAX_TERM_CHARS:
             continue
-        seen.add(w)
-        cleaned.append(w)
+        term, aliases = parse_term(w)
+        if not term:
+            continue
+        known = merged.setdefault(term, [])
+        for alias in aliases:
+            if alias not in known and len(known) < MAX_ALIASES_PER_TERM:
+                known.append(alias)
+    # 다른 항목의 발음으로 이미 들어간 낱말(`큐드란트`)이 따로 남아 자리를 차지하지 않게 한다.
+    spoken = {alias for aliases in merged.values() for alias in aliases}
+    cleaned = []
+    for term, aliases in merged.items():
+        if not aliases and term in spoken:
+            continue
+        cleaned.append(format_entry(term, aliases))
         if len(cleaned) >= MAX_VOCABULARY_TERMS:
             break
     try:
@@ -93,7 +183,8 @@ def build_context(words, domain="", limit=MAX_CONTEXT_TERMS):
     — domain 은 그 한도에 포함되지 않는다. 단어가 없으면 라벨도 붙이지 않는다.
     """
     domain = str(domain).strip()
-    terms = [w for w in words if w][:limit]
+    # 발음이 붙은 항목은 한글 발음 하나로 귀띔한다(자리는 항목 하나).
+    terms = [hint_form(w) for w in words if w][:limit]
     labeled_terms = f"{CONTEXT_TERM_LABEL}: " + ", ".join(terms) if terms else ""
     parts = [p for p in (domain, labeled_terms) if p]
     return ". ".join(parts)

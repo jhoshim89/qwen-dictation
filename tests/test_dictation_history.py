@@ -68,3 +68,20 @@ def test_submissions_pruned_when_history_rotates(tmp_path, monkeypatch):
     assert latest["id"] in state["submissions"]
     # 후보 카운트 자체는 유지된다 — 정리 대상은 history 별 제출 기록뿐이다.
     assert any(item["term"] == "Qwen" for item in dictation_history.list_candidates())
+
+
+def test_pronunciation_entry_counts_as_registered_for_candidates(tmp_path, monkeypatch):
+    # `GitHub(깃허브)` 로 합쳐 둔 뒤에는 대표 표기도 발음도 다시 후보나 자동 등록으로 나오지 않는다.
+    _paths(tmp_path, monkeypatch)
+    vocabulary.save_vocabulary(["GitHub(깃허브)"])
+    for _ in range(dictation_history.AUTO_LEARN_THRESHOLD):
+        assert dictation_history.record_live_corrections([("기트허브", "깃허브")]) == []
+        assert dictation_history.record_live_corrections([("깃 허브", "GitHub")]) == []
+    assert dictation_history.list_candidates() == []
+    assert vocabulary.load_vocabulary() == ["GitHub(깃허브)"]
+
+
+def test_undo_learned_removes_entry_carrying_a_pronunciation(tmp_path, monkeypatch):
+    _paths(tmp_path, monkeypatch)
+    vocabulary.save_vocabulary(["GitHub(깃허브)", "각막"])
+    assert dictation_history.undo_learned("GitHub") == ["각막"]

@@ -112,10 +112,18 @@ Note: this biases recognition toward those words — it improves accuracy but is
 guaranteed substitution. Legacy `dictionary.json` files are left untouched but
 are no longer read or applied.
 
+An English name that Qwen keeps writing in Hangul can carry its Korean
+pronunciation in parentheses, e.g. `GitHub(깃허브)` (several pronunciations are
+comma-separated). Only the pronunciation is passed to Qwen as the hint, and
+after transcription a word that sounds like one of the listed pronunciations is
+written as the English form (particles are kept: `깃허브에` → `GitHub에`). This
+only matches by sound against pronunciations you typed yourself; it is not a
+free-form find-and-replace list.
+
 Example `vocabulary.json`:
 
 ```json
-["Qwen", "각막", "궤양", "염색"]
+["Qwen", "각막", "궤양", "염색", "GitHub(깃허브)"]
 ```
 
 ## Recent dictation and vocabulary suggestions

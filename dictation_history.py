@@ -125,7 +125,7 @@ def record_live_corrections(pairs):
     if not terms:
         return []
     with _LOCK:
-        vocab = set(vocabulary.load_vocabulary())
+        vocab = vocabulary.surface_forms(vocabulary.load_vocabulary())
         state = _candidate_state()
         dismissed = set(state["dismissed"])
         learned = []
@@ -151,7 +151,7 @@ def record_live_corrections(pairs):
 
 def list_learned():
     """자동 등록된 단어를 최근 것부터 돌려준다(대시보드에 보여 주기 위함)."""
-    vocab = set(vocabulary.load_vocabulary())
+    vocab = vocabulary.surface_forms(vocabulary.load_vocabulary())
     items = []
     for row in _candidate_state()["learned"]:
         term = str((row or {}).get("term", "")).strip()
@@ -172,8 +172,9 @@ def undo_learned(term):
     if not term:
         raise ValueError("term is required")
     with _LOCK:
+        # 발음이 붙은 항목(`GitHub(깃허브)`)도 대표 표기로 알아보고 뺀다.
         vocabulary.save_vocabulary(
-            [w for w in vocabulary.load_vocabulary() if w != term]
+            [w for w in vocabulary.load_vocabulary() if vocabulary.parse_term(w)[0] != term]
         )
         state = _candidate_state()
         state["learned"] = [
@@ -188,7 +189,7 @@ def undo_learned(term):
 
 def list_candidates():
     state = _candidate_state()
-    vocab = set(vocabulary.load_vocabulary())
+    vocab = vocabulary.surface_forms(vocabulary.load_vocabulary())
     dismissed = set(state["dismissed"])
     return sorted(
         [

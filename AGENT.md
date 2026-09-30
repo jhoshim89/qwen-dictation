@@ -7,6 +7,9 @@ This is a local macOS dictation MVP using Qwen3-ASR 1.7B.
 - Keep one live-streaming input flow: hold-to-talk and toggle start/stop.
 - Keep the menu-bar app and local dashboard at `http://127.0.0.1:5001`.
 - Treat approved vocabulary as Qwen context hints, never guaranteed replacement.
+  The one exception is a user-typed pronunciation on an entry (`GitHub(깃허브)`):
+  a word that sounds like it is written as the English form. Keep that sound-based,
+  never a free-form find-and-replace list.
 - Store only the latest 50 final transcript texts locally when history is
   enabled. Never track edits in external apps or silently learn vocabulary.
 - Keep only the latest 200 operational diagnostic events. Never include audio,
