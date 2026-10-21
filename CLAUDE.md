@@ -70,7 +70,10 @@ hotkeys.
   the hint sends only the Korean pronunciation (`깃허브`; mixing the English form into the hint made
   Qwen rewrite neighbouring unregistered words to English), `term_correct` rewrites sound-alikes
   (space-split and particle-attached forms included) to `GitHub`,
-  and the bias guard accepts the pronunciation as acoustic evidence.
+  and the bias guard accepts the pronunciation as acoustic evidence. On a Hangul entry the
+  parenthesis is a user-typed habitual mishearing (`커밋(가민)`, requested 2026-10-21): the same
+  sound-match rewrites it to the entry, and the hint sends the entry itself, never the mishearing
+  (`vocabulary.hint_form`).
 - `~/.qwen-dictation/history.json`: optional latest 50 transcript texts, no audio.
 - `~/.qwen-dictation/vocabulary-candidates.json`: candidate counts and dismissals,
   counting both dashboard corrections and in-place edits; no field text is stored.

@@ -40,6 +40,9 @@ _ENDINGS = sorted(
     [
         "하고", "하자", "하는", "하면", "하니까", "해서", "해도", "했다", "했어", "했고",
         "합니다", "했습니다", "한다", "하지", "하기", "해야", "하든", "한", "할", "함", "해", "했",
+        # 개발 명령처럼 말하는 습관('커밋해줘', '푸시하세요')과 '~랑' 조사.
+        "해줘", "해줘요", "해주세요", "해봐", "해라", "하세요", "해요", "하는데", "했는데",
+        "이랑", "랑",
         "이라는", "라는", "이라", "으로", "에서", "한테", "처럼", "부터", "까지", "마다", "밖에",
         "이", "가", "을", "를", "은", "는", "에", "로", "도", "만", "와", "과", "의",
     ],
@@ -241,6 +244,22 @@ def context_bias_is_safe(unbiased, biased, terms, near_threshold=BIAS_NEAR_THRES
             if not evidence:
                 return False
     return True
+
+
+def bias_has_candidates(unbiased, terms, near_threshold=BIAS_NEAR_THRESHOLD):
+    """무편향본에 등록어(또는 적어 둔 발음)와 근접한 토막이 하나라도 있는가.
+
+    하나도 없으면 편향 재받아쓰기가 만들어낼 등록어는 전부 context_bias_is_safe 의 근거
+    검사(같은 임계)에서 거부되므로, 모델을 한 번 더 돌릴 이유가 없다. 확정마다 도는
+    재받아쓰기 한 번(약 0.3초)을 건너뛰는 데 쓴다."""
+    entries = [t.strip() for t in terms if t.strip()]
+    aliases = vocabulary.alias_map(entries)
+    for t in _expand_terms(vocabulary.canonical_terms(entries)):
+        if _has_near_span(unbiased, t, near_threshold) or any(
+            _has_near_span(unbiased, a, near_threshold) for a in aliases.get(t, ())
+        ):
+            return True
+    return False
 
 
 def correct_terms(text, terms, threshold=SIMILARITY_THRESHOLD):
