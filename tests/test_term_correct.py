@@ -227,6 +227,12 @@ def test_hangul_term_alias_fixes_a_habitual_mishearing_and_keeps_particles():
     assert term_correct.correct_terms("가민하고 부시하고 끝", terms) == "커밋하고 푸시하고 끝"
 
 
+def test_short_hangul_mishearing_does_not_swallow_a_near_real_word():
+    # '가민'과 '고민'은 모음 하나 차이(유사도 0.8)지만 진짜 단어다 — 정확히 같을 때만 바꾼다.
+    terms = ["커밋(가민)", "푸시(부시)"]
+    assert term_correct.correct_terms("고민 중이에요 고민하고 있어", terms) == "고민 중이에요 고민하고 있어"
+
+
 def test_command_style_endings_keep_the_ending_after_the_stem():
     terms = ["커밋(가민)", "푸시(부시)"]
     assert term_correct.correct_terms("가민해줘 부시하세요", terms) == "커밋해줘 푸시하세요"

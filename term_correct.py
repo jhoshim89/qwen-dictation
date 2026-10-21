@@ -28,6 +28,9 @@ LEN_RATIO_MIN = 0.8
 # SIMILARITY_THRESHOLD(교체용 0.8)보다 낮다 — 모델은 오디오+힌트로 '거미→커밋'(0.67)처럼
 # 순수 텍스트 fuzzy 가 못 잇는 간극을 메우므로, 가드는 '근거가 아예 없는' 경우만 막는다.
 BIAS_NEAR_THRESHOLD = 0.55
+# 사용자가 적은 발음/오인식이 자모로 이보다 짧으면(두 글자 안팎) 정확히 같을 때만 바꾼다.
+# 짧은 말은 모음 하나만 달라도 유사도가 임계에 걸려 멀쩡한 단어를 삼킨다('가민'→'고민').
+ALIAS_FUZZY_MIN_LEN = 6
 
 _WORD_RE = re.compile(r"\w+", re.UNICODE)
 _TERM_ALIASES = {
@@ -148,7 +151,7 @@ def _alias_score(candidate, alias, threshold):
     candidate = "".join(candidate.split())
     if _norm(candidate) == _norm(alias):
         return 2.0  # 대소문자만 다른 것('QN'↔'Qn')도 같은 발음으로 본다
-    if len(_norm(alias)) < MIN_NORM_LEN:
+    if len(_norm(alias)) < ALIAS_FUZZY_MIN_LEN:
         return 0.0  # 짧은 발음은 우연 일치가 많아 정확히 같을 때만 인정
     if _len_ratio(candidate, alias) < LEN_RATIO_MIN:
         return 0.0
