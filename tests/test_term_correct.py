@@ -209,3 +209,35 @@ def test_particle_is_kept_even_when_the_whole_word_is_also_close():
     entries = ["ChatGPT(챗지피티)"]
     assert term_correct.correct_terms("챗지피티가 만든 글", entries) == "ChatGPT가 만든 글"
     assert term_correct.correct_terms("챗지피티를 썼다", entries) == "ChatGPT를 썼다"
+
+
+def test_bias_has_candidates_true_when_a_span_resembles_a_term_or_its_pronunciation():
+    assert term_correct.bias_has_candidates("각막계양 소견", ["각막궤양"]) is True
+    assert term_correct.bias_has_candidates("깃헙에 올려줘", ["GitHub(깃허브)"]) is True
+
+
+def test_bias_has_candidates_false_when_nothing_resembles_any_term():
+    terms = ["녹내장", "GitHub(깃허브)", "PLR(피엘알)"]
+    assert term_correct.bias_has_candidates("오늘 점심은 밖에서 먹을게요", terms) is False
+    assert term_correct.bias_has_candidates("", terms) is False
+
+
+def test_hangul_term_alias_fixes_a_habitual_mishearing_and_keeps_particles():
+    terms = ["커밋(가민)", "푸시(부시)"]
+    assert term_correct.correct_terms("가민하고 부시하고 끝", terms) == "커밋하고 푸시하고 끝"
+
+
+def test_command_style_endings_keep_the_ending_after_the_stem():
+    terms = ["커밋(가민)", "푸시(부시)"]
+    assert term_correct.correct_terms("가민해줘 부시하세요", terms) == "커밋해줘 푸시하세요"
+
+
+def test_rang_particle_after_a_pronunciation_alias():
+    terms = ["PLR(피엘알)", "visual placing(비주얼 플레이싱)"]
+    assert term_correct.correct_terms("피엘알이랑 비주얼 플레이싱", terms) == "PLR이랑 visual placing"
+
+
+def test_new_endings_do_not_rewrite_ordinary_words():
+    terms = ["커밋(가민)", "푸시(부시)"]
+    text = "사랑하는 사람이랑 점심을 먹었다"
+    assert term_correct.correct_terms(text, terms) == text

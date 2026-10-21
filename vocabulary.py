@@ -64,6 +64,10 @@ def hint_form(entry):
     한글 발음만 알려 소리를 정확히 듣게 하고, 영어 표기로 바꾸는 일은 받아쓴 뒤의 소리
     매칭(term_correct)이 맡는다."""
     term, aliases = parse_term(entry)
+    if _HANGUL_RE.search(term):
+        # 한글 항목(`커밋(가민)`)의 괄호는 자주 틀리게 들리는 소리다. 귀띔은 올바른 한글 표기
+        # 자체여야 하고, 틀린 소리('가민')를 알려 주면 거꾸로 그쪽으로 듣게 된다.
+        return term
     for alias in aliases:
         if _HANGUL_RE.search(alias):
             return alias  # 'Qn' 같은 영어 오인식 표기는 귀띔에 쓰지 않는다

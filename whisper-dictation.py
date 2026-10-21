@@ -1362,6 +1362,10 @@ class Recorder:
         vocab = getattr(self, "session_vocab", None) or []
         if not vocab or window_secs < BIAS_MIN_WINDOW_SEC:
             return unbiased
+        # 무편향본에 등록어와 닮은 토막이 하나도 없으면 편향본이 만들 등록어는 어차피 아래
+        # 누출 가드가 거부한다 → 모델을 한 번 더 돌리지 않고(확정·키 뗄 때 약 0.3초) 끝낸다.
+        if not term_correct.bias_has_candidates(unbiased, vocab):
+            return unbiased
         domain = getattr(self.app, "domain_context", "")
         context = vocabulary.build_context(vocab, domain)
         if not context:
@@ -1513,6 +1517,11 @@ class Recorder:
             cw, aw = confirmed.split(), agreed.split()
             if len(aw) > len(cw) and aw[: len(cw)] == cw:
                 confirmed = agreed
+            elif len(aw) >= len(cw) and aw[: len(cw)] != cw:
+                # 이미 친 앞말이 두 틱 연속 같게 '다른 말'로 다시 들렸다('아나비'→'안압이').
+                # 예전엔 여기서 확정을 영영 못 늘려 화면이 쉼까지 멈췄다가 한꺼번에 쏟아졌다.
+                # 고쳐 들린 쪽을 새 확정으로 삼고, 타이핑 단계의 재작성으로 화면을 맞춘다.
+                confirmed = agreed
             shown = confirmed
             self._la_confirmed = confirmed
         self._la_prev_hypo = hypo
@@ -1546,16 +1555,16 @@ class Recorder:
                 typed = self._type(self.last_typed, target, append_only=append_only)
                 rewrite = False
                 if (
-                    committing
-                    and append_only
+                    append_only
                     and typed == self.last_typed
                     and compact_length(target) > compact_length(typed)
                 ):
-                    # 확정 재인식이 이미 친 앞말을 바꿔서(띄어쓰기 차이가 아니라 단어가
-                    # 달라져) 덧붙이기로는 못 넣는 경우. 예전엔 여기서 새 뒷말까지 통째로
-                    # 버려 '말이 씹혔다'. 쉼 중이라 잠깐 깜빡이더라도 갈라지는 지점부터
-                    # 지우고 다시 쓴다. 단, 재인식이 더 짧으면(모델이 단어를 빠뜨린 쪽)
-                    # 화면 글자를 지우지 않고 그대로 둔다 — 새로 넣을 내용도 없다.
+                    # 재인식(확정 때, 또는 말하는 중 두 틱 연속 같게 고쳐 들린 때)이 이미 친
+                    # 앞말을 바꿔서(띄어쓰기 차이가 아니라 단어가 달라져) 덧붙이기로는 못
+                    # 넣는 경우. 예전엔 여기서 새 뒷말까지 통째로 버려 '말이 씹혔다'(확정 때)
+                    # 거나 쉼까지 화면이 멈췄다(말하는 중). 갈라지는 지점부터 지우고 다시
+                    # 쓴다. 단, 재인식이 더 짧으면(모델이 단어를 빠뜨린 쪽) 화면 글자를
+                    # 지우지 않고 그대로 둔다 — 새로 넣을 내용도 없다.
                     typed = self._type(self.last_typed, target, append_only=False)
                     rewrite = True
                 self.last_typed = typed

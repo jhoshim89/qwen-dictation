@@ -1325,6 +1325,64 @@ def test_live_pause_commit_rewrites_when_recommit_changes_front_and_adds_tail():
     assert event["rewrite"] is True
 
 
+def test_live_tick_rewrites_when_two_ticks_agree_on_a_corrected_front():
+    """말하는 중 이미 친 앞말('아나비')이 두 틱 연속 '안압이'로 고쳐 들리면, 쉼까지 기다리지 않고
+    그 자리에서 고쳐 쓴다(예전엔 화면이 쉼까지 멈췄다가 한꺼번에 쏟아졌다)."""
+    wd = _load()
+    import numpy as np
+
+    rec = _make_recorder(
+        wd, None,
+        ["오늘 환자 아나비", "오늘 환자 아나비", "오늘 환자 안압이 열여덟", "오늘 환자 안압이 열여덟"],
+    )
+    kb = _FakeKeyboard()
+    inserted = []
+    rec._type = lambda old, new, append_only=False: wd.type_diff(
+        old, new, kb, insert=inserted.append, append_only=append_only
+    )
+    loud = (np.random.RandomState(0).randn(16000) * 6000).astype(np.int16).tobytes()
+    with rec.audio_lock:
+        rec.audio_frames = [loud]
+    wd.Recorder._stream_tick(rec, language="Korean")
+    wd.Recorder._stream_tick(rec, language="Korean")
+    assert rec.last_typed == "오늘 환자 아나비"
+    wd.Recorder._stream_tick(rec, language="Korean")   # 앞말이 다르게 들렸지만 한 번뿐 → 그대로
+    assert rec.last_typed == "오늘 환자 아나비"
+
+    wd.Recorder._stream_tick(rec, language="Korean")   # 두 번 연속 같게 고쳐 들림 → 고쳐 쓴다
+    assert rec.last_typed == "오늘 환자 안압이 열여덟"
+    assert inserted == ["오늘 환자 아나비", "안압이 열여덟"]
+    assert len([e for e in kb.events if e[0] == "press"]) == len("아나비")
+    assert rec.committed_text == ""        # 쉬지 않았으니 커밋은 아님
+    assert rec.window_start == 0
+    event = [e for e in rec.debug_events if e["reason"] == "typed"][-1]
+    assert event["rewrite"] is True
+
+
+def test_live_tick_only_appends_when_corrected_front_differs_by_spacing():
+    """고쳐 들린 앞말이 띄어쓰기만 다르면 화면은 그대로 두고 새 뒷말만 덧붙인다(backspace 없음)."""
+    wd = _load()
+    import numpy as np
+
+    rec = _make_recorder(wd, None, ["병원 에", "병원 에", "병원에 갔다", "병원에 갔다"])
+    kb = _FakeKeyboard()
+    inserted = []
+    rec._type = lambda old, new, append_only=False: wd.type_diff(
+        old, new, kb, insert=inserted.append, append_only=append_only
+    )
+    loud = (np.random.RandomState(0).randn(16000) * 6000).astype(np.int16).tobytes()
+    with rec.audio_lock:
+        rec.audio_frames = [loud]
+    for _ in range(4):
+        wd.Recorder._stream_tick(rec, language="Korean")
+
+    assert rec.last_typed == "병원 에 갔다"
+    assert inserted == ["병원 에", " 갔다"]
+    assert kb.events == []
+    event = [e for e in rec.debug_events if e["reason"] == "typed"][-1]
+    assert event["rewrite"] is False
+
+
 def test_live_pause_commit_appends_tail_when_only_spacing_differs():
     """띄어쓰기만 다르게 다시 들린 앞말은 그대로 두고 새 뒷말만 덧붙인다(backspace 없음)."""
     wd = _load()
@@ -1467,6 +1525,41 @@ def test_biased_commit_rejects_leak():
         rec, b"x", "Korean", unbiased="오늘 날씨 좋다", window_secs=2.0
     )
     assert out == "오늘 날씨 좋다"   # 근거 없는 '커밋' → 누출 → 무편향 유지
+
+
+def test_biased_commit_skips_second_pass_when_nothing_resembles_a_term():
+    """무편향본에 등록어와 닮은 토막이 없으면 편향 재받아쓰기를 아예 돌리지 않는다
+    (돌려도 가드가 거부하므로 결과는 같고, 확정마다 모델 한 번을 아낀다)."""
+    wd = _load()
+    called = {"n": 0}
+    rec = wd.Recorder.__new__(wd.Recorder)
+    rec.session_vocab = ["녹내장", "GitHub(깃허브)"]
+    rec.app = type("App", (), {"domain_context": ""})()
+    rec._transcribe_window = lambda *a, **k: called.__setitem__("n", called["n"] + 1) or "녹내장 점심"
+    out = wd.Recorder._biased_commit_hypo(
+        rec, b"x", "Korean", unbiased="오늘 점심은 밖에서 먹을게요", window_secs=2.0
+    )
+    assert out == "오늘 점심은 밖에서 먹을게요"
+    assert called["n"] == 0
+
+
+def test_biased_commit_still_runs_when_unbiased_resembles_a_term():
+    wd = _load()
+    called = {"n": 0}
+    rec = wd.Recorder.__new__(wd.Recorder)
+    rec.session_vocab = ["GitHub(깃허브)"]
+    rec.app = type("App", (), {"domain_context": ""})()
+
+    def transcribe(*a, **k):
+        called["n"] += 1
+        return "깃허브에 올려줘"
+
+    rec._transcribe_window = transcribe
+    out = wd.Recorder._biased_commit_hypo(
+        rec, b"x", "Korean", unbiased="깃헙에 올려줘", window_secs=2.0
+    )
+    assert called["n"] == 1     # 적어 둔 발음과 닮은 토막이 있으니 편향 재받아쓰기를 돈다
+    assert out == "GitHub에 올려줘"
 
 
 def test_biased_commit_skips_short_window():
@@ -1618,8 +1711,9 @@ def test_stream_tick_discards_when_session_changes_during_biased_commit(monkeypa
     # 확정 시점의 편향 재받아쓰기도 추론을 한 번 더 돈다. 그 사이에 세션이 바뀌면
     # 타이핑 직전 가드가 결과를 버려야 한다.
     wd = _load()
-    rec = _make_recorder(wd, monkeypatch, ["안녕하세요", "안녕하세요"])
-    rec.session_vocab = ["Qwen"]
+    # 등록어와 닮은 토막이 있어야 편향 재받아쓰기가 실제로 돈다('녹내장입니다'~'녹내장').
+    rec = _make_recorder(wd, monkeypatch, ["녹내장입니다", "녹내장입니다"])
+    rec.session_vocab = ["녹내장"]
     rec._session_id = 7
     rec.recording = False
     with rec.audio_lock:

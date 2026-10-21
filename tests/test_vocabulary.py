@@ -139,3 +139,8 @@ def test_alias_map_and_surface_forms():
     assert vocabulary.alias_map(words) == {"GitHub": ["깃허브", "깃헙"]}
     assert vocabulary.canonical_terms(words) == ["GitHub", "각막"]
     assert vocabulary.surface_forms(words) == {"GitHub", "깃허브", "깃헙", "각막"}
+
+
+def test_hint_form_for_hangul_term_is_the_term_not_the_habitual_mishearing():
+    assert vocabulary.hint_form("커밋(가민)") == "커밋"
+    assert vocabulary.hint_form("푸시(부시, 푸쉬)") == "푸시"
