@@ -33,6 +33,48 @@ MAX_TERM_WORDS = 3
 
 _WORD_RE = re.compile(r"[0-9A-Za-z가-힣][0-9A-Za-z가-힣._+-]*")
 
+# 한글로 잘못 들은 영어 용어(기타부→GitHub)는 글자 모양이 전혀 달라 소리 유사도로는
+# 걸러 낼 수 없다. 대신 한글 소리 길이와 영어 철자 길이가 비슷한 한 어절 쌍만 받고,
+# 같은 쌍이 여러 번 반복돼야 등록한다(record_live_corrections).
+CROSS_WRONG_CHARS = (2, 8)
+CROSS_LEN_RATIO = (0.5, 3.0)
+_HANGUL_ONLY_RE = re.compile(r"[가-힣]+")
+_LATIN_TERM_RE = re.compile(r"(?=.*[A-Za-z])[0-9A-Za-z][0-9A-Za-z._+-]*")
+_HANGUL_CHAR_RE = re.compile(r"[가-힣]")
+
+
+def is_cross_script(wrong, right):
+    """(한글 소리, 영어 표기) 쌍인가 — 대시보드·등록 쪽에서 같은 기준으로 쓴다."""
+    return bool(
+        _HANGUL_ONLY_RE.fullmatch(str(wrong or ""))
+        and _LATIN_TERM_RE.fullmatch(str(right or ""))
+    )
+
+
+def _cross_script_pair(wrong, right):
+    """`기타부는`→`GitHub는` 같은 고침에서 조사를 떼고 (기타부, GitHub) 를 돌려준다.
+
+    조사까지 같이 바뀐 경우(`기타부는`→`GitHub로`)나 한글이 섞인 영어는 받지 않는다.
+    """
+    if " " in wrong or " " in right:
+        return None
+    # 양쪽 끝에 똑같이 붙은 한글(조사)은 용어가 아니므로 뗀다.
+    while (
+        len(wrong) > 1
+        and len(right) > 1
+        and wrong[-1] == right[-1]
+        and _HANGUL_CHAR_RE.fullmatch(wrong[-1])
+    ):
+        wrong, right = wrong[:-1], right[:-1]
+    if not is_cross_script(wrong, right):
+        return None
+    if not CROSS_WRONG_CHARS[0] <= len(wrong) <= CROSS_WRONG_CHARS[1]:
+        return None
+    ratio = len(right) / len(wrong)
+    if not CROSS_LEN_RATIO[0] <= ratio <= CROSS_LEN_RATIO[1]:
+        return None
+    return wrong, right
+
 
 def _compact(text):
     return "".join((text or "").split())
@@ -79,6 +121,10 @@ def extract_corrections(typed_text, before, after):
             continue
         # 우리가 넣은 구간 안의 말만 배운다.
         if _compact(wrong) not in typed_compact:
+            continue
+        cross = _cross_script_pair(wrong, right)
+        if cross:
+            pairs.append(cross)
             continue
         if not _looks_like_term(right):
             continue

@@ -58,7 +58,10 @@ hotkeys.
   this app typed, and filters them down to sound-alike mishearings (measured:
   real mishearings score 0.67-0.88, user rewrites 0.21-0.60). The same corrected
   term repeating `AUTO_LEARN_THRESHOLD` (3) times registers it without asking and
-  posts a notification; below that it stays a dashboard candidate. This is the one
+  posts a notification; below that it stays a dashboard candidate. A Hangul word
+  corrected into an English term (`기타부`→`GitHub`, no sound score possible) is counted as
+  that pair and, at the threshold, attached as a pronunciation (`GitHub(깃허브, 기타부)`,
+  appended after existing ones so the model hint is unchanged). This is the one
   path that bypasses explicit approval, added at the user's explicit request, and
   the `auto_learn` setting turns the whole thing off including the field reads.
 

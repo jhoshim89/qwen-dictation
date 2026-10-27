@@ -70,9 +70,10 @@ def test_ignores_single_character_and_empty_cases():
     assert auto_learn.extract_corrections(TYPED, "", "") == []
 
 
-def test_ignores_cross_script_correction():
-    """한글↔영어는 소리 비교가 불가능해 배우지 않는다(사후 교정도 못 고침)."""
-    assert auto_learn.extract_corrections("큐엔 받아쓰기", "큐엔 받아쓰기", "Qwen 받아쓰기") == []
+def test_cross_script_correction_is_learned_as_sound_and_spelling_pair():
+    """한글→영어 고침은 소리 비교가 안 되므로 (소리, 영어) 쌍으로 넘기고, 등록 여부는
+    반복 횟수가 정한다(dictation_history.record_live_corrections)."""
+    assert auto_learn.extract_corrections("큐엔 받아쓰기", "큐엔 받아쓰기", "Qwen 받아쓰기") == [("큐엔", "Qwen")]
 
 
 def test_caps_the_number_learned_from_one_edit():
@@ -351,3 +352,19 @@ def test_learned_log_is_capped(tmp_path, monkeypatch):
     for i in range(history.LEARNED_LOG_LIMIT + 5):
         _learn_once(history, f"단어{i}", f"단어{i}x")
     assert len(history.list_learned()) == history.LEARNED_LOG_LIMIT
+
+
+def test_learns_hangul_misheard_english_term_and_strips_particle():
+    """기타부는→GitHub는: 글자 모양이 달라도 조사를 떼고 (소리, 영어) 쌍으로 배운다."""
+    typed = "기타부는 좋다"
+    assert auto_learn.extract_corrections(typed, typed, "GitHub는 좋다") == [("기타부", "GitHub")]
+
+
+def test_cross_script_ignores_particle_change_and_odd_shapes():
+    typed = "기타부는 좋다 소견은 없다"
+    # 조사까지 같이 바뀌면(내용을 새로 쓴 것일 수 있어) 배우지 않는다.
+    assert auto_learn.extract_corrections(typed, typed, "GitHub로 좋다 소견은 없다") == []
+    # 한 글자 한글, 영어가 너무 긴 쌍은 우연 일치라 배우지 않는다.
+    assert auto_learn.extract_corrections("논은 좋다", "논은 좋다", "InternationalOrganization은 좋다") == []
+    # 영어 약어가 한글 소리와 길이가 맞으면 배운다(아이오피→IOP).
+    assert auto_learn.extract_corrections("아이오피가 높다", "아이오피가 높다", "IOP가 높다") == [("아이오피", "IOP")]

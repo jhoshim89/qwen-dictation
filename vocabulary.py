@@ -149,6 +149,51 @@ def save_vocabulary(words):
     return cleaned
 
 
+def add_alias(term, alias):
+    """등록된 대표 표기에 발음 하나를 덧붙인다(없으면 새 항목을 맨 앞에 둔다).
+
+    기존 발음 순서는 바꾸지 않는다 — 귀띔에는 첫 한글 발음이 쓰이므로, 자동으로
+    배운 소리가 사용자가 적은 발음 앞에 서면 안 된다. 이미 있거나 자리가 없으면
+    False, 덧붙였으면 True.
+    """
+    term, alias = str(term).strip(), str(alias).strip()
+    if not term or not alias:
+        return False
+    with _LOCK:
+        words = load_vocabulary()
+        for i, w in enumerate(words):
+            entry_term, aliases = parse_term(w)
+            if entry_term != term:
+                continue
+            if alias in aliases or len(aliases) >= MAX_ALIASES_PER_TERM:
+                return False
+            words[i] = format_entry(entry_term, aliases + [alias])
+            save_vocabulary(words)
+            return True
+        save_vocabulary([format_entry(term, [alias])] + words)
+        return True
+
+
+def remove_alias(term, alias):
+    """발음 하나를 뺀다. 그 발음 하나뿐이던 항목은 항목째 뺀다(자동 등록으로 새로 생긴
+    `항목(발음)` 을 되돌리는 경우). 뺐으면 True."""
+    term, alias = str(term).strip(), str(alias).strip()
+    with _LOCK:
+        out, changed = [], False
+        for w in load_vocabulary():
+            entry_term, aliases = parse_term(w)
+            if entry_term == term and alias in aliases:
+                changed = True
+                rest = [a for a in aliases if a != alias]
+                if rest:
+                    out.append(format_entry(entry_term, rest))
+                continue
+            out.append(w)
+        if changed:
+            save_vocabulary(out)
+        return changed
+
+
 def append_vocabulary(words):
     """Add terms to the stored list as one atomic read-modify-write."""
     with _LOCK:
