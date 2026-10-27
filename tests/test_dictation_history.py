@@ -85,3 +85,42 @@ def test_undo_learned_removes_entry_carrying_a_pronunciation(tmp_path, monkeypat
     _paths(tmp_path, monkeypatch)
     vocabulary.save_vocabulary(["GitHub(깃허브)", "각막"])
     assert dictation_history.undo_learned("GitHub") == ["각막"]
+
+
+def test_hangul_to_english_correction_learns_pronunciation_after_three(tmp_path, monkeypatch):
+    # 기타부→GitHub 를 세 번 고치면 GitHub 항목에 '기타부' 발음이 붙는다(첫 발음 순서는 그대로).
+    _paths(tmp_path, monkeypatch)
+    vocabulary.save_vocabulary(["GitHub(깃허브)", "각막"])
+    pair = [("기타부", "GitHub")]
+    assert dictation_history.record_live_corrections(pair) == []
+    assert dictation_history.record_live_corrections(pair) == []
+    assert dictation_history.list_candidates()[0]["term"] == "GitHub(기타부)"
+    assert dictation_history.record_live_corrections(pair) == ["GitHub(기타부)"]
+    assert vocabulary.load_vocabulary() == ["GitHub(깃허브, 기타부)", "각막"]
+    assert dictation_history.list_candidates() == []
+    assert dictation_history.list_learned()[0] == {
+        "term": "GitHub(기타부)", "at": dictation_history.list_learned()[0]["at"], "active": True,
+    }
+    # 이미 붙은 발음은 다시 세지 않는다.
+    assert dictation_history.record_live_corrections(pair) == []
+
+
+def test_hangul_to_english_learning_creates_entry_and_undo_removes_only_it(tmp_path, monkeypatch):
+    _paths(tmp_path, monkeypatch)
+    vocabulary.save_vocabulary(["각막"])
+    for _ in range(dictation_history.AUTO_LEARN_THRESHOLD):
+        learned = dictation_history.record_live_corrections([("가디스트", "GADIST")])
+    assert learned == ["GADIST(가디스트)"]
+    assert vocabulary.load_vocabulary() == ["GADIST(가디스트)", "각막"]
+    assert dictation_history.undo_learned("GADIST(가디스트)") == ["각막"]
+    # 되돌린 뒤에는 같은 고침을 다시 세지 않는다.
+    for _ in range(dictation_history.AUTO_LEARN_THRESHOLD):
+        assert dictation_history.record_live_corrections([("가디스트", "GADIST")]) == []
+
+
+def test_undo_learned_pronunciation_keeps_user_typed_pronunciation(tmp_path, monkeypatch):
+    _paths(tmp_path, monkeypatch)
+    vocabulary.save_vocabulary(["GitHub(깃허브)"])
+    for _ in range(dictation_history.AUTO_LEARN_THRESHOLD):
+        dictation_history.record_live_corrections([("기타부", "GitHub")])
+    assert dictation_history.undo_learned("GitHub(기타부)") == ["GitHub(깃허브)"]

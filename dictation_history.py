@@ -8,6 +8,7 @@ import time
 import uuid
 
 import app_paths
+import auto_learn
 import secure_store
 import vocabulary
 
@@ -114,39 +115,80 @@ def _prune_submissions(state):
     }
 
 
+def _cross_key(wrong, right):
+    """한글로 잘못 들은 영어 용어는 `GitHub(기타부)` 항목 형태 그대로 센다."""
+    return vocabulary.format_entry(right, [wrong])
+
+
 def record_live_corrections(pairs):
     """입력창에서 직접 고친 (잘못 들은 말, 고친 말) 쌍을 세고, 같은 고침이
     AUTO_LEARN_THRESHOLD 번 쌓이면 묻지 않고 등록한다.
 
     임계에 못 미친 것은 대시보드의 '추천 단어'에 후보로 남아 직접 등록할 수 있다.
     숨김 처리한 단어와 이미 등록된 단어는 세지 않는다. 이번에 등록된 단어를 돌려준다.
+
+    한글 소리를 영어로 고친 쌍(기타부→GitHub)은 소리 유사도로 거를 수 없으므로 같은
+    (소리, 영어) 쌍이 반복돼야 하고, 등록은 영어 항목에 그 소리를 발음으로 붙인다.
     """
-    terms = [str(right).strip() for _wrong, right in (pairs or []) if str(right).strip()]
-    if not terms:
+    items = []  # (세는 키, 대표 표기, 붙일 발음 또는 None)
+    for wrong, right in pairs or []:
+        wrong, right = str(wrong).strip(), str(right).strip()
+        if not right:
+            continue
+        if auto_learn.is_cross_script(wrong, right):
+            items.append((_cross_key(wrong, right), right, wrong))
+        else:
+            items.append((right, right, None))
+    if not items:
         return []
     with _LOCK:
         vocab = vocabulary.surface_forms(vocabulary.load_vocabulary())
         state = _candidate_state()
         dismissed = set(state["dismissed"])
         learned = []
-        for term in dict.fromkeys(terms):
-            if term in vocab or term in dismissed:
+        seen = set()
+        for key, term, alias in items:
+            if key in seen:
                 continue
-            count = int(state["counts"].get(term, 0)) + 1
+            seen.add(key)
+            if alias is None:
+                if term in vocab or term in dismissed:
+                    continue
+            elif alias in vocab or key in dismissed or term in dismissed:
+                continue
+            count = int(state["counts"].get(key, 0)) + 1
             if count >= AUTO_LEARN_THRESHOLD:
-                learned.append(term)
-                state["counts"].pop(term, None)
+                state["counts"].pop(key, None)
+                if alias is None:
+                    learned.append(key)
+                elif vocabulary.add_alias(term, alias):
+                    learned.append(key)
             else:
-                state["counts"][term] = count
+                state["counts"][key] = count
         if learned:
             now = int(time.time())
             state["learned"] = (
                 [{"term": t, "at": now} for t in learned] + state["learned"]
             )[:LEARNED_LOG_LIMIT]
         _save(app_paths.vocabulary_candidates_path(), state)
-        if learned:
-            vocabulary.prepend_vocabulary(learned)
+        plain = [t for t in learned if not _is_alias_key(t)]
+        if plain:
+            vocabulary.prepend_vocabulary(plain)
     return learned
+
+
+def _is_alias_key(term):
+    """`GitHub(기타부)` 처럼 영어 항목에 한글 소리를 붙인 학습 기록인가."""
+    base, aliases = vocabulary.parse_term(term)
+    return bool(aliases) and auto_learn.is_cross_script(aliases[0], base)
+
+
+def _alias_registered(key):
+    base, aliases = vocabulary.parse_term(key)
+    return any(
+        entry_term == base and aliases[0] in entry_aliases
+        for entry_term, entry_aliases in map(vocabulary.parse_term, vocabulary.load_vocabulary())
+    )
 
 
 def list_learned():
@@ -161,7 +203,7 @@ def list_learned():
             "term": term,
             "at": int((row or {}).get("at", 0) or 0),
             # 사용자가 단어 목록에서 직접 지웠으면 더 이상 쓰이지 않는다는 표시.
-            "active": term in vocab,
+            "active": _alias_registered(term) if _is_alias_key(term) else term in vocab,
         })
     return items
 
@@ -172,10 +214,15 @@ def undo_learned(term):
     if not term:
         raise ValueError("term is required")
     with _LOCK:
-        # 발음이 붙은 항목(`GitHub(깃허브)`)도 대표 표기로 알아보고 뺀다.
-        vocabulary.save_vocabulary(
-            [w for w in vocabulary.load_vocabulary() if vocabulary.parse_term(w)[0] != term]
-        )
+        if _is_alias_key(term):
+            # 영어 항목에 붙인 소리 하나만 뺀다(`GitHub(깃허브, 기타부)` 의 '기타부').
+            base, aliases = vocabulary.parse_term(term)
+            vocabulary.remove_alias(base, aliases[0])
+        else:
+            # 발음이 붙은 항목(`GitHub(깃허브)`)도 대표 표기로 알아보고 뺀다.
+            vocabulary.save_vocabulary(
+                [w for w in vocabulary.load_vocabulary() if vocabulary.parse_term(w)[0] != term]
+            )
         state = _candidate_state()
         state["learned"] = [
             row for row in state["learned"]
@@ -195,7 +242,9 @@ def list_candidates():
         [
             {"term": term, "count": int(count), "recommended": int(count) >= SUGGESTION_THRESHOLD}
             for term, count in state["counts"].items()
-            if term not in vocab and term not in dismissed
+            if term not in dismissed
+            and (not _is_alias_key(term) or vocabulary.parse_term(term)[1][0] not in vocab)
+            and (_is_alias_key(term) or term not in vocab)
         ],
         key=lambda item: (-item["recommended"], -item["count"], item["term"]),
     )
